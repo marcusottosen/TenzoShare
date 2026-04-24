@@ -1,0 +1,48 @@
+# Traefik v3 — Static Configuration (Enterprise/TLS Profile)
+# Port 80 → 443 redirect, automated Let's Encrypt certificates.
+# Requires a valid DNS record pointing to the server.
+
+api:
+  dashboard: true
+  # Secure the dashboard behind auth middleware in production
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+
+  websecure:
+    address: ":443"
+    http:
+      tls:
+        certResolver: letsencrypt
+    forwardedHeaders:
+      insecure: false
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: ${ACME_EMAIL}
+      storage: /etc/traefik/acme.json
+      httpChallenge:
+        entryPoint: web
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    network: tenzoshare-net
+    watch: true
+
+log:
+  level: INFO
+
+accessLog: {}
+
+ping:
+  entryPoint: websecure

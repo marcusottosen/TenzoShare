@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package audit.v1;
+
+option go_package = "github.com/tenzoshare/tenzoshare/proto/gen/go/audit/v1;auditv1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+// AuditService stores and queries the immutable audit log.
+// All services publish to NATS AUDIT.* subjects; the AuditService persists them.
+// Direct gRPC calls are available for admin queries.
+service AuditService {
+  // LogEvent appends an audit event. Called by all other services.
+  rpc LogEvent(LogEventRequest) returns (LogEventResponse);
+
+  // ListEvents queries the audit log with filters.
+  rpc ListEvents(ListEventsRequest) returns (ListEventsResponse);
+}
+
+// ── Audit Event model ─────────────────────────────────────────────────────────
+
+enum EventType {
+  EVENT_TYPE_UNSPECIFIED         = 0;
+  EVENT_TYPE_USER_REGISTERED     = 1;
+  EVENT_TYPE_USER_LOGIN          = 2;
+  EVENT_TYPE_USER_LOGIN_FAILED   = 3;
+  EVENT_TYPE_USER_LOGOUT         = 4;
+  EVENT_TYPE_USER_LOCKED         = 5;
+  EVENT_TYPE_MFA_ENABLED         = 6;
+  EVENT_TYPE_MFA_DISABLED        = 7;
+  EVENT_TYPE_FILE_UPLOADED       = 10;
+  EVENT_TYPE_FILE_DOWNLOADED     = 11;
+  EVENT_TYPE_FILE_DELETED        = 12;
+  EVENT_TYPE_TRANSFER_CREATED    = 20;
+  EVENT_TYPE_TRANSFER_REVOKED    = 21;
+  EVENT_TYPE_TRANSFER_EXPIRED    = 22;
+  EVENT_TYPE_ADMIN_ACTION        = 30;
+}
+
+message AuditEvent {
+  string     id         = 1;
+  EventType  type       = 2;
+  // service is the originating service name (e.g. "auth", "transfer").
+  string     service    = 3;
+  // actor_id is the user_id of the person performing the action (empty for system events).
+  string     actor_id   = 4;
+  string     ip_address = 5;
+  string     user_agent = 6;
+  // metadata holds event-specific structured data.
+  google.protobuf.Struct metadata   = 7;
+  google.protobuf.Timestamp occurred_at = 8;
+}
+
+// ── LogEvent ──────────────────────────────────────────────────────────────────
+
+message LogEventRequest {
+  EventType  type       = 1;
+  string     service    = 2;
+  string     actor_id   = 3;
+  string     ip_address = 4;
+  string     user_agent = 5;
+  google.protobuf.Struct metadata = 6;
+}
+
+message LogEventResponse {
+  string event_id = 1;
+}
+
+// ── ListEvents ────────────────────────────────────────────────────────────────
+
+message ListEventsRequest {
+  // actor_id filters events by the acting user (empty = all users).
+  optional string    actor_id    = 1;
+  optional EventType event_type  = 2;
+  // from_unix / to_unix are inclusive Unix timestamps for the time range.
+  optional int64     from_unix   = 3;
+  optional int64     to_unix     = 4;
+  int32              page        = 5;
+  int32              page_size   = 6;
+}
+
+message ListEventsResponse {
+  repeated AuditEvent events = 1;
+  int32               total  = 2;
+}

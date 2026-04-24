@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+package storage.v1;
+
+option go_package = "github.com/tenzoshare/tenzoshare/proto/gen/go/storage/v1;storagev1";
+
+import "google/protobuf/timestamp.proto";
+
+// StorageService provides the S3 abstraction layer: file metadata, encryption
+// key management, versioning, and pre-signed URL generation.
+service StorageService {
+  // RegisterFile creates a metadata record for a completed upload.
+  rpc RegisterFile(RegisterFileRequest) returns (File);
+
+  // GetFile retrieves file metadata by ID.
+  rpc GetFile(GetFileRequest) returns (File);
+
+  // DeleteFile removes the file from object storage and its metadata record.
+  rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse);
+
+  // GetPresignedURL generates a short-lived download URL for the file.
+  rpc GetPresignedURL(GetPresignedURLRequest) returns (GetPresignedURLResponse);
+
+  // ListFiles returns files owned by the requesting user.
+  rpc ListFiles(ListFilesRequest) returns (ListFilesResponse);
+}
+
+// ── File model ────────────────────────────────────────────────────────────────
+
+message File {
+  string id           = 1;
+  string owner_id     = 2;
+  string name         = 3;
+  string content_type = 4;
+  int64  size         = 5;
+  // storage_key is the object key in the backing S3 bucket.
+  string storage_key  = 6;
+  // sha256 is the hex-encoded SHA-256 digest of the original (pre-encryption) file.
+  string sha256       = 7;
+  bool   encrypted    = 8;
+  google.protobuf.Timestamp uploaded_at = 9;
+}
+
+// ── RegisterFile ──────────────────────────────────────────────────────────────
+
+message RegisterFileRequest {
+  string owner_id     = 1;
+  string name         = 2;
+  string content_type = 3;
+  int64  size         = 4;
+  string storage_key  = 5;
+  string sha256       = 6;
+  bool   encrypted    = 7;
+}
+
+// ── GetFile ───────────────────────────────────────────────────────────────────
+
+message GetFileRequest {
+  string file_id = 1;
+}
+
+// ── DeleteFile ────────────────────────────────────────────────────────────────
+
+message DeleteFileRequest {
+  string file_id    = 1;
+  string deleted_by = 2; // user_id for audit
+}
+
+message DeleteFileResponse {}
+
+// ── GetPresignedURL ───────────────────────────────────────────────────────────
+
+message GetPresignedURLRequest {
+  string file_id      = 1;
+  // ttl_seconds is the URL lifetime. Defaults to 3600 (1 hour).
+  int64  ttl_seconds  = 2;
+}
+
+message GetPresignedURLResponse {
+  string url        = 1;
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+// ── ListFiles ─────────────────────────────────────────────────────────────────
+
+message ListFilesRequest {
+  string owner_id  = 1;
+  int32  page      = 2;
+  int32  page_size = 3;
+}
+
+message ListFilesResponse {
+  repeated File files = 1;
+  int32         total = 2;
+}

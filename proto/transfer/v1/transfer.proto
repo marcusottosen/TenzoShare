@@ -1,0 +1,116 @@
+syntax = "proto3";
+
+package transfer.v1;
+
+option go_package = "github.com/tenzoshare/tenzoshare/proto/gen/go/transfer/v1;transferv1";
+
+import "google/protobuf/timestamp.proto";
+
+// TransferService manages the full lifecycle of file transfer workflows:
+// "Send Files" (sender pushes to recipient) and "Request Files" (dropbox-style).
+service TransferService {
+  // CreateTransfer creates a new outgoing transfer with recipient list and options.
+  rpc CreateTransfer(CreateTransferRequest) returns (Transfer);
+
+  // GetTransfer retrieves a transfer by ID (for sender or recipient).
+  rpc GetTransfer(GetTransferRequest) returns (Transfer);
+
+  // ListTransfers returns transfers visible to the requesting user.
+  rpc ListTransfers(ListTransfersRequest) returns (ListTransfersResponse);
+
+  // RevokeTransfer immediately expires a transfer, preventing further downloads.
+  rpc RevokeTransfer(RevokeTransferRequest) returns (RevokeTransferResponse);
+
+  // RecordDownload is called by the storage service when a file is downloaded.
+  rpc RecordDownload(RecordDownloadRequest) returns (RecordDownloadResponse);
+}
+
+// ── Transfer model ────────────────────────────────────────────────────────────
+
+enum TransferStatus {
+  TRANSFER_STATUS_UNSPECIFIED = 0;
+  TRANSFER_STATUS_PENDING     = 1;
+  TRANSFER_STATUS_ACTIVE      = 2;
+  TRANSFER_STATUS_COMPLETED   = 3;
+  TRANSFER_STATUS_EXPIRED     = 4;
+  TRANSFER_STATUS_REVOKED     = 5;
+}
+
+message Transfer {
+  string          id          = 1;
+  string          sender_id   = 2;
+  TransferStatus  status      = 3;
+  string          subject     = 4;
+  string          message     = 5;
+  // download_token is the short random token embedded in share links.
+  string          download_token = 6;
+  // password_hash is non-empty when the transfer is password-protected.
+  string          password_hash  = 7;
+  int32           max_downloads  = 8;
+  int32           download_count = 9;
+  google.protobuf.Timestamp expires_at  = 10;
+  google.protobuf.Timestamp created_at  = 11;
+  repeated string file_ids    = 12;
+  repeated string recipients  = 13; // email addresses
+}
+
+// ── CreateTransfer ────────────────────────────────────────────────────────────
+
+message CreateTransferRequest {
+  string          sender_id    = 1;
+  repeated string recipient_emails = 2;
+  repeated string file_ids     = 3;
+  string          subject      = 4;
+  string          message      = 5;
+  // expires_at_unix is a Unix timestamp for the transfer expiry (0 = default 7 days).
+  int64           expires_at_unix = 6;
+  // password leaves the transfer unprotected when empty.
+  optional string password     = 7;
+  // max_downloads of 0 means unlimited.
+  int32           max_downloads = 8;
+}
+
+// ── GetTransfer ───────────────────────────────────────────────────────────────
+
+message GetTransferRequest {
+  string id = 1;
+}
+
+// ── ListTransfers ─────────────────────────────────────────────────────────────
+
+message ListTransfersRequest {
+  string user_id    = 1;
+  int32  page       = 2;
+  int32  page_size  = 3;
+  TransferStatus status_filter = 4;
+}
+
+message ListTransfersResponse {
+  repeated Transfer transfers = 1;
+  int32             total     = 2;
+}
+
+// ── RevokeTransfer ────────────────────────────────────────────────────────────
+
+message RevokeTransferRequest {
+  string transfer_id = 1;
+  string revoked_by  = 2; // user_id of revoker
+}
+
+message RevokeTransferResponse {}
+
+// ── RecordDownload ────────────────────────────────────────────────────────────
+
+message RecordDownloadRequest {
+  string transfer_id = 1;
+  string file_id     = 2;
+  string ip_address  = 3;
+  string user_agent  = 4;
+  // recipient_email may be empty for anonymous downloads.
+  optional string recipient_email = 5;
+}
+
+message RecordDownloadResponse {
+  // downloads_remaining is -1 for unlimited.
+  int32 downloads_remaining = 1;
+}

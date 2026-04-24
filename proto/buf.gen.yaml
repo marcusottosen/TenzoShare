@@ -1,0 +1,17 @@
+# Buf v2 code generation configuration.
+# Run `buf generate` from the proto/ directory.
+# Outputs Go code into gen/go/ and TypeScript (Connect) into gen/ts/.
+version: v2
+
+plugins:
+  # Generate Go protobuf message types (protoc-gen-go)
+  - remote: buf.build/protocolbuffers/go
+    out: gen/go
+    opt:
+      - paths=source_relative
+
+  # Generate Go Connect service stubs (protoc-gen-connect-go)
+  - remote: buf.build/connectrpc/go
+    out: gen/go
+    opt:
+      - paths=source_relative

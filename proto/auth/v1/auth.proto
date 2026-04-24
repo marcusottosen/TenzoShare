@@ -1,0 +1,137 @@
+syntax = "proto3";
+
+package auth.v1;
+
+option go_package = "github.com/tenzoshare/tenzoshare/proto/gen/go/auth/v1;authv1";
+
+import "google/protobuf/timestamp.proto";
+
+// AuthService handles user authentication, JWT issuance, MFA, and token lifecycle.
+// Used internally by all services that need to validate tokens.
+service AuthService {
+  // Register creates a new local user account.
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+
+  // Login authenticates a user and returns an access + refresh token pair.
+  rpc Login(LoginRequest) returns (TokenResponse);
+
+  // Logout invalidates the provided refresh token.
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+
+  // RefreshToken exchanges a valid refresh token for a new token pair.
+  rpc RefreshToken(RefreshTokenRequest) returns (TokenResponse);
+
+  // ValidateToken introspects an access token and returns its claims.
+  // Used by other services to verify caller identity without a round-trip to Redis.
+  rpc ValidateToken(ValidateTokenRequest) returns (ValidateTokenResponse);
+
+  // SetupMFA generates a TOTP secret and QR code URI for the authenticated user.
+  rpc SetupMFA(SetupMFARequest) returns (SetupMFAResponse);
+
+  // VerifyMFA confirms a TOTP code, enabling MFA for the account.
+  rpc VerifyMFA(VerifyMFARequest) returns (VerifyMFAResponse);
+
+  // RequestPasswordReset sends a password reset email.
+  rpc RequestPasswordReset(RequestPasswordResetRequest) returns (RequestPasswordResetResponse);
+
+  // ConfirmPasswordReset validates the reset token and sets a new password.
+  rpc ConfirmPasswordReset(ConfirmPasswordResetRequest) returns (ConfirmPasswordResetResponse);
+}
+
+// ── Registration ──────────────────────────────────────────────────────────────
+
+message RegisterRequest {
+  string email      = 1;
+  string password   = 2;
+  string first_name = 3;
+  string last_name  = 4;
+}
+
+message RegisterResponse {
+  string user_id = 1;
+  string email   = 2;
+}
+
+// ── Login ─────────────────────────────────────────────────────────────────────
+
+message LoginRequest {
+  string email    = 1;
+  string password = 2;
+  // mfa_code is required when the account has MFA enabled.
+  optional string mfa_code = 3;
+}
+
+// TokenResponse is returned on successful login and token refresh.
+message TokenResponse {
+  string access_token  = 1;
+  string refresh_token = 2;
+  // expires_in is the access token TTL in seconds.
+  int64  expires_in    = 3;
+  string token_type    = 4; // always "Bearer"
+}
+
+// ── Logout ────────────────────────────────────────────────────────────────────
+
+message LogoutRequest {
+  string refresh_token = 1;
+}
+
+message LogoutResponse {}
+
+// ── Token Refresh ─────────────────────────────────────────────────────────────
+
+message RefreshTokenRequest {
+  string refresh_token = 1;
+}
+
+// ── Token Validation (used by other services) ─────────────────────────────────
+
+message ValidateTokenRequest {
+  string access_token = 1;
+}
+
+message ValidateTokenResponse {
+  bool   valid    = 1;
+  string user_id  = 2;
+  string email    = 3;
+  string role     = 4;
+  google.protobuf.Timestamp expires_at = 5;
+}
+
+// ── MFA ───────────────────────────────────────────────────────────────────────
+
+message SetupMFARequest {
+  string user_id = 1;
+}
+
+message SetupMFAResponse {
+  // totp_uri is an otpauth:// URI for QR code generation.
+  string totp_uri    = 1;
+  string secret      = 2;
+  // backup_codes are 10 single-use recovery codes.
+  repeated string backup_codes = 3;
+}
+
+message VerifyMFARequest {
+  string user_id  = 1;
+  string totp_code = 2;
+}
+
+message VerifyMFAResponse {
+  bool enabled = 1;
+}
+
+// ── Password Reset ────────────────────────────────────────────────────────────
+
+message RequestPasswordResetRequest {
+  string email = 1;
+}
+
+message RequestPasswordResetResponse {}
+
+message ConfirmPasswordResetRequest {
+  string token        = 1;
+  string new_password = 2;
+}
+
+message ConfirmPasswordResetResponse {}

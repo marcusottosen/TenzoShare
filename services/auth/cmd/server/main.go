@@ -2,54 +2,54 @@ package main
 
 import (
 	"context"
-	"log"
+	stdlog "log"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/gofiber/fiber/v3"
+	"go.uber.org/zap"
+
 	"github.com/tenzoshare/tenzoshare/shared/pkg/config"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/logger"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 )
 
 func main() {
-	// Load configuration from environment
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("failed to load config: %v", err)
+		stdlog.Fatalf("failed to load config: %v", err)
 	}
 
-	// Initialize structured logger
-	log, err := logger.New(cfg.LogLevel)
+	log, err := logger.New(cfg.App.LogLevel, cfg.App.DevMode)
 	if err != nil {
-		log.Fatal("failed to initialize logger")
+		stdlog.Fatalf("failed to initialize logger: %v", err)
 	}
-	defer log.Sync()
+	defer log.Sync() //nolint:errcheck
 
 	app := fiber.New(fiber.Config{
 		AppName:      "tenzoshare-auth",
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
+		ErrorHandler: middleware.ErrorHandler,
 	})
 
-	// Register routes
 	registerRoutes(app)
 
-	// Graceful shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	go func() {
-		log.Info("auth service starting", "port", cfg.Server.Port)
+		log.Info("auth service starting", zap.String("port", cfg.Server.Port))
 		if err := app.Listen(":" + cfg.Server.Port); err != nil {
-			log.Error("server error", "err", err)
+			log.Error("server error", zap.Error(err))
 		}
 	}()
 
 	<-ctx.Done()
 	log.Info("shutting down auth service")
 	if err := app.Shutdown(); err != nil {
-		log.Error("shutdown error", "err", err)
+		log.Error("shutdown error", zap.Error(err))
 	}
 }
 
@@ -66,6 +66,11 @@ func registerRoutes(app *fiber.App) {
 	auth.Post("/mfa/setup", handleMFASetup)
 	auth.Post("/mfa/verify", handleMFAVerify)
 	auth.Get("/oidc/callback", handleOIDCCallback)
+
+	// Health check — used by Traefik and Docker healthchecks
+	app.Get("/health", func(c fiber.Ctx) error {
+		return c.JSON(fiber.Map{"status": "ok", "service": "auth"})
+	})
 }
 
 // Placeholder handlers — implemented in internal/handlers/

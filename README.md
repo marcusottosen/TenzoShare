@@ -3,8 +3,8 @@
 > Modern, open-source, Docker-native file transfer platform focused on secure, auditable, and enterprise-ready file exchange.
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Go Version](https://img.shields.io/badge/go-1.23+-00ADD8.svg)](https://golang.org/)
-[![React](https://img.shields.io/badge/react-18+-61DAFB.svg)](https://react.dev/)
+[![Go Version](https://img.shields.io/badge/go-1.26-00ADD8.svg)](https://golang.org/)
+[![React](https://img.shields.io/badge/react-19-61DAFB.svg)](https://react.dev/)
 
 ## Overview
 

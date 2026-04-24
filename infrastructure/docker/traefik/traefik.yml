@@ -1,0 +1,30 @@
+# Traefik v3 — Static Configuration (Local/IP Profile)
+# HTTP only on port 80. No TLS. Safe for local development on LAN/localhost.
+# For TLS/enterprise profile, see traefik-enterprise.yml.
+
+api:
+  dashboard: true
+  insecure: true   # dashboard reachable at :8080 — disable in production
+
+entryPoints:
+  web:
+    address: ":80"
+    # Forward X-Forwarded headers from Traefik itself
+    forwardedHeaders:
+      insecure: true
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    network: tenzoshare-net
+    watch: true
+
+log:
+  level: INFO
+
+accessLog: {}
+
+# Ping endpoint used by Docker healthcheck
+ping:
+  entryPoint: web

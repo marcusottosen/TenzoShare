@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package notification.v1;
+
+option go_package = "github.com/tenzoshare/tenzoshare/proto/gen/go/notification/v1;notificationv1";
+
+// NotificationService delivers transactional emails triggered by system events.
+// It consumes NATS JetStream events (NOTIFICATIONS.*) and exposes a gRPC API
+// for direct calls when a synchronous response is needed.
+service NotificationService {
+  // SendEmail delivers a transactional email from a named template.
+  rpc SendEmail(SendEmailRequest) returns (SendEmailResponse);
+}
+
+// ── SendEmail ─────────────────────────────────────────────────────────────────
+
+enum EmailTemplate {
+  EMAIL_TEMPLATE_UNSPECIFIED         = 0;
+  EMAIL_TEMPLATE_WELCOME             = 1;
+  EMAIL_TEMPLATE_PASSWORD_RESET      = 2;
+  EMAIL_TEMPLATE_TRANSFER_RECEIVED   = 3;
+  EMAIL_TEMPLATE_FILE_DOWNLOADED     = 4;
+  EMAIL_TEMPLATE_TRANSFER_EXPIRED    = 5;
+  EMAIL_TEMPLATE_ACCOUNT_LOCKED      = 6;
+  EMAIL_TEMPLATE_MFA_SETUP           = 7;
+}
+
+message SendEmailRequest {
+  // to is the recipient email address.
+  string        to         = 1;
+  EmailTemplate template   = 2;
+  // variables is a map of template substitution values (e.g. "download_url" → "https://...").
+  map<string, string> variables = 3;
+  // reply_to overrides the default reply-to address when set.
+  optional string reply_to = 4;
+}
+
+message SendEmailResponse {
+  // message_id is the SMTP message-id for tracking.
+  string message_id = 1;
+}
