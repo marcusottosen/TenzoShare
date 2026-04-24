@@ -1,12 +1,12 @@
 go 1.26
 
 use (
-	./services/auth
-	./services/transfer
-	./services/storage
-	./services/upload
-	./services/notification
-	./services/audit
 	./services/admin
+	./services/audit
+	./services/auth
+	./services/notification
+	./services/storage
+	./services/transfer
+	./services/upload
 	./shared
 )
