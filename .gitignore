@@ -1,0 +1,55 @@
+Requirements.md
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Go
+bin/
+dist/
+/out/
+*.exe
+*.test
+*.out
+cover.out
+vendor/
+tmp/ # Air hot reload
+
+# Node / Frontend
+node_modules/
+/frontend/dist/
+/frontend/build/
+.eslintcache
+.stylelintcache
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+
+# Protobuf / Buf
+.buf/
+
+# Infrastructure & Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+acme.json
+
+# Local Persistence (Docker Volumes)
+*_data/
+/postgres_data/
+/pgdata/
+/redis_data/
+/minio_data/
+/nats_data/
+/prometheus_data/
+/grafana_data/
+
+# Security Tools
+trivy-results.json
+gosec-results.json
+.snyk

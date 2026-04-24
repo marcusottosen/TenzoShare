@@ -1,0 +1,39 @@
+**/*.exe
+**/*.dll
+**/*.so
+**/*.dylib
+**/bin/
+**/dist/
+**/build/
+**/node_modules/
+**/*.test
+**/*.out
+
+# Go workspace sum
+go.work.sum
+
+# Secrets and env
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+acme.json
+secrets/
+
+# Generated proto code
+**/gen/
+
+# IDE
+.idea/
+.vscode/
+*.DS_Store
+
+# Data volumes
+*_data/
+
+# Terraform state
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.backup

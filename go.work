@@ -1,0 +1,12 @@
+go 1.26
+
+use (
+	./services/auth
+	./services/transfer
+	./services/storage
+	./services/upload
+	./services/notification
+	./services/audit
+	./services/admin
+	./shared
+)
