@@ -169,3 +169,17 @@ func (r *TransferRepository) GetFileIDs(ctx context.Context, transferID string) 
 	}
 	return ids, rows.Err()
 }
+
+// ExpireStale marks all non-revoked transfers whose expires_at is in the past as revoked.
+// This is called periodically by a background goroutine to keep the DB consistent.
+func (r *TransferRepository) ExpireStale(ctx context.Context) (int64, error) {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE transfer.transfers
+		SET is_revoked = TRUE
+		WHERE is_revoked = FALSE AND expires_at IS NOT NULL AND expires_at < NOW()
+	`)
+	if err != nil {
+		return 0, apperrors.Internal("expire stale transfers", err)
+	}
+	return tag.RowsAffected(), nil
+}

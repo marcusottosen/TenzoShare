@@ -115,8 +115,14 @@ func main() {
 	v1.Post("/password-reset/request", h.PasswordResetRequest)
 	v1.Post("/password-reset/confirm", h.PasswordResetConfirm)
 
+	// Revocation check middleware — rejects tokens whose JTI is in the Redis blacklist.
+	// If Redis is unavailable cacheClient will be nil and IsTokenRevoked returns false (fail-open).
+	revocationCheck := middleware.TokenRevocation(func(ctx context.Context, jti string) bool {
+		return svc.IsTokenRevoked(ctx, jti)
+	})
+
 	// authenticated
-	protected := v1.Group("", middleware.JWTAuth(pubKey))
+	protected := v1.Group("", middleware.JWTAuth(pubKey), revocationCheck)
 	protected.Post("/logout", h.Logout)
 	protected.Get("/me", h.Me)
 	protected.Patch("/me", h.UpdateMe)
@@ -124,7 +130,7 @@ func main() {
 	protected.Post("/mfa/verify", h.MFAVerify)
 
 	// API key management — /api/v1/users/apikeys
-	userRoutes := app.Group("/api/v1/users", middleware.JWTAuth(pubKey))
+	userRoutes := app.Group("/api/v1/users", middleware.JWTAuth(pubKey), revocationCheck)
 	userRoutes.Get("/apikeys", h.ListAPIKeys)
 	userRoutes.Post("/apikeys", h.CreateAPIKey)
 	userRoutes.Delete("/apikeys/:id", h.DeleteAPIKey)

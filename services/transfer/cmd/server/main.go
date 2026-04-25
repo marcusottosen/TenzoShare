@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"go.uber.org/zap"
@@ -93,7 +94,27 @@ func main() {
 	v1.Post("/", h.Create)
 	v1.Get("/", h.List)
 	v1.Get("/:id", h.Get)
+	v1.Get("/:id/recipients", h.ListRecipients)
 	v1.Delete("/:id", h.Revoke)
+
+	// Background goroutine: expire stale transfers every 5 minutes.
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				n, err := repo.ExpireStale(ctx)
+				if err != nil {
+					log.Warn("expire stale transfers", zap.Error(err))
+				} else if n > 0 {
+					log.Info("expired stale transfers", zap.Int64("count", n))
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
 	go func() {
 		log.Info("transfer service starting", zap.String("port", cfg.Server.Port))

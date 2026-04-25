@@ -246,6 +246,46 @@ func (h *Handler) DownloadURL(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"url": presignURL, "expires_in": 900})
 }
 
+// ListRecipients GET /api/v1/transfers/:id/recipients
+// Returns the recipient(s) for a transfer.
+// Only the transfer owner may call this endpoint.
+func (h *Handler) ListRecipients(c fiber.Ctx) error {
+	ownerID, _ := c.Locals("userID").(string)
+	if ownerID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+
+	transferID := c.Params("id")
+	if transferID == "" {
+		return apperrors.Validation("transfer id required")
+	}
+
+	t, err := h.svc.GetByID(c.Context(), transferID)
+	if err != nil {
+		return err
+	}
+	if t.OwnerID != ownerID {
+		return apperrors.Forbidden("access denied")
+	}
+
+	type recipient struct {
+		Email         string `json:"email"`
+		DownloadCount int    `json:"download_count"`
+		MaxDownloads  int    `json:"max_downloads"`
+	}
+
+	recipients := []recipient{}
+	if t.RecipientEmail != "" {
+		recipients = append(recipients, recipient{
+			Email:         t.RecipientEmail,
+			DownloadCount: t.DownloadCount,
+			MaxDownloads:  t.MaxDownloads,
+		})
+	}
+
+	return c.JSON(fiber.Map{"recipients": recipients})
+}
+
 // issueServiceToken mints a short-lived (30 s) RS256 JWT with role=admin for
 // internal service-to-service calls. The Storage service's JWT middleware accepts it.
 func (h *Handler) issueServiceToken() (string, error) {

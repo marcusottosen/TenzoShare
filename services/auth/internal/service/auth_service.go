@@ -30,6 +30,12 @@ const (
 	loginRateLimitWindow = 15 * time.Minute
 	maxFailedAttempts    = 10
 	lockoutDuration      = 15 * time.Minute
+
+	registerRateLimit       = 10
+	registerRateLimitWindow = 1 * time.Hour
+
+	passwordResetRateLimit       = 5
+	passwordResetRateLimitWindow = 1 * time.Hour
 )
 
 type TokenPair struct {
@@ -150,7 +156,16 @@ func (s *AuthService) EnsureBootstrapAdmin(ctx context.Context, email, password 
 	return nil
 }
 
-func (s *AuthService) Register(ctx context.Context, email, password string) (*domain.User, error) {
+func (s *AuthService) Register(ctx context.Context, email, password, clientIP string) (*domain.User, error) {
+	if clientIP != "" {
+		limited, err := s.checkRateLimitGeneric(ctx, "ratelimit:register:"+clientIP, registerRateLimit, registerRateLimitWindow)
+		if err != nil {
+			s.log.Warn("register rate-limit check failed", zap.Error(err))
+		} else if limited {
+			return nil, apperrors.RateLimit("too many registrations from this IP; try again later")
+		}
+	}
+
 	hash, err := crypto.HashPassword(password, s.cfg.App.Pepper)
 	if err != nil {
 		return nil, apperrors.Internal("hash password", err)
@@ -333,7 +348,18 @@ func (s *AuthService) VerifyMFA(ctx context.Context, userID, otpCode string) err
 	return err
 }
 
-func (s *AuthService) RequestPasswordReset(ctx context.Context, email string) (userID, resetToken string, err error) {
+func (s *AuthService) RequestPasswordReset(ctx context.Context, email, clientIP string) (userID, resetToken string, err error) {
+	if clientIP != "" {
+		var limited bool
+		limited, err = s.checkRateLimitGeneric(ctx, "ratelimit:pwreset:"+clientIP, passwordResetRateLimit, passwordResetRateLimitWindow)
+		if err != nil {
+			s.log.Warn("password-reset rate-limit check failed", zap.Error(err))
+			err = nil // non-fatal
+		} else if limited {
+			return "", "", apperrors.RateLimit("too many password-reset requests from this IP; try again later")
+		}
+	}
+
 	user, err := s.repo.GetByEmail(ctx, email)
 	if err != nil {
 		return "", "", nil
@@ -455,6 +481,20 @@ func (s *AuthService) checkRateLimit(ctx context.Context, clientIP string) (bool
 	return count > loginRateLimit, nil
 }
 
+func (s *AuthService) checkRateLimitGeneric(ctx context.Context, key string, limit int64, window time.Duration) (bool, error) {
+	if s.cache == nil {
+		return false, nil
+	}
+	count, err := s.cache.Incr(ctx, key)
+	if err != nil {
+		return false, err
+	}
+	if count == 1 {
+		_, _ = s.cache.Expire(ctx, key, window)
+	}
+	return count > limit, nil
+}
+
 func (s *AuthService) recordIPAttempt(ctx context.Context, clientIP string) {
 	if s.cache == nil || clientIP == "" {
 		return
@@ -483,6 +523,25 @@ func (s *AuthService) publishAudit(ctx context.Context, ev AuditEvent) {
 // GetMe returns the full profile for the authenticated user.
 func (s *AuthService) GetMe(ctx context.Context, userID string) (*domain.User, error) {
 	return s.repo.GetByID(ctx, userID)
+}
+
+// RevokeAccessToken places a token's JTI on the Redis blacklist so it cannot
+// be reused even before it naturally expires (e.g. after logout or password change).
+// No-op if Redis is unavailable.
+func (s *AuthService) RevokeAccessToken(ctx context.Context, jti string) error {
+	if s.cache == nil || jti == "" {
+		return nil
+	}
+	return s.cache.RevokeToken(ctx, jti, s.cfg.JWT.AccessTTL)
+}
+
+// IsTokenRevoked reports whether a JTI is currently blacklisted.
+// Used by the gateway-level revocation check middleware.
+func (s *AuthService) IsTokenRevoked(ctx context.Context, jti string) bool {
+	if s.cache == nil {
+		return false
+	}
+	return s.cache.IsTokenRevoked(ctx, jti)
 }
 
 // ── API key management ────────────────────────────────────────────────────────

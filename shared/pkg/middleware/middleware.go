@@ -3,6 +3,7 @@
 package middleware
 
 import (
+	"context"
 	"crypto/rsa"
 	"errors"
 	"strings"
@@ -143,6 +144,26 @@ func RequireRole(roles ...string) fiber.Handler {
 		}
 		if _, ok := allowed[role]; !ok {
 			return apperrors.Forbidden("insufficient permissions")
+		}
+		return c.Next()
+	}
+}
+
+// TokenRevocation returns a middleware that rejects requests whose access-token JTI
+// appears in the revocation blacklist. It MUST run after JWTAuth (which sets Locals).
+// isRevoked is a function that queries the blacklist (e.g. Redis). If isRevoked is nil
+// or the token has no JTI, the check is skipped so revocation is always opt-in.
+func TokenRevocation(isRevoked func(ctx context.Context, jti string) bool) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		if isRevoked == nil {
+			return c.Next()
+		}
+		claims, ok := c.Locals("claims").(*Claims)
+		if !ok || claims == nil || claims.JTI == "" {
+			return c.Next()
+		}
+		if isRevoked(c.Context(), claims.JTI) {
+			return apperrors.Unauthorized("token has been revoked")
 		}
 		return c.Next()
 	}

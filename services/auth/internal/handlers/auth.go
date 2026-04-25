@@ -9,6 +9,7 @@ import (
 	"github.com/tenzoshare/tenzoshare/services/auth/internal/domain"
 	"github.com/tenzoshare/tenzoshare/services/auth/internal/service"
 	apperrors "github.com/tenzoshare/tenzoshare/shared/pkg/errors"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 )
 
 var validate = validator.New()
@@ -37,7 +38,7 @@ func (h *Handler) Register(c fiber.Ctx) error {
 		return apperrors.Validation(err.Error())
 	}
 
-	user, err := h.svc.Register(c.Context(), req.Email, req.Password)
+	user, err := h.svc.Register(c.Context(), req.Email, req.Password, c.IP())
 	if err != nil {
 		return err
 	}
@@ -134,6 +135,12 @@ func (h *Handler) Logout(c fiber.Ctx) error {
 	if userID == "" {
 		return apperrors.Unauthorized("unauthenticated")
 	}
+
+	// Blacklist the current access token so it cannot be reused within its remaining TTL.
+	if claims, ok := c.Locals("claims").(*middleware.Claims); ok && claims != nil {
+		_ = h.svc.RevokeAccessToken(c.Context(), claims.JTI)
+	}
+
 	if err := h.svc.Logout(c.Context(), userID); err != nil {
 		return err
 	}
@@ -202,7 +209,7 @@ func (h *Handler) PasswordResetRequest(c fiber.Ctx) error {
 	}
 
 	// Intentionally always returns 202 — don't leak whether the email exists.
-	_, _, _ = h.svc.RequestPasswordReset(c.Context(), req.Email)
+	_, _, _ = h.svc.RequestPasswordReset(c.Context(), req.Email, c.IP())
 	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
 		"message": "if that email is registered, a reset link has been sent",
 	})
@@ -267,6 +274,11 @@ func (h *Handler) UpdateMe(c fiber.Ctx) error {
 		NewPassword:     req.NewPassword,
 	}); err != nil {
 		return err
+	}
+
+	// Revoke the current access token so the client must log in again with the new password.
+	if claims, ok := c.Locals("claims").(*middleware.Claims); ok && claims != nil {
+		_ = h.svc.RevokeAccessToken(c.Context(), claims.JTI)
 	}
 	return c.JSON(fiber.Map{"message": "password updated"})
 }
