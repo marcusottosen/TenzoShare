@@ -16,15 +16,15 @@ import (
 
 // AuditLog is a single audit event row.
 type AuditLog struct {
-	ID        string
-	Source    string
-	Action    string
-	UserID    *string
-	ClientIP  *string
-	Subject   string
-	Payload   json.RawMessage
-	Success   bool
-	CreatedAt time.Time
+	ID        string          `json:"id"`
+	Source    string          `json:"source"`
+	Action    string          `json:"action"`
+	UserID    *string         `json:"user_id"`
+	ClientIP  *string         `json:"client_ip"`
+	Subject   string          `json:"subject"`
+	Payload   json.RawMessage `json:"payload"`
+	Success   bool            `json:"success"`
+	CreatedAt time.Time       `json:"created_at"`
 }
 
 // ListFilter holds optional query filters for ListEvents.

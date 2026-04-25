@@ -150,9 +150,8 @@ export default function AuditPage() {
                 <th>Source</th>
                 <th>Action</th>
                 <th>User ID</th>
-                <th>Resource</th>
                 <th>IP</th>
-                <th>Metadata</th>
+                <th>Payload</th>
               </tr>
             </thead>
             <tbody>
@@ -160,22 +159,17 @@ export default function AuditPage() {
                 <tr key={e.id}>
                   <td className="text-sm mono">{fmt(e.created_at)}</td>
                   <td><span className="badge badge-blue">{e.source}</span></td>
-                  <td><span className="badge badge-gray">{e.action}</span></td>
+                  <td><span className={`badge ${e.success ? 'badge-green' : 'badge-red'}`}>{e.action}</span></td>
                   <td className="text-sm mono">
                     {e.user_id ? e.user_id.slice(0, 8) + '…' : '—'}
                   </td>
+                  <td className="text-sm mono">{e.client_ip ?? '—'}</td>
                   <td className="text-sm">
-                    {e.resource_type && e.resource_id
-                      ? `${e.resource_type}/${e.resource_id.slice(0, 8)}…`
-                      : e.resource_type ?? '—'}
-                  </td>
-                  <td className="text-sm mono">{e.ip_address ?? '—'}</td>
-                  <td className="text-sm">
-                    {e.metadata && Object.keys(e.metadata).length > 0 ? (
+                    {e.payload && Object.keys(e.payload).length > 0 ? (
                       <details>
                         <summary style={{ cursor: 'pointer' }}>view</summary>
-                        <pre style={{ fontSize: 11, marginTop: 4, whiteSpace: 'pre-wrap' }}>
-                          {JSON.stringify(e.metadata, null, 2)}
+                        <pre style={{ fontSize: 11, marginTop: 4, whiteSpace: 'pre-wrap', maxWidth: 400 }}>
+                          {JSON.stringify(e.payload, null, 2)}
                         </pre>
                       </details>
                     ) : (

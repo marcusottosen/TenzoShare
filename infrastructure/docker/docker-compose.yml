@@ -217,6 +217,7 @@ services:
       POSTGRES_HOST: db
       REDIS_HOST: redis
       S3_ENDPOINT: http://minio:9000
+      S3_PUBLIC_URL: http://192.168.10.150:9000
       NATS_URL: nats://nats:4222
     depends_on:
       migrate:

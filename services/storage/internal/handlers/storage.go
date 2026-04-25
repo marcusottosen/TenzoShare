@@ -152,7 +152,7 @@ func (h *Handler) PresignURL(c fiber.Ctx) error {
 		return apperrors.Forbidden("access denied")
 	}
 
-	url, err := h.backend.GetPresignedURL(c.Context(), file.ObjectKey, 15*time.Minute)
+	url, err := h.backend.GetPresignedURL(c.Context(), file.ObjectKey, file.Filename, 15*time.Minute)
 	if err != nil {
 		return apperrors.Internal("generate presigned url", err)
 	}

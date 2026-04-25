@@ -134,11 +134,12 @@ func (h *Handler) Revoke(c fiber.Ctx) error {
 
 // Access is the public (unauthenticated) download-info endpoint.
 // GET /api/v1/t/:slug  — optionally with ?password=
+// Does NOT increment the download counter — viewing a transfer page is not a download.
 func (h *Handler) Access(c fiber.Ctx) error {
 	slug := c.Params("slug")
 	password := c.Query("password")
 
-	result, err := h.svc.Access(c.Context(), service.AccessParams{
+	result, err := h.svc.Validate(c.Context(), service.AccessParams{
 		Slug:     slug,
 		Password: password,
 	})
@@ -185,6 +186,7 @@ func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 //  2. Confirms the requested file belongs to this transfer.
 //  3. Issues a short-lived internal service JWT and proxies to the Storage service
 //     presign endpoint. No auth is required from the caller.
+//  4. Increments the download counter (this is the actual download action).
 //
 // Response: { "url": "<presigned MinIO URL>", "expires_in": 900 }
 func (h *Handler) DownloadURL(c fiber.Ctx) error {
@@ -192,9 +194,8 @@ func (h *Handler) DownloadURL(c fiber.Ctx) error {
 	fileID := c.Params("fileId")
 	password := c.Query("password")
 
-	// Validate transfer without incrementing the download counter a second time
-	// (the counter is bumped when the recipient first fetches the transfer via Access).
-	result, err := h.svc.Validate(c.Context(), service.AccessParams{
+	// Use Access (which increments the download counter) — this is the real download event.
+	result, err := h.svc.Access(c.Context(), service.AccessParams{
 		Slug:     slug,
 		Password: password,
 	})

@@ -2,13 +2,13 @@ import { request } from './client';
 
 export interface AuditEvent {
   id: string;
-  user_id?: string;
   source: string;
   action: string;
-  resource_type?: string;
-  resource_id?: string;
-  metadata?: Record<string, unknown>;
-  ip_address?: string;
+  user_id: string | null;
+  client_ip: string | null;
+  subject: string;
+  payload: Record<string, unknown>;
+  success: boolean;
   created_at: string;
 }
 

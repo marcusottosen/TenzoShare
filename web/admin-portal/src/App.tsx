@@ -6,6 +6,7 @@ import Layout from './components/Layout';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import AuditPage from './pages/AuditPage';
+import UsersPage from './pages/UsersPage';
 
 export default function App() {
   return (
@@ -17,6 +18,7 @@ export default function App() {
           <Route element={<ProtectedRoute />}>
             <Route element={<Layout />}>
               <Route path="/" element={<DashboardPage />} />
+              <Route path="/users" element={<UsersPage />} />
               <Route path="/audit" element={<AuditPage />} />
             </Route>
           </Route>

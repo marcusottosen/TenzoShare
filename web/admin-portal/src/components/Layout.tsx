@@ -21,6 +21,9 @@ export default function Layout() {
         <NavLink to="/" end className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
           Dashboard
         </NavLink>
+        <NavLink to="/users" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+          Users
+        </NavLink>
         <NavLink to="/audit" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
           Audit Logs
         </NavLink>

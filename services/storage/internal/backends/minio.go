@@ -16,44 +16,56 @@ import (
 
 // MinIOBackend implements shared/pkg/storage.Backend using the AWS SDK v2 against MinIO.
 type MinIOBackend struct {
-	client *s3.Client
-	bucket string
+	client        *s3.Client
+	presignClient *s3.PresignClient // may point at publicURL so signature matches public host
+	bucket        string
 }
 
-func NewMinIO(ctx context.Context, cfg *config.Config) (*MinIOBackend, error) {
-	endpoint := cfg.S3.Endpoint
-	if cfg.S3.UseSSL && len(endpoint) >= 7 && endpoint[:7] == "http://" {
-		endpoint = "https://" + endpoint[7:]
-	} else if !cfg.S3.UseSSL && len(endpoint) >= 8 && endpoint[:8] == "https://" {
-		endpoint = "http://" + endpoint[8:]
-	}
-
-	customResolver := aws.EndpointResolverWithOptionsFunc(
-		func(service, region string, options ...any) (aws.Endpoint, error) {
+// newS3Client creates an s3.Client pointed at the given endpoint.
+func newS3Client(ctx context.Context, endpoint, region, accessKey, secretKey string) (*s3.Client, error) {
+	resolver := aws.EndpointResolverWithOptionsFunc(
+		func(service, reg string, options ...any) (aws.Endpoint, error) {
 			return aws.Endpoint{
 				URL:               endpoint,
-				SigningRegion:     cfg.S3.Region,
-				HostnameImmutable: true, // required for MinIO path-style URLs
+				SigningRegion:     region,
+				HostnameImmutable: true,
 			}, nil
 		},
 	)
-
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
-		awsconfig.WithRegion(cfg.S3.Region),
-		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
-			cfg.S3.AccessKey, cfg.S3.SecretKey, "",
-		)),
-		awsconfig.WithEndpointResolverWithOptions(customResolver),
+		awsconfig.WithRegion(region),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
+		awsconfig.WithEndpointResolverWithOptions(resolver),
 	)
+	if err != nil {
+		return nil, err
+	}
+	return s3.NewFromConfig(awsCfg, func(o *s3.Options) { o.UsePathStyle = true }), nil
+}
+
+func NewMinIO(ctx context.Context, cfg *config.Config) (*MinIOBackend, error) {
+	client, err := newS3Client(ctx, cfg.S3.Endpoint, cfg.S3.Region, cfg.S3.AccessKey, cfg.S3.SecretKey)
 	if err != nil {
 		return nil, fmt.Errorf("minio: load aws config: %w", err)
 	}
 
-	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-		o.UsePathStyle = true // MinIO requires path-style (not virtual-hosted)
-	})
+	// For presigning, use the public URL if set so the signature is computed
+	// against the host that the browser will actually connect to.
+	// If S3_PUBLIC_URL is unset, fall back to the internal endpoint.
+	presignEndpoint := cfg.S3.Endpoint
+	if cfg.S3.PublicURL != "" {
+		presignEndpoint = cfg.S3.PublicURL
+	}
+	presignS3, err := newS3Client(ctx, presignEndpoint, cfg.S3.Region, cfg.S3.AccessKey, cfg.S3.SecretKey)
+	if err != nil {
+		return nil, fmt.Errorf("minio: load presign aws config: %w", err)
+	}
 
-	b := &MinIOBackend{client: client, bucket: cfg.S3.Bucket}
+	b := &MinIOBackend{
+		client:        client,
+		presignClient: s3.NewPresignClient(presignS3),
+		bucket:        cfg.S3.Bucket,
+	}
 	if err := b.ensureBucket(ctx); err != nil {
 		return nil, err
 	}
@@ -99,11 +111,12 @@ func (b *MinIOBackend) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-func (b *MinIOBackend) GetPresignedURL(ctx context.Context, key string, expiry time.Duration) (string, error) {
-	presign := s3.NewPresignClient(b.client)
-	req, err := presign.PresignGetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(b.bucket),
-		Key:    aws.String(key),
+func (b *MinIOBackend) GetPresignedURL(ctx context.Context, key, filename string, expiry time.Duration) (string, error) {
+	disposition := fmt.Sprintf(`attachment; filename="%s"`, filename)
+	req, err := b.presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket:                     aws.String(b.bucket),
+		Key:                        aws.String(key),
+		ResponseContentDisposition: aws.String(disposition),
 	}, s3.WithPresignExpires(expiry))
 	if err != nil {
 		return "", fmt.Errorf("minio: presign %q: %w", key, err)
