@@ -9,9 +9,6 @@
 **/*.test
 **/*.out
 
-# Go workspace sum
-go.work.sum
-
 # Secrets and env
 .env
 .env.*

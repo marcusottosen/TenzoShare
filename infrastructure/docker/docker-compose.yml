@@ -1,6 +1,11 @@
-# TenzoShare — Core Infrastructure (Phase 0)
-# Brings up: PostgreSQL, Redis, MinIO, NATS JetStream, Traefik
-# Usage: docker compose --env-file .env up -d
+# TenzoShare — Full Stack (Phase 1)
+# Brings up: infra (PostgreSQL, Redis, MinIO, NATS, Traefik) + all backend services
+#
+# Usage (from this directory):
+#   docker compose up -d                                          # start everything
+#   docker compose up -d db redis minio nats gateway             # infra only
+#   docker compose logs -f auth                                   # tail one service
+#   docker compose down -v                                        # full teardown
 
 services:
 
@@ -10,8 +15,8 @@ services:
     container_name: tenzoshare-gateway
     restart: unless-stopped
     ports:
-      - "80:80"       # HTTP traffic
-      - "8080:8080"   # Traefik dashboard (dev only)
+      - "80:80"
+      - "8080:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
@@ -55,6 +60,8 @@ services:
       --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
       --save 60 1
       --loglevel warning
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
     volumes:
       - redis-data:/data
     healthcheck:
@@ -65,7 +72,7 @@ services:
     networks:
       - tenzoshare-net
 
-  # ── MinIO (S3-compatible object storage) ─────────────────────────────────────
+  # ── MinIO ────────────────────────────────────────────────────────────────────
   minio:
     image: minio/minio:latest
     container_name: tenzoshare-minio
@@ -77,10 +84,10 @@ services:
     volumes:
       - minio-data:/data
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # MinIO Console UI
+      - "9000:9000"
+      - "9001:9001"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:9000/minio/health/live"]
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 15s
       timeout: 10s
       retries: 5
@@ -104,8 +111,8 @@ services:
       - nats-data:/data
       - ./nats/nats.conf:/etc/nats/nats.conf:ro
     ports:
-      - "4222:4222"   # Client connections
-      - "8222:8222"   # HTTP monitoring
+      - "4222:4222"
+      - "8222:8222"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8222/healthz"]
       interval: 10s
@@ -114,6 +121,225 @@ services:
       start_period: 10s
     networks:
       - tenzoshare-net
+
+  # ── Migrations ───────────────────────────────────────────────────────────────
+  migrate:
+    image: postgres:17-alpine
+    container_name: tenzoshare-migrate
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:-tenzoshare}
+      PGUSER: ${POSTGRES_USER:-tenzoshare}
+    volumes:
+      - ../../services/auth/migrations:/migrations/auth:ro
+      - ../../services/storage/migrations:/migrations/storage:ro
+      - ../../services/transfer/migrations:/migrations/transfer:ro
+      - ../../services/audit/migrations:/migrations/audit:ro
+    command: >
+      sh -c "
+        set -e
+        for f in /migrations/auth/*.sql /migrations/storage/*.sql /migrations/transfer/*.sql /migrations/audit/*.sql; do
+          echo \"-- $$f\" && psql -f \"$$f\";
+        done
+        echo 'Migrations complete.'
+      "
+    networks:
+      - tenzoshare-net
+
+  # ── Auth (8081) ───────────────────────────────────────────────────────────────
+  auth:
+    build:
+      context: ../..
+      dockerfile: services/auth/Dockerfile
+    image: tenzoshare/auth:local
+    container_name: tenzoshare-auth
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: "8081"
+      POSTGRES_HOST: db
+      REDIS_HOST: redis
+      S3_ENDPOINT: http://minio:9000
+      NATS_URL: nats://nats:4222
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - tenzoshare-net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.auth.rule=PathPrefix(`/api/v1/auth`)"
+      - "traefik.http.services.auth.loadbalancer.server.port=8081"
+
+  # ── Transfer (8082) ───────────────────────────────────────────────────────────
+  transfer:
+    build:
+      context: ../..
+      dockerfile: services/transfer/Dockerfile
+    image: tenzoshare/transfer:local
+    container_name: tenzoshare-transfer
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: "8082"
+      POSTGRES_HOST: db
+      REDIS_HOST: redis
+      S3_ENDPOINT: http://minio:9000
+      NATS_URL: nats://nats:4222
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - tenzoshare-net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.transfer.rule=PathPrefix(`/api/v1/transfers`) || PathPrefix(`/api/v1/t`)"
+      - "traefik.http.services.transfer.loadbalancer.server.port=8082"
+
+  # ── Storage (8083) ────────────────────────────────────────────────────────────
+  storage:
+    build:
+      context: ../..
+      dockerfile: services/storage/Dockerfile
+    image: tenzoshare/storage:local
+    container_name: tenzoshare-storage
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: "8083"
+      POSTGRES_HOST: db
+      REDIS_HOST: redis
+      S3_ENDPOINT: http://minio:9000
+      NATS_URL: nats://nats:4222
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+    networks:
+      - tenzoshare-net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.storage.rule=PathPrefix(`/api/v1/files`)"
+      - "traefik.http.services.storage.loadbalancer.server.port=8083"
+
+  # ── Upload (8084) ─────────────────────────────────────────────────────────────
+  upload:
+    build:
+      context: ../..
+      dockerfile: services/upload/Dockerfile
+    image: tenzoshare/upload:local
+    container_name: tenzoshare-upload
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: "8084"
+      S3_ENDPOINT: http://minio:9000
+      NATS_URL: nats://nats:4222
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - tenzoshare-net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.upload.rule=PathPrefix(`/api/v1/uploads`)"
+      - "traefik.http.services.upload.loadbalancer.server.port=8084"
+
+  # ── MailHog — local dev SMTP ─────────────────────────────────────────────────
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    container_name: tenzoshare-mailhog
+    restart: unless-stopped
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI
+    networks:
+      - tenzoshare-net
+
+  # ── Notification (8085) ───────────────────────────────────────────────────────
+  notification:
+    build:
+      context: ../..
+      dockerfile: services/notification/Dockerfile
+    image: tenzoshare/notification:local
+    container_name: tenzoshare-notification
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: "8085"
+      POSTGRES_HOST: db
+      NATS_URL: nats://nats:4222
+      SMTP_HOST: mailhog
+      SMTP_PORT: "1025"
+    depends_on:
+      db:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+    networks:
+      - tenzoshare-net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.notification.rule=PathPrefix(`/api/v1/notification`)"
+      - "traefik.http.services.notification.loadbalancer.server.port=8085"
+
+  # ── Audit (8086) ─────────────────────────────────────────────────────────────
+  audit:
+    build:
+      context: ../..
+      dockerfile: services/audit/Dockerfile
+    image: tenzoshare/audit:local
+    container_name: tenzoshare-audit
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: "8086"
+      POSTGRES_HOST: db
+      NATS_URL: nats://nats:4222
+    depends_on:
+      db:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    networks:
+      - tenzoshare-net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.audit.rule=PathPrefix(`/api/v1/audit`)"
+      - "traefik.http.services.audit.loadbalancer.server.port=8086"
+
+  # ── Admin (8087) — stub ───────────────────────────────────────────────────────
+  admin:
+    build:
+      context: ../..
+      dockerfile: services/admin/Dockerfile
+    image: tenzoshare/admin:local
+    container_name: tenzoshare-admin
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: "8087"
+      POSTGRES_HOST: db
+      NATS_URL: nats://nats:4222
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - tenzoshare-net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.admin.rule=PathPrefix(`/api/v1/admin`)"
+      - "traefik.http.services.admin.loadbalancer.server.port=8087"
 
 # ── Named Volumes ──────────────────────────────────────────────────────────────
 volumes:

@@ -35,7 +35,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := database.Connect(ctx, database.Config{DSN: cfg.Database.DSN})
+	pool, err := database.Connect(ctx, database.DefaultConfig(cfg.Database.DSN))
 	if err != nil {
 		log.Fatal("failed to connect to database", zap.Error(err))
 	}
@@ -57,6 +57,9 @@ func main() {
 	})
 
 	app.Get("/health", func(c fiber.Ctx) error {
+		return c.JSON(fiber.Map{"status": "ok", "service": "storage"})
+	})
+	app.Get("/api/v1/files/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "service": "storage"})
 	})
 

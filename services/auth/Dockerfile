@@ -2,10 +2,9 @@ FROM golang:1.26-alpine AS builder
 
 WORKDIR /app
 
-# Copy workspace files
 COPY go.work go.work.sum ./
 COPY shared/ ./shared/
-COPY services/auth/ ./services/auth/
+COPY services/ ./services/
 
 WORKDIR /app/services/auth
 RUN go build -trimpath -ldflags="-s -w" -o /bin/auth-service ./cmd/server

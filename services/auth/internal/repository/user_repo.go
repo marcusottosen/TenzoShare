@@ -47,14 +47,15 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*domain.
 	err := r.db.QueryRow(ctx, `
 		SELECT u.id, u.email, u.password_hash, u.role, u.is_active, u.email_verified,
 		       u.created_at, u.updated_at,
-		       COALESCE(m.is_enabled, false) AS mfa_enabled
+		       COALESCE(m.is_enabled, false) AS mfa_enabled,
+		       u.failed_login_attempts, u.locked_until
 		FROM auth.users u
 		LEFT JOIN auth.mfa_secrets m ON m.user_id = u.id
 		WHERE u.email = $1
 	`, email).Scan(
 		&u.ID, &u.Email, &u.PasswordHash, &u.Role,
 		&u.IsActive, &u.EmailVerified, &u.CreatedAt, &u.UpdatedAt,
-		&u.MFAEnabled,
+		&u.MFAEnabled, &u.FailedLoginAttempts, &u.LockedUntil,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -70,14 +71,15 @@ func (r *UserRepository) GetByID(ctx context.Context, id string) (*domain.User, 
 	err := r.db.QueryRow(ctx, `
 		SELECT u.id, u.email, u.password_hash, u.role, u.is_active, u.email_verified,
 		       u.created_at, u.updated_at,
-		       COALESCE(m.is_enabled, false) AS mfa_enabled
+		       COALESCE(m.is_enabled, false) AS mfa_enabled,
+		       u.failed_login_attempts, u.locked_until
 		FROM auth.users u
 		LEFT JOIN auth.mfa_secrets m ON m.user_id = u.id
 		WHERE u.id = $1
 	`, id).Scan(
 		&u.ID, &u.Email, &u.PasswordHash, &u.Role,
 		&u.IsActive, &u.EmailVerified, &u.CreatedAt, &u.UpdatedAt,
-		&u.MFAEnabled,
+		&u.MFAEnabled, &u.FailedLoginAttempts, &u.LockedUntil,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -210,6 +212,40 @@ func (r *UserRepository) UpdatePassword(ctx context.Context, userID, passwordHas
 	`, passwordHash, userID)
 	if err != nil {
 		return apperrors.Internal("update password", err)
+	}
+	return nil
+}
+
+// ── Account lockout ───────────────────────────────────────────────────────────
+
+// RecordFailedLogin increments the failed_login_attempts counter for a user.
+// If the count reaches maxAttempts the account is locked until lockDuration from now.
+func (r *UserRepository) RecordFailedLogin(ctx context.Context, userID string, maxAttempts int, lockDuration time.Duration) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE auth.users
+		SET failed_login_attempts = failed_login_attempts + 1,
+		    locked_until = CASE
+		        WHEN failed_login_attempts + 1 >= $2
+		        THEN now() + $3::interval
+		        ELSE locked_until
+		    END
+		WHERE id = $1
+	`, userID, maxAttempts, lockDuration.String())
+	if err != nil {
+		return apperrors.Internal("record failed login", err)
+	}
+	return nil
+}
+
+// RecordSuccessfulLogin resets the failed attempts counter.
+func (r *UserRepository) RecordSuccessfulLogin(ctx context.Context, userID string) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE auth.users
+		SET failed_login_attempts = 0, locked_until = NULL
+		WHERE id = $1
+	`, userID)
+	if err != nil {
+		return apperrors.Internal("record successful login", err)
 	}
 	return nil
 }

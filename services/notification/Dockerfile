@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY go.work go.work.sum ./
 COPY shared/ ./shared/
-COPY services/notification/ ./services/notification/
+COPY services/ ./services/
 
 WORKDIR /app/services/notification
 RUN go build -trimpath -ldflags="-s -w" -o /bin/notification-service ./cmd/server

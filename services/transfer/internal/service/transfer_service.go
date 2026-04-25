@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"go.uber.org/zap"
@@ -11,6 +12,7 @@ import (
 	"github.com/tenzoshare/tenzoshare/shared/pkg/config"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/crypto"
 	apperrors "github.com/tenzoshare/tenzoshare/shared/pkg/errors"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
 )
 
 const defaultSlugBytes = 12 // 96-bit slug → 16 URL-safe base64 chars
@@ -19,11 +21,12 @@ const defaultSlugBytes = 12 // 96-bit slug → 16 URL-safe base64 chars
 type TransferService struct {
 	repo *repository.TransferRepository
 	cfg  *config.Config
+	js   *jetstream.Client
 	log  *zap.Logger
 }
 
-func New(repo *repository.TransferRepository, cfg *config.Config, log *zap.Logger) *TransferService {
-	return &TransferService{repo: repo, cfg: cfg, log: log}
+func New(repo *repository.TransferRepository, cfg *config.Config, js *jetstream.Client, log *zap.Logger) *TransferService {
+	return &TransferService{repo: repo, cfg: cfg, js: js, log: log}
 }
 
 // CreateParams carries creation inputs from the handler.
@@ -77,7 +80,61 @@ func (s *TransferService) Create(ctx context.Context, p CreateParams) (*CreateRe
 		return nil, err
 	}
 
+	s.publishAudit(ctx, "transfer.created", p.OwnerID, created.ID)
+	s.publishEmailNotification(ctx, created)
+
 	return &CreateResult{Transfer: created, FileIDs: p.FileIDs}, nil
+}
+
+// publishAudit publishes an audit event asynchronously; failure is logged, not returned.
+func (s *TransferService) publishAudit(ctx context.Context, action, ownerID, transferID string) {
+	if s.js == nil {
+		return
+	}
+	ev := map[string]any{
+		"action":      action,
+		"user_id":     ownerID,
+		"transfer_id": transferID,
+		"success":     true,
+		"timestamp":   time.Now(),
+	}
+	go func() {
+		if err := s.js.Publish(ctx, "AUDIT.transfer", ev); err != nil {
+			s.log.Warn("failed to publish audit event", zap.Error(err))
+		}
+	}()
+}
+
+// publishEmailNotification publishes a transfer_received email event.
+func (s *TransferService) publishEmailNotification(ctx context.Context, t *domain.Transfer) {
+	if s.js == nil || t.RecipientEmail == "" {
+		return
+	}
+
+	downloadURL := s.cfg.App.BaseURL + "/t/" + t.Slug
+	var expiresAt string
+	if t.ExpiresAt != nil {
+		expiresAt = t.ExpiresAt.Format(time.RFC1123)
+	}
+
+	data, _ := json.Marshal(map[string]any{
+		"SenderName":  "a TenzoShare user",
+		"Title":       t.Slug, // will be replaced with real title field in future
+		"DownloadURL": downloadURL,
+		"ExpiresAt":   expiresAt,
+		"HasPassword": t.PasswordHash != "",
+	})
+
+	ev := map[string]any{
+		"type": "transfer_received",
+		"to":   []string{t.RecipientEmail},
+		"data": json.RawMessage(data),
+	}
+	go func() {
+		if err := s.js.Publish(ctx, "NOTIFICATIONS.email", ev); err != nil {
+			s.log.Warn("failed to publish email notification", zap.Error(err))
+		}
+	}()
 }
 
 // Access validates a transfer is reachable and (if protected) checks the password.
@@ -137,7 +194,11 @@ func (s *TransferService) Access(ctx context.Context, p AccessParams) (*AccessRe
 }
 
 func (s *TransferService) Revoke(ctx context.Context, id, ownerID string) error {
-	return s.repo.Revoke(ctx, id, ownerID)
+	err := s.repo.Revoke(ctx, id, ownerID)
+	if err == nil {
+		s.publishAudit(ctx, "transfer.revoked", ownerID, id)
+	}
+	return err
 }
 
 func (s *TransferService) Get(ctx context.Context, id, ownerID string) (*domain.Transfer, []string, error) {

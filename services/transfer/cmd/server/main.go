@@ -15,6 +15,7 @@ import (
 	"github.com/tenzoshare/tenzoshare/services/transfer/internal/service"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/config"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/database"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/logger"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 )
@@ -35,14 +36,27 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := database.Connect(ctx, database.Config{DSN: cfg.Database.DSN})
+	pool, err := database.Connect(ctx, database.DefaultConfig(cfg.Database.DSN))
 	if err != nil {
 		log.Fatal("failed to connect to database", zap.Error(err))
 	}
 	defer pool.Close()
 
 	repo := repository.NewTransferRepository(pool)
-	svc := service.New(repo, cfg, log)
+
+	// NATS JetStream — non-fatal if unavailable
+	jsClient, err := jetstream.New(cfg.NATS.URL)
+	if err != nil {
+		log.Warn("nats unavailable — event publishing disabled", zap.Error(err))
+		jsClient = nil
+	} else {
+		if err := jsClient.EnsureStreams(ctx); err != nil {
+			log.Warn("failed to ensure NATS streams", zap.Error(err))
+		}
+		defer jsClient.Close()
+	}
+
+	svc := service.New(repo, cfg, jsClient, log)
 	h := handlers.New(svc)
 
 	app := fiber.New(fiber.Config{
@@ -58,6 +72,9 @@ func main() {
 
 	// Public: access a transfer by slug (downloaders, no auth required)
 	app.Get("/api/v1/t/:slug", h.Access)
+	app.Get("/api/v1/transfers/health", func(c fiber.Ctx) error {
+		return c.JSON(fiber.Map{"status": "ok", "service": "transfer"})
+	})
 
 	auth := middleware.JWTAuth(cfg.JWT.Secret)
 	v1 := app.Group("/api/v1/transfers", auth)

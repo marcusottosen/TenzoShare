@@ -13,8 +13,10 @@ import (
 	"github.com/tenzoshare/tenzoshare/services/auth/internal/handlers"
 	"github.com/tenzoshare/tenzoshare/services/auth/internal/repository"
 	"github.com/tenzoshare/tenzoshare/services/auth/internal/service"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/cache"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/config"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/database"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/logger"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 )
@@ -34,14 +36,33 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := database.Connect(ctx, database.Config{DSN: cfg.Database.DSN})
+	pool, err := database.Connect(ctx, database.DefaultConfig(cfg.Database.DSN))
 	if err != nil {
 		log.Fatal("failed to connect to database", zap.Error(err))
 	}
 	defer pool.Close()
 
+	// Redis — used for IP rate limiting; non-fatal if unavailable at startup
+	cacheClient, err := cache.New(cfg.Redis)
+	if err != nil {
+		log.Warn("redis unavailable — rate limiting disabled", zap.Error(err))
+		cacheClient = nil
+	}
+
+	// NATS JetStream — used for audit event publishing; non-fatal if unavailable
+	jsClient, err := jetstream.New(cfg.NATS.URL)
+	if err != nil {
+		log.Warn("nats unavailable — audit publishing disabled", zap.Error(err))
+		jsClient = nil
+	} else {
+		if err := jsClient.EnsureStreams(ctx); err != nil {
+			log.Warn("failed to ensure NATS streams", zap.Error(err))
+		}
+		defer jsClient.Close()
+	}
+
 	repo := repository.NewUserRepository(pool)
-	svc := service.New(repo, cfg, log)
+	svc := service.New(repo, cfg, cacheClient, jsClient, log)
 	h := handlers.New(svc)
 
 	app := fiber.New(fiber.Config{
@@ -56,6 +77,9 @@ func main() {
 	})
 
 	v1 := app.Group("/api/v1/auth")
+	v1.Get("/health", func(c fiber.Ctx) error {
+		return c.JSON(fiber.Map{"status": "ok", "service": "auth"})
+	})
 
 	// public
 	v1.Post("/register", h.Register)

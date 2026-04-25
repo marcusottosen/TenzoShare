@@ -16,6 +16,7 @@ type Config struct {
 	Database DatabaseConfig
 	Redis    RedisConfig
 	NATS     NATSConfig
+	SMTP     SMTPConfig
 	JWT      JWTConfig
 	S3       S3Config
 }
@@ -61,12 +62,21 @@ type RedisConfig struct {
 	Addr string
 }
 
+// SMTPConfig holds email delivery configuration for the notification service.
+type SMTPConfig struct {
+	Host     string
+	Port     string
+	Username string
+	Password string
+	From     string
+	// UseTLS enables STARTTLS when true; set false for MailHog/local dev.
+	UseTLS bool
+}
+
 // NATSConfig holds NATS JetStream connection parameters.
 type NATSConfig struct {
 	URL string
 }
-
-// JWTConfig holds JWT signing and expiry parameters.
 type JWTConfig struct {
 	Secret     string
 	AccessTTL  time.Duration
@@ -146,6 +156,14 @@ func Load() (*Config, error) {
 	cfg.S3.AccessKey = getEnv("S3_ACCESS_KEY", "")
 	cfg.S3.SecretKey = getEnv("S3_SECRET_KEY", "")
 	cfg.S3.UseSSL = getEnvBool("S3_USE_SSL", false)
+
+	// SMTP (notification service)
+	cfg.SMTP.Host = getEnv("SMTP_HOST", "localhost")
+	cfg.SMTP.Port = getEnv("SMTP_PORT", "1025")
+	cfg.SMTP.Username = getEnv("SMTP_USERNAME", "")
+	cfg.SMTP.Password = getEnv("SMTP_PASSWORD", "")
+	cfg.SMTP.From = getEnv("SMTP_FROM", "noreply@tenzoshare.io")
+	cfg.SMTP.UseTLS = getEnvBool("SMTP_USE_TLS", false)
 
 	return cfg, nil
 }

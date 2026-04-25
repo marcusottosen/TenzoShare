@@ -46,8 +46,6 @@ func main() {
 
 	// ── tusd S3 store ──────────────────────────────────────────────────────────
 	store := tuss3.New(cfg.S3.Bucket, s3Client)
-	store.UseIn(nil) // register store capabilities
-
 	composer := handler.NewStoreComposer()
 	store.UseIn(composer)
 
@@ -78,6 +76,9 @@ func main() {
 	})
 
 	app.Get("/health", func(c fiber.Ctx) error {
+		return c.JSON(fiber.Map{"status": "ok", "service": "upload"})
+	})
+	app.Get("/api/v1/uploads/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "service": "upload"})
 	})
 

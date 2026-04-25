@@ -40,6 +40,9 @@ func main() {
 	})
 
 	v1 := app.Group("/api/v1/admin")
+	v1.Get("/health", func(c fiber.Ctx) error {
+		return c.JSON(fiber.Map{"status": "ok", "service": "admin"})
+	})
 	v1.Get("/users", handleListUsers)
 	v1.Post("/users", handleCreateUser)
 	v1.Patch("/users/:id", handleUpdateUser)
@@ -65,13 +68,13 @@ func main() {
 	}
 }
 
-func handleListUsers(c fiber.Ctx) error        { return fiber.ErrNotImplemented }
-func handleCreateUser(c fiber.Ctx) error       { return fiber.ErrNotImplemented }
-func handleUpdateUser(c fiber.Ctx) error       { return fiber.ErrNotImplemented }
-func handleDeleteUser(c fiber.Ctx) error       { return fiber.ErrNotImplemented }
-func handleGetSystemConfig(c fiber.Ctx) error  { return fiber.ErrNotImplemented }
+func handleListUsers(c fiber.Ctx) error          { return fiber.ErrNotImplemented }
+func handleCreateUser(c fiber.Ctx) error         { return fiber.ErrNotImplemented }
+func handleUpdateUser(c fiber.Ctx) error         { return fiber.ErrNotImplemented }
+func handleDeleteUser(c fiber.Ctx) error         { return fiber.ErrNotImplemented }
+func handleGetSystemConfig(c fiber.Ctx) error    { return fiber.ErrNotImplemented }
 func handleUpdateSystemConfig(c fiber.Ctx) error { return fiber.ErrNotImplemented }
-func handleSystemHealth(c fiber.Ctx) error     { return fiber.ErrNotImplemented }
+func handleSystemHealth(c fiber.Ctx) error       { return fiber.ErrNotImplemented }
 
 func getEnvOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {

@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY go.work go.work.sum ./
 COPY shared/ ./shared/
-COPY services/upload/ ./services/upload/
+COPY services/ ./services/
 
 WORKDIR /app/services/upload
 RUN go build -trimpath -ldflags="-s -w" -o /bin/upload-service ./cmd/server

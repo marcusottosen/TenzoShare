@@ -62,7 +62,7 @@ func (h *Handler) Login(c fiber.Ctx) error {
 		return apperrors.Validation(err.Error())
 	}
 
-	pair, user, err := h.svc.Login(c.Context(), req.Email, req.Password)
+	pair, user, err := h.svc.Login(c.Context(), req.Email, req.Password, c.IP())
 	if err != nil {
 		// surface mfa_required as a specific response, not a generic 401
 		if apperrors.IsUnauthorized(err) && err.Error() == "mfa_required" {

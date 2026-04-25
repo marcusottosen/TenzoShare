@@ -10,15 +10,22 @@ const (
 )
 
 type User struct {
-	ID            string
-	Email         string
-	PasswordHash  string
-	Role          Role
-	IsActive      bool
-	EmailVerified bool
-	MFAEnabled    bool
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID                  string
+	Email               string
+	PasswordHash        string
+	Role                Role
+	IsActive            bool
+	EmailVerified       bool
+	MFAEnabled          bool
+	FailedLoginAttempts int
+	LockedUntil         *time.Time
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+// IsLocked reports whether the account is currently locked out.
+func (u *User) IsLocked() bool {
+	return u.LockedUntil != nil && u.LockedUntil.After(time.Now())
 }
 
 type RefreshToken struct {
