@@ -5,7 +5,9 @@ import (
 	stdlog "log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"go.uber.org/zap"
@@ -16,6 +18,7 @@ import (
 	"github.com/tenzoshare/tenzoshare/shared/pkg/config"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/database"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/jwtkeys"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/logger"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 )
@@ -57,7 +60,12 @@ func main() {
 	}
 
 	svc := service.New(repo, cfg, jsClient, log)
-	h := handlers.New(svc, cfg.JWT.Secret, getEnvOr("STORAGE_SERVICE_URL", "http://tenzoshare-storage:8083"))
+	h := handlers.New(svc, cfg.JWT.PrivateKeyPEM, getEnvOr("STORAGE_SERVICE_URL", "http://tenzoshare-storage:8083"))
+
+	pubKey, err := jwtkeys.ParsePublicKey(cfg.JWT.PublicKeyPEM)
+	if err != nil {
+		log.Fatal("failed to parse JWT public key", zap.Error(err))
+	}
 
 	app := fiber.New(fiber.Config{
 		AppName:      "tenzoshare-transfer",
@@ -65,6 +73,10 @@ func main() {
 		WriteTimeout: cfg.Server.WriteTimeout,
 		ErrorHandler: middleware.ErrorHandler,
 	})
+
+	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
+	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
 
 	app.Get("/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "service": "transfer"})
@@ -77,12 +89,32 @@ func main() {
 		return c.JSON(fiber.Map{"status": "ok", "service": "transfer"})
 	})
 
-	auth := middleware.JWTAuth(cfg.JWT.Secret)
+	auth := middleware.JWTAuth(pubKey)
 	v1 := app.Group("/api/v1/transfers", auth)
 	v1.Post("/", h.Create)
 	v1.Get("/", h.List)
 	v1.Get("/:id", h.Get)
+	v1.Get("/:id/recipients", h.ListRecipients)
 	v1.Delete("/:id", h.Revoke)
+
+	// Background goroutine: expire stale transfers every 5 minutes.
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				n, err := repo.ExpireStale(ctx)
+				if err != nil {
+					log.Warn("expire stale transfers", zap.Error(err))
+				} else if n > 0 {
+					log.Info("expired stale transfers", zap.Int64("count", n))
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
 	go func() {
 		log.Info("transfer service starting", zap.String("port", cfg.Server.Port))

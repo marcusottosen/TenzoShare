@@ -9,6 +9,7 @@ import (
 	"github.com/tenzoshare/tenzoshare/services/auth/internal/domain"
 	"github.com/tenzoshare/tenzoshare/services/auth/internal/service"
 	apperrors "github.com/tenzoshare/tenzoshare/shared/pkg/errors"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 )
 
 var validate = validator.New()
@@ -37,7 +38,7 @@ func (h *Handler) Register(c fiber.Ctx) error {
 		return apperrors.Validation(err.Error())
 	}
 
-	user, err := h.svc.Register(c.Context(), req.Email, req.Password)
+	user, err := h.svc.Register(c.Context(), req.Email, req.Password, c.IP())
 	if err != nil {
 		return err
 	}
@@ -134,6 +135,12 @@ func (h *Handler) Logout(c fiber.Ctx) error {
 	if userID == "" {
 		return apperrors.Unauthorized("unauthenticated")
 	}
+
+	// Blacklist the current access token so it cannot be reused within its remaining TTL.
+	if claims, ok := c.Locals("claims").(*middleware.Claims); ok && claims != nil {
+		_ = h.svc.RevokeAccessToken(c.Context(), claims.JTI)
+	}
+
 	if err := h.svc.Logout(c.Context(), userID); err != nil {
 		return err
 	}
@@ -202,7 +209,7 @@ func (h *Handler) PasswordResetRequest(c fiber.Ctx) error {
 	}
 
 	// Intentionally always returns 202 — don't leak whether the email exists.
-	_, _, _ = h.svc.RequestPasswordReset(c.Context(), req.Email)
+	_, _, _ = h.svc.RequestPasswordReset(c.Context(), req.Email, c.IP())
 	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
 		"message": "if that email is registered, a reset link has been sent",
 	})
@@ -268,6 +275,11 @@ func (h *Handler) UpdateMe(c fiber.Ctx) error {
 	}); err != nil {
 		return err
 	}
+
+	// Revoke the current access token so the client must log in again with the new password.
+	if claims, ok := c.Locals("claims").(*middleware.Claims); ok && claims != nil {
+		_ = h.svc.RevokeAccessToken(c.Context(), claims.JTI)
+	}
 	return c.JSON(fiber.Map{"message": "password updated"})
 }
 
@@ -286,6 +298,94 @@ func profileResponse(u *domain.User) fiber.Map {
 		m["locked_until"] = u.LockedUntil
 	}
 	return m
+}
+
+// ── API key management ────────────────────────────────────────────────────────
+
+type createAPIKeyRequest struct {
+	Name      string  `json:"name"       validate:"required,min=1,max=100"`
+	ExpiresAt *string `json:"expires_at"` // optional RFC3339; nil = no expiry
+}
+
+func (h *Handler) CreateAPIKey(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+
+	var req createAPIKeyRequest
+	if err := c.Bind().JSON(&req); err != nil {
+		return apperrors.BadRequest("invalid request body")
+	}
+	if err := validate.Struct(req); err != nil {
+		return apperrors.Validation(err.Error())
+	}
+
+	var expiresAt *time.Time
+	if req.ExpiresAt != nil {
+		t, err := time.Parse(time.RFC3339, *req.ExpiresAt)
+		if err != nil {
+			return apperrors.BadRequest("expires_at must be RFC3339 (e.g. 2027-01-01T00:00:00Z)")
+		}
+		if t.Before(time.Now()) {
+			return apperrors.BadRequest("expires_at must be in the future")
+		}
+		expiresAt = &t
+	}
+
+	result, err := h.svc.CreateAPIKey(c.Context(), userID, req.Name, expiresAt)
+	if err != nil {
+		return err
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+		"id":         result.ID,
+		"name":       result.Name,
+		"key":        result.RawKey, // shown once — client must save it
+		"key_prefix": result.KeyPrefix,
+		"expires_at": result.ExpiresAt,
+		"created_at": result.CreatedAt,
+	})
+}
+
+func (h *Handler) ListAPIKeys(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+
+	keys, err := h.svc.ListAPIKeys(c.Context(), userID)
+	if err != nil {
+		return err
+	}
+
+	out := make([]fiber.Map, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, fiber.Map{
+			"id":         k.ID,
+			"name":       k.Name,
+			"key_prefix": k.KeyPrefix,
+			"last_used":  k.LastUsed,
+			"expires_at": k.ExpiresAt,
+			"created_at": k.CreatedAt,
+		})
+	}
+	return c.JSON(fiber.Map{"api_keys": out})
+}
+
+func (h *Handler) DeleteAPIKey(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	id := c.Params("id")
+	if id == "" {
+		return apperrors.BadRequest("missing api key id")
+	}
+	if err := h.svc.DeleteAPIKey(c.Context(), id, userID); err != nil {
+		return err
+	}
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

@@ -79,7 +79,7 @@ func (s *TransferService) Create(ctx context.Context, p CreateParams) (*CreateRe
 	}
 
 	if p.Password != "" {
-		hash, err := crypto.HashPassword(p.Password, s.cfg.App.BaseURL)
+		hash, err := crypto.HashPassword(p.Password, s.cfg.App.Pepper)
 		if err != nil {
 			return nil, apperrors.Internal("hash transfer password", err)
 		}
@@ -185,7 +185,7 @@ func (s *TransferService) Access(ctx context.Context, p AccessParams) (*AccessRe
 		if p.Password == "" {
 			return nil, apperrors.Unauthorized("password required")
 		}
-		ok, err := crypto.VerifyPassword(p.Password, t.PasswordHash, s.cfg.App.BaseURL)
+		ok, err := crypto.VerifyPassword(p.Password, t.PasswordHash, s.cfg.App.Pepper)
 		if err != nil {
 			return nil, apperrors.Internal("verify transfer password", err)
 		}
@@ -232,7 +232,7 @@ func (s *TransferService) Validate(ctx context.Context, p AccessParams) (*Access
 		if p.Password == "" {
 			return nil, apperrors.Unauthorized("password required")
 		}
-		ok, err := crypto.VerifyPassword(p.Password, t.PasswordHash, s.cfg.App.BaseURL)
+		ok, err := crypto.VerifyPassword(p.Password, t.PasswordHash, s.cfg.App.Pepper)
 		if err != nil {
 			return nil, apperrors.Internal("verify transfer password", err)
 		}
@@ -270,6 +270,11 @@ func (s *TransferService) Get(ctx context.Context, id, ownerID string) (*domain.
 		return nil, nil, err
 	}
 	return t, fileIDs, nil
+}
+
+// GetByID fetches a transfer without enforcing ownership — callers must do their own ACL check.
+func (s *TransferService) GetByID(ctx context.Context, id string) (*domain.Transfer, error) {
+	return s.repo.GetByID(ctx, id)
 }
 
 func (s *TransferService) List(ctx context.Context, ownerID string, limit, offset int) ([]*domain.Transfer, error) {

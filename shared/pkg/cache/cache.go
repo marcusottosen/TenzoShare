@@ -82,3 +82,16 @@ func (c *Client) TTL(ctx context.Context, key string) (time.Duration, error) {
 func (c *Client) Close() error {
 	return c.rdb.Close()
 }
+
+// RevokeToken adds a JTI to the access-token revocation blacklist.
+// ttl should match the remaining lifetime of the access token so entries
+// self-expire from Redis automatically.
+func (c *Client) RevokeToken(ctx context.Context, jti string, ttl time.Duration) error {
+	return c.rdb.Set(ctx, "revoked:jti:"+jti, "1", ttl).Err()
+}
+
+// IsTokenRevoked reports whether a JTI is on the revocation blacklist.
+func (c *Client) IsTokenRevoked(ctx context.Context, jti string) bool {
+	err := c.rdb.Get(ctx, "revoked:jti:"+jti).Err()
+	return err == nil // key present → revoked; Nil error means key exists
+}

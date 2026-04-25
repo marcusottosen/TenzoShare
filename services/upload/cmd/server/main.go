@@ -5,6 +5,7 @@ import (
 	stdlog "log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -19,6 +20,7 @@ import (
 
 	appconfig "github.com/tenzoshare/tenzoshare/shared/pkg/config"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/jwtkeys"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/logger"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 )
@@ -95,6 +97,15 @@ func main() {
 		BodyLimit:    -1, // tusd controls its own limits
 	})
 
+	pubKey, err := jwtkeys.ParsePublicKey(cfg.JWT.PublicKeyPEM)
+	if err != nil {
+		log.Fatal("failed to parse JWT public key", zap.Error(err))
+	}
+
+	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
+	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
+
 	app.Get("/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "service": "upload"})
 	})
@@ -103,7 +114,7 @@ func main() {
 	})
 
 	// All tusd methods (POST, PATCH, HEAD, OPTIONS, DELETE) under /api/v1/uploads
-	tusRoutes := app.Group("/api/v1/uploads", middleware.JWTAuth(cfg.JWT.Secret))
+	tusRoutes := app.Group("/api/v1/uploads", middleware.JWTAuth(pubKey))
 	tusRoutes.All("/", tusHandlerFiber)
 	tusRoutes.All("/:id", tusHandlerFiber)
 

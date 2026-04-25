@@ -2,10 +2,16 @@ package service
 
 import (
 	"context"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/pem"
 	"fmt"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/pquerna/otp/totp"
 	"go.uber.org/zap"
 
@@ -24,6 +30,12 @@ const (
 	loginRateLimitWindow = 15 * time.Minute
 	maxFailedAttempts    = 10
 	lockoutDuration      = 15 * time.Minute
+
+	registerRateLimit       = 10
+	registerRateLimitWindow = 1 * time.Hour
+
+	passwordResetRateLimit       = 5
+	passwordResetRateLimitWindow = 1 * time.Hour
 )
 
 type TokenPair struct {
@@ -48,11 +60,14 @@ type AuditEvent struct {
 }
 
 type AuthService struct {
-	repo  *repository.UserRepository
-	cfg   *config.Config
-	cache *cache.Client
-	js    *jetstream.Client
-	log   *zap.Logger
+	repo       *repository.UserRepository
+	cfg        *config.Config
+	cache      *cache.Client
+	js         *jetstream.Client
+	log        *zap.Logger
+	privateKey *rsa.PrivateKey
+	publicKey  *rsa.PublicKey
+	mfaKey     []byte // 32-byte AES key derived from PASSWORD_PEPPER
 }
 
 func New(
@@ -61,12 +76,70 @@ func New(
 	cache *cache.Client,
 	js *jetstream.Client,
 	log *zap.Logger,
-) *AuthService {
-	return &AuthService{repo: repo, cfg: cfg, cache: cache, js: js, log: log}
+) (*AuthService, error) {
+	privKey, err := parseRSAPrivateKey(cfg.JWT.PrivateKeyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("auth service: parse JWT private key: %w", err)
+	}
+
+	mfaKey, err := deriveMFAKey(cfg.App.Pepper)
+	if err != nil {
+		return nil, fmt.Errorf("auth service: derive MFA key from pepper: %w", err)
+	}
+
+	return &AuthService{
+		repo:       repo,
+		cfg:        cfg,
+		cache:      cache,
+		js:         js,
+		log:        log,
+		privateKey: privKey,
+		publicKey:  &privKey.PublicKey,
+		mfaKey:     mfaKey,
+	}, nil
+}
+
+// parseRSAPrivateKey parses a PKCS#8 or PKCS#1 RSA private key from PEM.
+func parseRSAPrivateKey(pemStr string) (*rsa.PrivateKey, error) {
+	if pemStr == "" {
+		return nil, fmt.Errorf("JWT_PRIVATE_KEY is not set")
+	}
+	block, _ := pem.Decode([]byte(pemStr))
+	if block == nil {
+		return nil, fmt.Errorf("failed to decode PEM block")
+	}
+	// Try PKCS#8 first (openssl genpkey output)
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err == nil {
+		rsaKey, ok := key.(*rsa.PrivateKey)
+		if !ok {
+			return nil, fmt.Errorf("PEM key is not RSA")
+		}
+		return rsaKey, nil
+	}
+	// Fall back to PKCS#1
+	return x509.ParsePKCS1PrivateKey(block.Bytes)
+}
+
+// deriveMFAKey derives a 32-byte AES key from the password pepper.
+// If pepper is a 64-hex string (32 bytes), decode it; otherwise pad/truncate to 32 bytes.
+func deriveMFAKey(pepper string) ([]byte, error) {
+	if pepper == "" {
+		return nil, fmt.Errorf("PASSWORD_PEPPER is not set")
+	}
+	if len(pepper) == 64 {
+		b, err := hex.DecodeString(pepper)
+		if err == nil && len(b) == 32 {
+			return b, nil
+		}
+	}
+	key := make([]byte, 32)
+	copy(key, []byte(pepper))
+	return key, nil
 }
 
 func (s *AuthService) EnsureBootstrapAdmin(ctx context.Context, email, password string) error {
-	hash, err := crypto.HashPassword(password, s.cfg.App.BaseURL)
+	hash, err := crypto.HashPassword(password, s.cfg.App.Pepper)
 	if err != nil {
 		return apperrors.Internal("hash bootstrap admin password", err)
 	}
@@ -83,8 +156,17 @@ func (s *AuthService) EnsureBootstrapAdmin(ctx context.Context, email, password 
 	return nil
 }
 
-func (s *AuthService) Register(ctx context.Context, email, password string) (*domain.User, error) {
-	hash, err := crypto.HashPassword(password, s.cfg.App.BaseURL)
+func (s *AuthService) Register(ctx context.Context, email, password, clientIP string) (*domain.User, error) {
+	if clientIP != "" {
+		limited, err := s.checkRateLimitGeneric(ctx, "ratelimit:register:"+clientIP, registerRateLimit, registerRateLimitWindow)
+		if err != nil {
+			s.log.Warn("register rate-limit check failed", zap.Error(err))
+		} else if limited {
+			return nil, apperrors.RateLimit("too many registrations from this IP; try again later")
+		}
+	}
+
+	hash, err := crypto.HashPassword(password, s.cfg.App.Pepper)
 	if err != nil {
 		return nil, apperrors.Internal("hash password", err)
 	}
@@ -123,7 +205,7 @@ func (s *AuthService) Login(ctx context.Context, email, password, clientIP strin
 		return nil, nil, apperrors.Unauthorized("account is temporarily locked; try again later")
 	}
 
-	ok, err := crypto.VerifyPassword(password, user.PasswordHash, s.cfg.App.BaseURL)
+	ok, err := crypto.VerifyPassword(password, user.PasswordHash, s.cfg.App.Pepper)
 	if err != nil || !ok {
 		_ = s.repo.RecordFailedLogin(ctx, user.ID, maxFailedAttempts, lockoutDuration)
 		s.recordIPAttempt(ctx, clientIP)
@@ -266,7 +348,18 @@ func (s *AuthService) VerifyMFA(ctx context.Context, userID, otpCode string) err
 	return err
 }
 
-func (s *AuthService) RequestPasswordReset(ctx context.Context, email string) (userID, resetToken string, err error) {
+func (s *AuthService) RequestPasswordReset(ctx context.Context, email, clientIP string) (userID, resetToken string, err error) {
+	if clientIP != "" {
+		var limited bool
+		limited, err = s.checkRateLimitGeneric(ctx, "ratelimit:pwreset:"+clientIP, passwordResetRateLimit, passwordResetRateLimitWindow)
+		if err != nil {
+			s.log.Warn("password-reset rate-limit check failed", zap.Error(err))
+			err = nil // non-fatal
+		} else if limited {
+			return "", "", apperrors.RateLimit("too many password-reset requests from this IP; try again later")
+		}
+	}
+
 	user, err := s.repo.GetByEmail(ctx, email)
 	if err != nil {
 		return "", "", nil
@@ -295,7 +388,7 @@ func (s *AuthService) ConfirmPasswordReset(ctx context.Context, rawToken, newPas
 		return err
 	}
 
-	hash, err := crypto.HashPassword(newPassword, s.cfg.App.BaseURL)
+	hash, err := crypto.HashPassword(newPassword, s.cfg.App.Pepper)
 	if err != nil {
 		return apperrors.Internal("hash password", err)
 	}
@@ -314,10 +407,10 @@ func (s *AuthService) ConfirmPasswordReset(ctx context.Context, rawToken, newPas
 func (s *AuthService) ValidateAccessToken(tokenString string) (*middleware.Claims, error) {
 	claims := &middleware.Claims{}
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (any, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
 			return nil, apperrors.Unauthorized("unexpected signing method")
 		}
-		return []byte(s.cfg.JWT.Secret), nil
+		return s.publicKey, nil
 	})
 	if err != nil || !token.Valid {
 		return nil, apperrors.Unauthorized("invalid or expired token")
@@ -354,14 +447,15 @@ func (s *AuthService) signAccessToken(user *domain.User) (string, error) {
 		UserID: user.ID,
 		Email:  user.Email,
 		Role:   string(user.Role),
+		JTI:    uuid.New().String(),
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   user.ID,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(s.cfg.JWT.AccessTTL)),
 		},
 	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := token.SignedString([]byte(s.cfg.JWT.Secret))
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	signed, err := token.SignedString(s.privateKey)
 	if err != nil {
 		return "", apperrors.Internal("sign access token", err)
 	}
@@ -369,13 +463,7 @@ func (s *AuthService) signAccessToken(user *domain.User) (string, error) {
 }
 
 func (s *AuthService) mfaEncryptionKey() []byte {
-	key := []byte(s.cfg.JWT.Secret)
-	if len(key) >= 32 {
-		return key[:32]
-	}
-	padded := make([]byte, 32)
-	copy(padded, key)
-	return padded
+	return s.mfaKey
 }
 
 func (s *AuthService) checkRateLimit(ctx context.Context, clientIP string) (bool, error) {
@@ -391,6 +479,20 @@ func (s *AuthService) checkRateLimit(ctx context.Context, clientIP string) (bool
 		_, _ = s.cache.Expire(ctx, key, loginRateLimitWindow)
 	}
 	return count > loginRateLimit, nil
+}
+
+func (s *AuthService) checkRateLimitGeneric(ctx context.Context, key string, limit int64, window time.Duration) (bool, error) {
+	if s.cache == nil {
+		return false, nil
+	}
+	count, err := s.cache.Incr(ctx, key)
+	if err != nil {
+		return false, err
+	}
+	if count == 1 {
+		_, _ = s.cache.Expire(ctx, key, window)
+	}
+	return count > limit, nil
 }
 
 func (s *AuthService) recordIPAttempt(ctx context.Context, clientIP string) {
@@ -423,6 +525,77 @@ func (s *AuthService) GetMe(ctx context.Context, userID string) (*domain.User, e
 	return s.repo.GetByID(ctx, userID)
 }
 
+// RevokeAccessToken places a token's JTI on the Redis blacklist so it cannot
+// be reused even before it naturally expires (e.g. after logout or password change).
+// No-op if Redis is unavailable.
+func (s *AuthService) RevokeAccessToken(ctx context.Context, jti string) error {
+	if s.cache == nil || jti == "" {
+		return nil
+	}
+	return s.cache.RevokeToken(ctx, jti, s.cfg.JWT.AccessTTL)
+}
+
+// IsTokenRevoked reports whether a JTI is currently blacklisted.
+// Used by the gateway-level revocation check middleware.
+func (s *AuthService) IsTokenRevoked(ctx context.Context, jti string) bool {
+	if s.cache == nil {
+		return false
+	}
+	return s.cache.IsTokenRevoked(ctx, jti)
+}
+
+// ── API key management ────────────────────────────────────────────────────────
+
+// APIKeyResult is returned once on creation — RawKey is never stored and cannot be retrieved again.
+type APIKeyResult struct {
+	*domain.APIKey
+	RawKey string
+}
+
+// CreateAPIKey generates a new personal access token for the user.
+// The raw key is returned only once; thereafter only the prefix is visible.
+func (s *AuthService) CreateAPIKey(ctx context.Context, userID, name string, expiresAt *time.Time) (*APIKeyResult, error) {
+	// Generate: "ts_" + 32 random bytes as lowercase hex (67 chars total)
+	raw, err := crypto.RandomBytes(32)
+	if err != nil {
+		return nil, apperrors.Internal("generate api key", err)
+	}
+	rawKey := "ts_" + fmt.Sprintf("%x", raw)
+	keyPrefix := rawKey[:12] // "ts_" + 9 hex chars
+
+	keyHash := hashAPIKey(rawKey)
+
+	k, err := s.repo.CreateAPIKey(ctx, userID, name, keyHash, keyPrefix, expiresAt)
+	if err != nil {
+		return nil, err
+	}
+
+	s.publishAudit(ctx, AuditEvent{
+		Action: "apikey.created", UserID: userID, Success: true, Timestamp: time.Now(),
+	})
+	return &APIKeyResult{APIKey: k, RawKey: rawKey}, nil
+}
+
+func (s *AuthService) ListAPIKeys(ctx context.Context, userID string) ([]*domain.APIKey, error) {
+	return s.repo.ListAPIKeys(ctx, userID)
+}
+
+func (s *AuthService) DeleteAPIKey(ctx context.Context, id, userID string) error {
+	err := s.repo.DeleteAPIKey(ctx, id, userID)
+	if err == nil {
+		s.publishAudit(ctx, AuditEvent{
+			Action: "apikey.deleted", UserID: userID, Success: true, Timestamp: time.Now(),
+		})
+	}
+	return err
+}
+
+// hashAPIKey returns SHA-256 hex of the raw key string (no token re-use).
+func hashAPIKey(rawKey string) string {
+	h := sha256.Sum256([]byte(rawKey))
+	return fmt.Sprintf("%x", h)
+}
+
 // ChangePasswordParams holds inputs for a self-service password change.
 type ChangePasswordParams struct {
 	UserID          string
@@ -437,7 +610,7 @@ func (s *AuthService) ChangePassword(ctx context.Context, p ChangePasswordParams
 		return err
 	}
 
-	ok, err := crypto.VerifyPassword(p.CurrentPassword, user.PasswordHash, s.cfg.App.BaseURL)
+	ok, err := crypto.VerifyPassword(p.CurrentPassword, user.PasswordHash, s.cfg.App.Pepper)
 	if err != nil {
 		return apperrors.Internal("verify current password", err)
 	}
@@ -449,7 +622,7 @@ func (s *AuthService) ChangePassword(ctx context.Context, p ChangePasswordParams
 		return apperrors.Validation("new password must be at least 8 characters")
 	}
 
-	newHash, err := crypto.HashPassword(p.NewPassword, s.cfg.App.BaseURL)
+	newHash, err := crypto.HashPassword(p.NewPassword, s.cfg.App.Pepper)
 	if err != nil {
 		return apperrors.Internal("hash new password", err)
 	}
