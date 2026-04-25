@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
@@ -178,11 +179,33 @@ func (h *Handler) DeleteFile(c fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// downloadClaims is the payload for short-lived file download tokens.
+type downloadClaims struct {
+	FileID string `json:"fid"`
+	jwt.RegisteredClaims
+}
+
+// issueDownloadToken mints a 15-minute HS256 JWT authorising download of fileID.
+// The encryptionKey (32 bytes) is reused as the HMAC secret.
+func (h *Handler) issueDownloadToken(fileID string) (string, error) {
+	claims := downloadClaims{
+		FileID: fileID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   "dl",
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Minute)),
+		},
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return tok.SignedString(h.encryptionKey)
+}
+
 // PresignURL returns a short-lived download URL.
-// For encrypted files this is a proxy URL via the storage service itself;
-// for unencrypted files it returns a direct MinIO presigned URL.
+// For encrypted files it embeds a download token so the browser can navigate
+// to the URL directly; for unencrypted files it returns a MinIO presigned URL.
 func (h *Handler) PresignURL(c fiber.Ctx) error {
 	ownerID, _ := c.Locals("userID").(string)
+
 	id := c.Params("id")
 
 	file, err := h.repo.GetByID(c.Context(), id)
@@ -195,9 +218,21 @@ func (h *Handler) PresignURL(c fiber.Ctx) error {
 		return apperrors.Forbidden("access denied")
 	}
 
-	// Encrypted files must be served through the authenticated download proxy.
-	// Return a marker so callers know to use the /download endpoint instead.
+	// Encrypted files: embed a short-lived download token in the URL so the
+	// browser can navigate without needing a separate Authorization header.
 	if file.IsEncrypted {
+		if h.encryptionKey != nil {
+			dlToken, err := h.issueDownloadToken(id)
+			if err != nil {
+				return apperrors.Internal("issue download token", err)
+			}
+			return c.JSON(fiber.Map{
+				"url":        fmt.Sprintf("/api/v1/files/%s/download?token=%s", id, dlToken),
+				"expires_in": 900,
+				"encrypted":  true,
+			})
+		}
+		// Fallback (shouldn't occur — encrypted files require an encryption key)
 		return c.JSON(fiber.Map{
 			"url":        nil,
 			"download":   fmt.Sprintf("/api/v1/files/%s/download", id),
@@ -214,20 +249,45 @@ func (h *Handler) PresignURL(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"url": url, "expires_in": 900, "encrypted": false})
 }
 
-// Download streams a (possibly encrypted) file to the authenticated caller.
+// Download streams a (possibly encrypted) file.
 // GET /api/v1/files/:id/download
-// Requires a valid JWT Bearer token. Admins may download any file; users only their own.
+// Accepts either:
+//   - Bearer JWT (RS256) via Authorization header — authenticated user/service
+//   - ?token=<jwt> query param — HS256 download token issued by PresignURL
 func (h *Handler) Download(c fiber.Ctx) error {
-	ownerID, _ := c.Locals("userID").(string)
 	id := c.Params("id")
+	ownerID, _ := c.Locals("userID").(string)
+	role, _ := c.Locals("userRole").(string)
+
+	// If no Bearer JWT was validated by OptionalJWTAuth, check the ?token= param.
+	if ownerID == "" {
+		dlToken := c.Query("token")
+		if dlToken == "" {
+			return apperrors.Unauthorized("authentication required")
+		}
+		if h.encryptionKey == nil {
+			return apperrors.Unauthorized("download tokens not configured")
+		}
+		claims := &downloadClaims{}
+		tok, err := jwt.ParseWithClaims(dlToken, claims, func(t *jwt.Token) (any, error) {
+			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method")
+			}
+			return h.encryptionKey, nil
+		})
+		if err != nil || !tok.Valid || claims.FileID != id {
+			return apperrors.Unauthorized("invalid or expired download token")
+		}
+		// Token is valid for this file — allow download without ownership check.
+		role = "admin"
+	}
 
 	file, err := h.repo.GetByID(c.Context(), id)
 	if err != nil {
 		return err
 	}
 
-	role, _ := c.Locals("userRole").(string)
-	if file.OwnerID != ownerID && role != "admin" {
+	if role != "admin" && file.OwnerID != ownerID {
 		return apperrors.Forbidden("access denied")
 	}
 

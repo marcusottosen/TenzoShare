@@ -91,13 +91,15 @@ func main() {
 	})
 
 	auth := middleware.JWTAuth(pubKey)
-	v1 := app.Group("/api/v1/files", auth)
-	v1.Post("/", h.Upload)
-	v1.Get("/", h.ListFiles)
-	v1.Get("/:id", h.GetFile)
-	v1.Delete("/:id", h.DeleteFile)
-	v1.Get("/:id/presign", h.PresignURL)
-	v1.Get("/:id/download", h.Download)
+	v1 := app.Group("/api/v1/files") // no group-level middleware — Fiber's Group.Use applies prefix-wide
+	v1.Post("/", auth, h.Upload)
+	v1.Get("/", auth, h.ListFiles)
+	v1.Get("/:id", auth, h.GetFile)
+	v1.Delete("/:id", auth, h.DeleteFile)
+	v1.Get("/:id/presign", auth, h.PresignURL)
+	// Download accepts either a Bearer RS256 JWT (authenticated users/services)
+	// or a ?token= HS256 download token issued by PresignURL (browser-navigable).
+	v1.Get("/:id/download", middleware.OptionalJWTAuth(pubKey), h.Download)
 
 	go func() {
 		log.Info("storage service starting", zap.String("port", cfg.Server.Port))

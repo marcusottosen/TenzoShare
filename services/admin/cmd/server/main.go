@@ -8,17 +8,19 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/tenzoshare/tenzoshare/shared/pkg/config"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/crypto"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/database"
 	apperrors "github.com/tenzoshare/tenzoshare/shared/pkg/errors"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/jwtkeys"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/logger"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 )
@@ -51,14 +53,16 @@ type ServiceHealthItem struct {
 	LatencyMs int64  `json:"latency_ms"`
 }
 
-// ── Global DB pool ────────────────────────────────────────────────────────────
+// ── Global DB pool and config ─────────────────────────────────────────────────
 
 var db *pgxpool.Pool
+var cfg *config.Config
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 func main() {
-	cfg, err := config.Load()
+	var err error
+	cfg, err = config.Load()
 	if err != nil {
 		stdlog.Fatalf("failed to load config: %v", err)
 	}
@@ -86,11 +90,20 @@ func main() {
 		ErrorHandler: middleware.ErrorHandler,
 	})
 
+	pubKey, err := jwtkeys.ParsePublicKey(cfg.JWT.PublicKeyPEM)
+	if err != nil {
+		log.Fatal("failed to parse JWT public key", zap.Error(err))
+	}
+
+	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
+	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
+
 	app.Get("/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "service": "admin"})
 	})
 
-	v1 := app.Group("/api/v1/admin", middleware.JWTAuth(cfg.JWT.Secret), middleware.RequireRole("admin"))
+	v1 := app.Group("/api/v1/admin", middleware.JWTAuth(pubKey), middleware.RequireRole("admin"))
 	v1.Get("/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "service": "admin"})
 	})
@@ -211,7 +224,7 @@ func handleCreateUser(c fiber.Ctx) error {
 		return apperrors.BadRequest("password must be at least 8 characters")
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(body.Password), bcrypt.DefaultCost)
+	hash, err := crypto.HashPassword(body.Password, cfg.App.Pepper)
 	if err != nil {
 		return apperrors.Internal("hash password", err)
 	}
@@ -221,7 +234,7 @@ func handleCreateUser(c fiber.Ctx) error {
 		`INSERT INTO auth.users (email, password_hash, role, is_active, email_verified)
 		 VALUES ($1, $2, $3, true, false)
 		 RETURNING id, email, role, is_active, email_verified, failed_login_attempts, locked_until, created_at, updated_at`,
-		body.Email, string(hash), body.Role,
+		body.Email, hash, body.Role,
 	).Scan(&u.ID, &u.Email, &u.Role, &u.IsActive, &u.EmailVerified,
 		&u.FailedLoginAttempts, &u.LockedUntil, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {

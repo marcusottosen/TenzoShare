@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,25 +13,32 @@ import (
 	"github.com/go-playground/validator/v10"
 	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 
 	"github.com/tenzoshare/tenzoshare/services/transfer/internal/domain"
 	"github.com/tenzoshare/tenzoshare/services/transfer/internal/service"
 	apperrors "github.com/tenzoshare/tenzoshare/shared/pkg/errors"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/jwtkeys"
 )
 
 type Handler struct {
-	svc        *service.TransferService
-	validate   *validator.Validate
-	jwtSecret  string
-	storageURL string
+	svc           *service.TransferService
+	validate      *validator.Validate
+	jwtPrivateKey *rsa.PrivateKey
+	storageURL    string
 }
 
-func New(svc *service.TransferService, jwtSecret, storageURL string) *Handler {
+func New(svc *service.TransferService, jwtPrivateKeyPEM, storageURL string) *Handler {
+	privKey, err := jwtkeys.ParsePrivateKey(jwtPrivateKeyPEM)
+	if err != nil {
+		// panic at startup — private key is required for service-to-service tokens
+		panic("transfer handler: " + err.Error())
+	}
 	return &Handler{
-		svc:        svc,
-		validate:   validator.New(),
-		jwtSecret:  jwtSecret,
-		storageURL: storageURL,
+		svc:           svc,
+		validate:      validator.New(),
+		jwtPrivateKey: privKey,
+		storageURL:    storageURL,
 	}
 }
 
@@ -238,21 +246,24 @@ func (h *Handler) DownloadURL(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"url": presignURL, "expires_in": 900})
 }
 
-// issueServiceToken mints a short-lived (30 s) HS256 JWT with role=admin for
+// issueServiceToken mints a short-lived (30 s) RS256 JWT with role=admin for
 // internal service-to-service calls. The Storage service's JWT middleware accepts it.
 func (h *Handler) issueServiceToken() (string, error) {
 	now := time.Now()
 	claims := jwt.MapClaims{
 		"sub":  "service-transfer",
 		"role": "admin",
+		"jti":  uuid.New().String(),
 		"iat":  now.Unix(),
 		"exp":  now.Add(30 * time.Second).Unix(),
 	}
-	t := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return t.SignedString([]byte(h.jwtSecret))
+	t := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	return t.SignedString(h.jwtPrivateKey)
 }
 
-// fetchPresignURL calls the Storage service's presign endpoint using a service JWT.
+// fetchDownloadURL calls the Storage service's presign endpoint.
+// If the file is encrypted, the storage service returns a {download: "/api/v1/files/:id/download"}
+// marker and the transfer service builds a proxy URL instead.
 func (h *Handler) fetchPresignURL(ctx context.Context, fileID, token string) (string, error) {
 	endpoint := fmt.Sprintf("%s/api/v1/files/%s/presign", h.storageURL, fileID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -273,12 +284,30 @@ func (h *Handler) fetchPresignURL(ctx context.Context, fileID, token string) (st
 		return "", fmt.Errorf("storage service returned %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Parse {"url":"...","expires_in":900}
+	// Parse response — may contain {url, encrypted} or {download, encrypted}
 	var parsed struct {
-		URL string `json:"url"`
+		URL       *string `json:"url"`
+		Download  string  `json:"download"`
+		Encrypted bool    `json:"encrypted"`
 	}
-	if err := json.Unmarshal(body, &parsed); err != nil || parsed.URL == "" {
+	if err := json.Unmarshal(body, &parsed); err != nil {
 		return "", fmt.Errorf("parse storage response: %w", err)
 	}
-	return parsed.URL, nil
+
+	// Encrypted files: storage now returns a path with an embedded download token.
+	// Return it as-is so the client resolves it relative to the gateway (browser-navigable).
+	if parsed.Encrypted {
+		if parsed.URL != nil && *parsed.URL != "" {
+			return *parsed.URL, nil
+		}
+		// Legacy fallback: storage returned download path only (before token support)
+		if parsed.Download != "" {
+			return fmt.Sprintf("%s%s", h.storageURL, parsed.Download), nil
+		}
+		return "", fmt.Errorf("storage returned encrypted flag but no download URL")
+	}
+	if parsed.URL == nil {
+		return "", fmt.Errorf("storage returned no download URL")
+	}
+	return *parsed.URL, nil
 }

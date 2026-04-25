@@ -51,3 +51,14 @@ type PasswordResetToken struct {
 	UsedAt    *time.Time
 	CreatedAt time.Time
 }
+
+type APIKey struct {
+	ID        string
+	UserID    string
+	Name      string
+	KeyPrefix string // first 12 chars of raw key — displayed in UI
+	KeyHash   string // SHA-256(rawKey) — used for lookup/validation; raw key never stored
+	LastUsed  *time.Time
+	ExpiresAt *time.Time
+	CreatedAt time.Time
+}

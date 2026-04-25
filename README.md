@@ -8,6 +8,25 @@ Self-hosted file transfer — open source alternative to ShareFile / LinShare.
 
 Go microservices backend, React frontend, everything runs in Docker. Passwords are Argon2id, files are AES-256-GCM encrypted at rest, transfers are link-based with optional expiry and password protection.
 
+## Security
+
+TenzoShare is built security-first, not security-bolted-on:
+
+| Layer | What's in place |
+|-------|----------------|
+| **Passwords** | Argon2id (OWASP params: t=1, m=64 MB, p=4) + server-side pepper on every service |
+| **JWT** | RS256 asymmetric signing — services hold only the public key; only auth + transfer hold the private key |
+| **Files at rest** | AES-256-GCM per-file encryption in MinIO; random 12-byte nonce per upload; plaintext never touches disk |
+| **Downloads** | Short-lived HS256 download tokens (15 min) embedded in presign URLs — browser-navigable, no credentials needed |
+| **Transport** | TLS 1.3 via Traefik; `Strict-Transport-Security` header in production |
+| **Response headers** | `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, strict `Content-Security-Policy`, `Permissions-Policy` on every API response and static UI |
+| **Rate limiting** | 5 login attempts / 15 min / IP (Redis); account lockout after 10 consecutive failures |
+| **API keys** | Personal access tokens for CLI use — only SHA-256 hash stored, raw key shown once |
+| **CORS** | Per-service allowlist, configurable via `CORS_ALLOWED_ORIGINS` |
+| **Audit log** | Immutable append-only event log for every auth, transfer, and file action — date-partitioned PostgreSQL table |
+| **TOTP MFA** | TOTP secrets AES-256-GCM encrypted at rest before storing |
+| **CI scanning** | `gosec` + Trivy CRITICAL/HIGH on every push |
+
 ## Quick start
 
 ```bash

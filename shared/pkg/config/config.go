@@ -30,6 +30,12 @@ type AppConfig struct {
 	// Set via DEV_MODE env var.
 	DevMode  bool
 	LogLevel string
+	// Pepper is an application-level secret appended to passwords before hashing
+	// with Argon2id. Loaded from PASSWORD_PEPPER env var.
+	Pepper string
+	// EncryptionKey is a 32-byte master key for AES-256-GCM file encryption.
+	// Loaded from STORAGE_ENCRYPTION_KEY env var (64 hex chars).
+	EncryptionKey string
 }
 
 // ServerConfig holds HTTP server tuning parameters.
@@ -78,9 +84,15 @@ type NATSConfig struct {
 	URL string
 }
 type JWTConfig struct {
-	Secret     string
-	AccessTTL  time.Duration
-	RefreshTTL time.Duration
+	// PrivateKeyPEM is the RSA private key PEM (PKCS#8 or PKCS#1) for signing
+	// JWT tokens. Only needed by services that issue tokens (auth, transfer).
+	// Loaded from JWT_PRIVATE_KEY env var (newlines escaped as \n).
+	PrivateKeyPEM string
+	// PublicKeyPEM is the RSA public key PEM for verifying JWT tokens.
+	// Required by all services. Loaded from JWT_PUBLIC_KEY env var.
+	PublicKeyPEM string
+	AccessTTL    time.Duration
+	RefreshTTL   time.Duration
 }
 
 // S3Config holds S3-compatible object storage parameters.
@@ -138,17 +150,17 @@ func Load() (*Config, error) {
 	// NATS
 	cfg.NATS.URL = getEnv("NATS_URL", "nats://localhost:4222")
 
-	// JWT
-	jwtSecret, err := requireEnv("JWT_SECRET")
-	if err != nil {
-		return nil, err
-	}
-	if len(jwtSecret) < 32 {
-		return nil, fmt.Errorf("JWT_SECRET must be at least 32 characters")
-	}
-	cfg.JWT.Secret = jwtSecret
+	// JWT — RS256 asymmetric keys
+	cfg.JWT.PrivateKeyPEM = normalisePEM(os.Getenv("JWT_PRIVATE_KEY"))
+	cfg.JWT.PublicKeyPEM = normalisePEM(os.Getenv("JWT_PUBLIC_KEY"))
 	cfg.JWT.AccessTTL = getEnvDuration("JWT_ACCESS_TTL", 15*time.Minute)
 	cfg.JWT.RefreshTTL = getEnvDuration("JWT_REFRESH_TTL", 168*time.Hour)
+
+	// Password pepper
+	cfg.App.Pepper = getEnv("PASSWORD_PEPPER", "")
+
+	// AES-256-GCM master encryption key (optional — only required for storage service)
+	cfg.App.EncryptionKey = getEnv("STORAGE_ENCRYPTION_KEY", "")
 
 	// S3 / MinIO
 	cfg.S3.Endpoint = getEnv("S3_ENDPOINT", "http://localhost:9000")
@@ -177,6 +189,27 @@ func requireEnv(key string) (string, error) {
 		return "", fmt.Errorf("required environment variable %q is not set", key)
 	}
 	return v, nil
+}
+
+// normalisePEM converts escaped \n sequences back to real newlines so PEM
+// keys can be stored as single-line env var values.
+func normalisePEM(s string) string {
+	if s == "" {
+		return ""
+	}
+	// Replace literal backslash-n with actual newline
+	result := ""
+	i := 0
+	for i < len(s) {
+		if i+1 < len(s) && s[i] == '\\' && s[i+1] == 'n' {
+			result += "\n"
+			i += 2
+		} else {
+			result += string(s[i])
+			i++
+		}
+	}
+	return result
 }
 
 func getEnv(key, fallback string) string {

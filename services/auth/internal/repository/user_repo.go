@@ -272,6 +272,63 @@ func (r *UserRepository) RecordSuccessfulLogin(ctx context.Context, userID strin
 	return nil
 }
 
+// ── API keys ──────────────────────────────────────────────────────────────────
+
+func (r *UserRepository) CreateAPIKey(ctx context.Context, userID, name, keyHash, keyPrefix string, expiresAt *time.Time) (*domain.APIKey, error) {
+	var k domain.APIKey
+	err := r.db.QueryRow(ctx, `
+		INSERT INTO auth.api_keys (user_id, name, key_hash, key_prefix, expires_at)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, user_id, name, key_prefix, key_hash, last_used, expires_at, created_at
+	`, userID, name, keyHash, keyPrefix, expiresAt).Scan(
+		&k.ID, &k.UserID, &k.Name, &k.KeyPrefix, &k.KeyHash,
+		&k.LastUsed, &k.ExpiresAt, &k.CreatedAt,
+	)
+	if err != nil {
+		return nil, apperrors.Internal("create api key", err)
+	}
+	return &k, nil
+}
+
+func (r *UserRepository) ListAPIKeys(ctx context.Context, userID string) ([]*domain.APIKey, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, user_id, name, key_prefix, key_hash, last_used, expires_at, created_at
+		FROM auth.api_keys
+		WHERE user_id = $1
+		ORDER BY created_at DESC
+	`, userID)
+	if err != nil {
+		return nil, apperrors.Internal("list api keys", err)
+	}
+	defer rows.Close()
+
+	var keys []*domain.APIKey
+	for rows.Next() {
+		var k domain.APIKey
+		if err := rows.Scan(
+			&k.ID, &k.UserID, &k.Name, &k.KeyPrefix, &k.KeyHash,
+			&k.LastUsed, &k.ExpiresAt, &k.CreatedAt,
+		); err != nil {
+			return nil, apperrors.Internal("scan api key", err)
+		}
+		keys = append(keys, &k)
+	}
+	return keys, rows.Err()
+}
+
+func (r *UserRepository) DeleteAPIKey(ctx context.Context, id, userID string) error {
+	tag, err := r.db.Exec(ctx, `
+		DELETE FROM auth.api_keys WHERE id = $1 AND user_id = $2
+	`, id, userID)
+	if err != nil {
+		return apperrors.Internal("delete api key", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperrors.NotFound("api key not found")
+	}
+	return nil
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func hashToken(raw string) string {

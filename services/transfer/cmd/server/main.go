@@ -5,6 +5,7 @@ import (
 	stdlog "log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/gofiber/fiber/v3"
@@ -16,6 +17,7 @@ import (
 	"github.com/tenzoshare/tenzoshare/shared/pkg/config"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/database"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/jwtkeys"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/logger"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 )
@@ -57,7 +59,12 @@ func main() {
 	}
 
 	svc := service.New(repo, cfg, jsClient, log)
-	h := handlers.New(svc, cfg.JWT.Secret, getEnvOr("STORAGE_SERVICE_URL", "http://tenzoshare-storage:8083"))
+	h := handlers.New(svc, cfg.JWT.PrivateKeyPEM, getEnvOr("STORAGE_SERVICE_URL", "http://tenzoshare-storage:8083"))
+
+	pubKey, err := jwtkeys.ParsePublicKey(cfg.JWT.PublicKeyPEM)
+	if err != nil {
+		log.Fatal("failed to parse JWT public key", zap.Error(err))
+	}
 
 	app := fiber.New(fiber.Config{
 		AppName:      "tenzoshare-transfer",
@@ -65,6 +72,10 @@ func main() {
 		WriteTimeout: cfg.Server.WriteTimeout,
 		ErrorHandler: middleware.ErrorHandler,
 	})
+
+	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
+	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
 
 	app.Get("/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "service": "transfer"})
@@ -77,7 +88,7 @@ func main() {
 		return c.JSON(fiber.Map{"status": "ok", "service": "transfer"})
 	})
 
-	auth := middleware.JWTAuth(cfg.JWT.Secret)
+	auth := middleware.JWTAuth(pubKey)
 	v1 := app.Group("/api/v1/transfers", auth)
 	v1.Post("/", h.Create)
 	v1.Get("/", h.List)

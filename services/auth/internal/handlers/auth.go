@@ -288,6 +288,94 @@ func profileResponse(u *domain.User) fiber.Map {
 	return m
 }
 
+// ── API key management ────────────────────────────────────────────────────────
+
+type createAPIKeyRequest struct {
+	Name      string  `json:"name"       validate:"required,min=1,max=100"`
+	ExpiresAt *string `json:"expires_at"` // optional RFC3339; nil = no expiry
+}
+
+func (h *Handler) CreateAPIKey(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+
+	var req createAPIKeyRequest
+	if err := c.Bind().JSON(&req); err != nil {
+		return apperrors.BadRequest("invalid request body")
+	}
+	if err := validate.Struct(req); err != nil {
+		return apperrors.Validation(err.Error())
+	}
+
+	var expiresAt *time.Time
+	if req.ExpiresAt != nil {
+		t, err := time.Parse(time.RFC3339, *req.ExpiresAt)
+		if err != nil {
+			return apperrors.BadRequest("expires_at must be RFC3339 (e.g. 2027-01-01T00:00:00Z)")
+		}
+		if t.Before(time.Now()) {
+			return apperrors.BadRequest("expires_at must be in the future")
+		}
+		expiresAt = &t
+	}
+
+	result, err := h.svc.CreateAPIKey(c.Context(), userID, req.Name, expiresAt)
+	if err != nil {
+		return err
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+		"id":         result.ID,
+		"name":       result.Name,
+		"key":        result.RawKey, // shown once — client must save it
+		"key_prefix": result.KeyPrefix,
+		"expires_at": result.ExpiresAt,
+		"created_at": result.CreatedAt,
+	})
+}
+
+func (h *Handler) ListAPIKeys(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+
+	keys, err := h.svc.ListAPIKeys(c.Context(), userID)
+	if err != nil {
+		return err
+	}
+
+	out := make([]fiber.Map, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, fiber.Map{
+			"id":         k.ID,
+			"name":       k.Name,
+			"key_prefix": k.KeyPrefix,
+			"last_used":  k.LastUsed,
+			"expires_at": k.ExpiresAt,
+			"created_at": k.CreatedAt,
+		})
+	}
+	return c.JSON(fiber.Map{"api_keys": out})
+}
+
+func (h *Handler) DeleteAPIKey(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	id := c.Params("id")
+	if id == "" {
+		return apperrors.BadRequest("missing api key id")
+	}
+	if err := h.svc.DeleteAPIKey(c.Context(), id, userID); err != nil {
+		return err
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func tokenResponse(p *service.TokenPair) fiber.Map {

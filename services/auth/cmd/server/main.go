@@ -18,6 +18,7 @@ import (
 	"github.com/tenzoshare/tenzoshare/shared/pkg/config"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/database"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/jwtkeys"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/logger"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 )
@@ -63,7 +64,10 @@ func main() {
 	}
 
 	repo := repository.NewUserRepository(pool)
-	svc := service.New(repo, cfg, cacheClient, jsClient, log)
+	svc, err := service.New(repo, cfg, cacheClient, jsClient, log)
+	if err != nil {
+		log.Fatal("failed to initialise auth service", zap.Error(err))
+	}
 
 	bootstrapAdminEmail := strings.TrimSpace(os.Getenv("BOOTSTRAP_ADMIN_EMAIL"))
 	bootstrapAdminPassword := os.Getenv("BOOTSTRAP_ADMIN_PASSWORD")
@@ -75,6 +79,12 @@ func main() {
 		log.Warn("bootstrap admin not configured; set BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD")
 	}
 
+	// Parse RSA public key for JWT verification
+	pubKey, err := jwtkeys.ParsePublicKey(cfg.JWT.PublicKeyPEM)
+	if err != nil {
+		log.Fatal("failed to parse JWT public key", zap.Error(err))
+	}
+
 	h := handlers.New(svc)
 
 	app := fiber.New(fiber.Config{
@@ -83,6 +93,10 @@ func main() {
 		WriteTimeout: cfg.Server.WriteTimeout,
 		ErrorHandler: middleware.ErrorHandler,
 	})
+
+	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
+	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
 
 	app.Get("/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "service": "auth"})
@@ -102,12 +116,18 @@ func main() {
 	v1.Post("/password-reset/confirm", h.PasswordResetConfirm)
 
 	// authenticated
-	protected := v1.Group("", middleware.JWTAuth(cfg.JWT.Secret))
+	protected := v1.Group("", middleware.JWTAuth(pubKey))
 	protected.Post("/logout", h.Logout)
 	protected.Get("/me", h.Me)
 	protected.Patch("/me", h.UpdateMe)
 	protected.Post("/mfa/setup", h.MFASetup)
 	protected.Post("/mfa/verify", h.MFAVerify)
+
+	// API key management — /api/v1/users/apikeys
+	userRoutes := app.Group("/api/v1/users", middleware.JWTAuth(pubKey))
+	userRoutes.Get("/apikeys", h.ListAPIKeys)
+	userRoutes.Post("/apikeys", h.CreateAPIKey)
+	userRoutes.Delete("/apikeys/:id", h.DeleteAPIKey)
 
 	go func() {
 		log.Info("auth service starting", zap.String("port", cfg.Server.Port))
