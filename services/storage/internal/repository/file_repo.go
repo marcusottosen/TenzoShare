@@ -20,15 +20,15 @@ func NewFileRepository(db *pgxpool.Pool) *FileRepository {
 	return &FileRepository{db: db}
 }
 
-func (r *FileRepository) Create(ctx context.Context, ownerID, objectKey, filename, contentType string, sizeBytes int64) (*domain.File, error) {
+func (r *FileRepository) Create(ctx context.Context, ownerID, objectKey, filename, contentType string, sizeBytes int64, encryptionIV []byte) (*domain.File, error) {
 	var f domain.File
 	err := r.db.QueryRow(ctx, `
-		INSERT INTO storage.files (owner_id, object_key, filename, content_type, size_bytes)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, owner_id, object_key, filename, content_type, size_bytes, is_encrypted, created_at, deleted_at
-	`, ownerID, objectKey, filename, contentType, sizeBytes).Scan(
+		INSERT INTO storage.files (owner_id, object_key, filename, content_type, size_bytes, is_encrypted, encryption_iv)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, owner_id, object_key, filename, content_type, size_bytes, is_encrypted, encryption_iv, created_at, deleted_at
+	`, ownerID, objectKey, filename, contentType, sizeBytes, encryptionIV != nil, encryptionIV).Scan(
 		&f.ID, &f.OwnerID, &f.ObjectKey, &f.Filename,
-		&f.ContentType, &f.SizeBytes, &f.IsEncrypted, &f.CreatedAt, &f.DeletedAt,
+		&f.ContentType, &f.SizeBytes, &f.IsEncrypted, &f.EncryptionIV, &f.CreatedAt, &f.DeletedAt,
 	)
 	if err != nil {
 		return nil, apperrors.Internal("create file record", err)
@@ -39,12 +39,12 @@ func (r *FileRepository) Create(ctx context.Context, ownerID, objectKey, filenam
 func (r *FileRepository) GetByID(ctx context.Context, id string) (*domain.File, error) {
 	var f domain.File
 	err := r.db.QueryRow(ctx, `
-		SELECT id, owner_id, object_key, filename, content_type, size_bytes, is_encrypted, created_at, deleted_at
+		SELECT id, owner_id, object_key, filename, content_type, size_bytes, is_encrypted, encryption_iv, created_at, deleted_at
 		FROM storage.files
 		WHERE id = $1 AND deleted_at IS NULL
 	`, id).Scan(
 		&f.ID, &f.OwnerID, &f.ObjectKey, &f.Filename,
-		&f.ContentType, &f.SizeBytes, &f.IsEncrypted, &f.CreatedAt, &f.DeletedAt,
+		&f.ContentType, &f.SizeBytes, &f.IsEncrypted, &f.EncryptionIV, &f.CreatedAt, &f.DeletedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -57,7 +57,7 @@ func (r *FileRepository) GetByID(ctx context.Context, id string) (*domain.File, 
 
 func (r *FileRepository) ListByOwner(ctx context.Context, ownerID string, limit, offset int) ([]*domain.File, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT id, owner_id, object_key, filename, content_type, size_bytes, is_encrypted, created_at, deleted_at
+		SELECT id, owner_id, object_key, filename, content_type, size_bytes, is_encrypted, encryption_iv, created_at, deleted_at
 		FROM storage.files
 		WHERE owner_id = $1 AND deleted_at IS NULL
 		ORDER BY created_at DESC
@@ -73,7 +73,7 @@ func (r *FileRepository) ListByOwner(ctx context.Context, ownerID string, limit,
 		var f domain.File
 		if err := rows.Scan(
 			&f.ID, &f.OwnerID, &f.ObjectKey, &f.Filename,
-			&f.ContentType, &f.SizeBytes, &f.IsEncrypted, &f.CreatedAt, &f.DeletedAt,
+			&f.ContentType, &f.SizeBytes, &f.IsEncrypted, &f.EncryptionIV, &f.CreatedAt, &f.DeletedAt,
 		); err != nil {
 			return nil, apperrors.Internal("scan file row", err)
 		}

@@ -1,8 +1,14 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"strconv"
 	"time"
 
@@ -18,14 +24,25 @@ import (
 )
 
 type Handler struct {
-	repo    *repository.FileRepository
-	backend sharedStorage.Backend
-	js      *jetstream.Client
-	log     *zap.Logger
+	repo          *repository.FileRepository
+	backend       sharedStorage.Backend
+	js            *jetstream.Client
+	log           *zap.Logger
+	encryptionKey []byte // 32-byte AES-256 master key; nil = encryption disabled
 }
 
-func New(repo *repository.FileRepository, backend sharedStorage.Backend, js *jetstream.Client, log *zap.Logger) *Handler {
-	return &Handler{repo: repo, backend: backend, js: js, log: log}
+func New(repo *repository.FileRepository, backend sharedStorage.Backend, js *jetstream.Client, log *zap.Logger, encryptionKeyHex string) *Handler {
+	var encKey []byte
+	if encryptionKeyHex != "" {
+		k, err := hex.DecodeString(encryptionKeyHex)
+		if err != nil || len(k) != 32 {
+			log.Fatal("STORAGE_ENCRYPTION_KEY must be a 64-char hex string (32 bytes)")
+		}
+		encKey = k
+	} else {
+		log.Warn("STORAGE_ENCRYPTION_KEY not set — files will be stored unencrypted")
+	}
+	return &Handler{repo: repo, backend: backend, js: js, log: log, encryptionKey: encKey}
 }
 
 func (h *Handler) Upload(c fiber.Ctx) error {
@@ -43,7 +60,12 @@ func (h *Handler) Upload(c fiber.Ctx) error {
 	if err != nil {
 		return apperrors.Internal("open uploaded file", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
+
+	plaintext, err := io.ReadAll(f)
+	if err != nil {
+		return apperrors.Internal("read uploaded file", err)
+	}
 
 	objectKey := fmt.Sprintf("uploads/%s/%s/%s", ownerID, uuid.New().String(), fileHeader.Filename)
 	contentType := fileHeader.Header.Get("Content-Type")
@@ -51,14 +73,27 @@ func (h *Handler) Upload(c fiber.Ctx) error {
 		contentType = "application/octet-stream"
 	}
 
-	if err := h.backend.Upload(c.Context(), objectKey, f, fileHeader.Size, contentType); err != nil {
+	var uploadData []byte
+	var encIV []byte
+
+	if h.encryptionKey != nil {
+		ciphertext, iv, encErr := encryptAESGCM(plaintext, h.encryptionKey)
+		if encErr != nil {
+			return apperrors.Internal("encrypt file", encErr)
+		}
+		uploadData = ciphertext
+		encIV = iv
+	} else {
+		uploadData = plaintext
+	}
+
+	if err := h.backend.Upload(c.Context(), objectKey, bytes.NewReader(uploadData), int64(len(uploadData)), contentType); err != nil {
 		return apperrors.Internal("upload to object store", err)
 	}
 
-	record, err := h.repo.Create(c.Context(), ownerID, objectKey, fileHeader.Filename, contentType, fileHeader.Size)
+	record, err := h.repo.Create(c.Context(), ownerID, objectKey, fileHeader.Filename, contentType, int64(len(plaintext)), encIV)
 	if err != nil {
-		// best-effort cleanup
-		_ = h.backend.Delete(c.Context(), objectKey)
+		_ = h.backend.Delete(c.Context(), objectKey) // best-effort cleanup
 		return err
 	}
 
@@ -79,7 +114,6 @@ func (h *Handler) GetFile(c fiber.Ctx) error {
 		return err
 	}
 
-	// only the owner (or admin) can access
 	role, _ := c.Locals("userRole").(string)
 	if file.OwnerID != ownerID && role != "admin" {
 		return apperrors.Forbidden("access denied")
@@ -138,7 +172,6 @@ func (h *Handler) DeleteFile(c fiber.Ctx) error {
 	if err := h.repo.SoftDelete(c.Context(), id, file.OwnerID); err != nil {
 		return err
 	}
-	// fire-and-forget object deletion; a background job can clean up orphans
 	go func() { _ = h.backend.Delete(context.Background(), file.ObjectKey) }() //nolint:errcheck
 
 	h.publishAudit(c.Context(), "storage.delete", ownerID, id, nil)
@@ -146,6 +179,8 @@ func (h *Handler) DeleteFile(c fiber.Ctx) error {
 }
 
 // PresignURL returns a short-lived download URL.
+// For encrypted files this is a proxy URL via the storage service itself;
+// for unencrypted files it returns a direct MinIO presigned URL.
 func (h *Handler) PresignURL(c fiber.Ctx) error {
 	ownerID, _ := c.Locals("userID").(string)
 	id := c.Params("id")
@@ -160,12 +195,66 @@ func (h *Handler) PresignURL(c fiber.Ctx) error {
 		return apperrors.Forbidden("access denied")
 	}
 
+	// Encrypted files must be served through the authenticated download proxy.
+	// Return a marker so callers know to use the /download endpoint instead.
+	if file.IsEncrypted {
+		return c.JSON(fiber.Map{
+			"url":        nil,
+			"download":   fmt.Sprintf("/api/v1/files/%s/download", id),
+			"expires_in": 900,
+			"encrypted":  true,
+		})
+	}
+
 	url, err := h.backend.GetPresignedURL(c.Context(), file.ObjectKey, file.Filename, 15*time.Minute)
 	if err != nil {
 		return apperrors.Internal("generate presigned url", err)
 	}
 
-	return c.JSON(fiber.Map{"url": url, "expires_in": 900})
+	return c.JSON(fiber.Map{"url": url, "expires_in": 900, "encrypted": false})
+}
+
+// Download streams a (possibly encrypted) file to the authenticated caller.
+// GET /api/v1/files/:id/download
+// Requires a valid JWT Bearer token. Admins may download any file; users only their own.
+func (h *Handler) Download(c fiber.Ctx) error {
+	ownerID, _ := c.Locals("userID").(string)
+	id := c.Params("id")
+
+	file, err := h.repo.GetByID(c.Context(), id)
+	if err != nil {
+		return err
+	}
+
+	role, _ := c.Locals("userRole").(string)
+	if file.OwnerID != ownerID && role != "admin" {
+		return apperrors.Forbidden("access denied")
+	}
+
+	rc, err := h.backend.Download(c.Context(), file.ObjectKey)
+	if err != nil {
+		return apperrors.Internal("download from object store", err)
+	}
+	defer rc.Close() //nolint:errcheck
+
+	raw, err := io.ReadAll(rc)
+	if err != nil {
+		return apperrors.Internal("read object data", err)
+	}
+
+	var plaintext []byte
+	if file.IsEncrypted && len(file.EncryptionIV) > 0 && h.encryptionKey != nil {
+		plaintext, err = decryptAESGCM(raw, h.encryptionKey, file.EncryptionIV)
+		if err != nil {
+			return apperrors.Internal("decrypt file", err)
+		}
+	} else {
+		plaintext = raw
+	}
+
+	c.Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, file.Filename))
+	c.Set("Content-Type", file.ContentType)
+	return c.Send(plaintext)
 }
 
 func fileResponse(f *domain.File) fiber.Map {
@@ -175,6 +264,7 @@ func fileResponse(f *domain.File) fiber.Map {
 		"filename":     f.Filename,
 		"content_type": f.ContentType,
 		"size_bytes":   f.SizeBytes,
+		"is_encrypted": f.IsEncrypted,
 		"created_at":   f.CreatedAt,
 	}
 }
@@ -198,4 +288,43 @@ func (h *Handler) publishAudit(ctx context.Context, action, userID, fileID strin
 			h.log.Warn("failed to publish storage audit event", zap.String("action", action), zap.Error(err))
 		}
 	}()
+}
+
+// encryptAESGCM encrypts plaintext with AES-256-GCM using the provided 32-byte key.
+// Returns (ciphertext, iv, error). The IV (nonce) is stored in the DB and prepended to
+// the ciphertext in the stored object for self-contained recovery.
+func encryptAESGCM(plaintext, key []byte) ([]byte, []byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, nil, err
+	}
+	iv := make([]byte, gcm.NonceSize()) // 12 bytes
+	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+		return nil, nil, err
+	}
+	// Seal appends ciphertext+tag to iv → [iv | ciphertext | tag]
+	ciphertext := gcm.Seal(iv, iv, plaintext, nil)
+	return ciphertext, iv, nil
+}
+
+// decryptAESGCM decrypts AES-256-GCM ciphertext. The ciphertext must start with the IV.
+func decryptAESGCM(ciphertext, key, _ []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	nonceSize := gcm.NonceSize()
+	if len(ciphertext) < nonceSize {
+		return nil, fmt.Errorf("ciphertext too short")
+	}
+	iv, ct := ciphertext[:nonceSize], ciphertext[nonceSize:]
+	return gcm.Open(nil, iv, ct, nil)
 }
