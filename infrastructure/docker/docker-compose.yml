@@ -200,7 +200,7 @@ services:
       - tenzoshare-net
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.transfer.rule=PathPrefix(`/api/v1/transfers`) || PathPrefix(`/api/v1/t`)"
+      - "traefik.http.routers.transfer.rule=PathPrefix(`/api/v1/transfers`) || PathPrefix(`/api/v1/t`) || PathPrefix(`/api/v1/requests`) || PathPrefix(`/api/v1/r`)"
       - "traefik.http.services.transfer.loadbalancer.server.port=8082"
 
   # ── Storage (8083) ────────────────────────────────────────────────────────────
@@ -377,6 +377,18 @@ services:
     restart: unless-stopped
     ports:
       - "3003:80"
+    networks:
+      - tenzoshare-net
+
+  tenzoshare-request-ui:
+    image: tenzoshare/request-ui:local
+    build:
+      context: ../../
+      dockerfile: web/request-ui/Dockerfile
+    container_name: tenzoshare-request-ui
+    restart: unless-stopped
+    ports:
+      - "3002:80"
     networks:
       - tenzoshare-net
 

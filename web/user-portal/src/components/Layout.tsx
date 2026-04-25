@@ -23,11 +23,14 @@ export default function Layout() {
         <NavLink to="/transfers/new" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
           New Transfer
         </NavLink>
+        <NavLink to="/requests" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+          File Requests
+        </NavLink>
         <NavLink to="/settings" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
           Settings
         </NavLink>
         <div className="sidebar-spacer" />
-        <div className="sidebar-user">{user?.user_id?.slice(0, 8)}…</div>
+        <div className="sidebar-user">{user?.email ?? user?.user_id?.slice(0, 8) + '…'}</div>
         <button className="btn-link" onClick={handleLogout}>Logout</button>
       </nav>
       <main className="main-content">

@@ -18,7 +18,22 @@ export interface LoginResult {
 
 export interface MeResponse {
   user_id: string;
+  id?: string;
+  email?: string;
   role: string;
+  is_active?: boolean;
+  email_verified?: boolean;
+  mfa_enabled?: boolean;
+  created_at?: string;
+}
+
+export interface APIKey {
+  id: string;
+  name: string;
+  key?: string; // only present on creation
+  key_prefix: string;
+  expires_at?: string;
+  created_at: string;
 }
 
 export async function login(email: string, password: string): Promise<LoginResult> {
@@ -50,6 +65,13 @@ export async function getMe(): Promise<MeResponse> {
   return request<MeResponse>('/auth/me');
 }
 
+export async function changePassword(currentPassword: string, newPassword: string) {
+  return request<void>('/users/me', {
+    method: 'PATCH',
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
+}
+
 export async function setupMFA() {
   return request<{ secret: string; provisioning_uri: string }>('/auth/mfa/setup', {
     method: 'POST',
@@ -75,6 +97,21 @@ export async function confirmPasswordReset(token: string, newPassword: string) {
     method: 'POST',
     body: JSON.stringify({ token, new_password: newPassword }),
   });
+}
+
+export async function listAPIKeys(): Promise<{ keys: APIKey[] }> {
+  return request<{ keys: APIKey[] }>('/users/apikeys');
+}
+
+export async function createAPIKey(name: string, expiresAt?: string): Promise<APIKey> {
+  return request<APIKey>('/users/apikeys', {
+    method: 'POST',
+    body: JSON.stringify({ name, expires_at: expiresAt }),
+  });
+}
+
+export async function deleteAPIKey(id: string): Promise<void> {
+  return request<void>(`/users/apikeys/${id}`, { method: 'DELETE' });
 }
 
 export function storeTokens(res: TokenResponse) {

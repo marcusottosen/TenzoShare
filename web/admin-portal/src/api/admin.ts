@@ -84,3 +84,32 @@ export async function getStats(): Promise<SystemStats> {
 export async function getSystemHealth(): Promise<SystemHealthResponse> {
   return request<SystemHealthResponse>('/admin/system/health');
 }
+
+export interface AdminTransfer {
+  id: string;
+  owner_email: string;
+  name: string;
+  is_revoked: boolean;
+  expires_at: string | null;
+  download_count: number;
+  max_downloads: number | null;
+  created_at: string;
+  status: 'active' | 'expired' | 'revoked';
+}
+
+export interface TransfersListResponse {
+  transfers: AdminTransfer[];
+  total: number;
+}
+
+export async function listTransfers(params?: {
+  limit?: number;
+  offset?: number;
+  status?: 'all' | 'active' | 'expired' | 'revoked';
+}): Promise<TransfersListResponse> {
+  const qs = new URLSearchParams();
+  if (params?.limit) qs.set('limit', String(params.limit));
+  if (params?.offset) qs.set('offset', String(params.offset));
+  if (params?.status) qs.set('status', params.status);
+  return request<TransfersListResponse>(`/admin/transfers?${qs.toString()}`);
+}

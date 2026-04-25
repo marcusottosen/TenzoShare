@@ -7,6 +7,8 @@ import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import AuditPage from './pages/AuditPage';
 import UsersPage from './pages/UsersPage';
+import TransfersPage from './pages/TransfersPage';
+import ApiKeysPage from './pages/ApiKeysPage';
 
 export default function App() {
   return (
@@ -19,6 +21,8 @@ export default function App() {
             <Route element={<Layout />}>
               <Route path="/" element={<DashboardPage />} />
               <Route path="/users" element={<UsersPage />} />
+              <Route path="/transfers" element={<TransfersPage />} />
+              <Route path="/apikeys" element={<ApiKeysPage />} />
               <Route path="/audit" element={<AuditPage />} />
             </Route>
           </Route>

@@ -115,6 +115,7 @@ func main() {
 	v1.Post("/users/:id/verify", handleVerifyEmail)
 	v1.Get("/stats", handleGetStats)
 	v1.Get("/system/health", handleSystemHealth)
+	v1.Get("/transfers", handleListTransfers)
 
 	go func() {
 		log.Info("admin service starting", zap.String("port", cfg.Server.Port))
@@ -342,6 +343,92 @@ func handleGetStats(c fiber.Ctx) error {
 	_ = db.QueryRow(c.Context(), "SELECT count(*), coalesce(sum(size_bytes),0) FROM storage.files WHERE deleted_at IS NULL").
 		Scan(&s.TotalFiles, &s.TotalStorageB)
 	return c.JSON(s)
+}
+
+// GET /api/v1/admin/transfers?limit=50&offset=0&status=all|active|expired|revoked
+func handleListTransfers(c fiber.Ctx) error {
+	limit := 50
+	offset := 0
+	if v := c.Query("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	if v := c.Query("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+	status := c.Query("status", "all")
+
+	where := ""
+	switch status {
+	case "active":
+		where = "WHERE t.is_revoked = false AND (t.expires_at IS NULL OR t.expires_at > now())"
+	case "expired":
+		where = "WHERE t.is_revoked = false AND t.expires_at IS NOT NULL AND t.expires_at <= now()"
+	case "revoked":
+		where = "WHERE t.is_revoked = true"
+	}
+
+	query := `
+		SELECT t.id, COALESCE(u.email, '—') AS owner_email, t.name, t.is_revoked,
+		       t.expires_at, t.download_count, t.max_downloads, t.created_at
+		FROM transfer.transfers t
+		LEFT JOIN auth.users u ON t.owner_id = u.id
+		` + where + `
+		ORDER BY t.created_at DESC
+		LIMIT $1 OFFSET $2`
+
+	rows, err := db.Query(c.Context(), query, limit, offset)
+	if err != nil {
+		return apperrors.Internal("failed to list transfers", err)
+	}
+	defer rows.Close()
+
+	type transferRow struct {
+		ID            string  `json:"id"`
+		OwnerEmail    string  `json:"owner_email"`
+		Name          string  `json:"name"`
+		IsRevoked     bool    `json:"is_revoked"`
+		ExpiresAt     *string `json:"expires_at"`
+		DownloadCount int     `json:"download_count"`
+		MaxDownloads  *int    `json:"max_downloads"`
+		CreatedAt     string  `json:"created_at"`
+		Status        string  `json:"status"`
+	}
+
+	transfers := make([]transferRow, 0)
+	for rows.Next() {
+		var r transferRow
+		var expiresAt *time.Time
+		var maxDownloads *int
+		var createdAt time.Time
+		if err := rows.Scan(&r.ID, &r.OwnerEmail, &r.Name, &r.IsRevoked,
+			&expiresAt, &r.DownloadCount, &maxDownloads, &createdAt); err != nil {
+			continue
+		}
+		r.CreatedAt = createdAt.Format(time.RFC3339)
+		if expiresAt != nil {
+			s := expiresAt.Format(time.RFC3339)
+			r.ExpiresAt = &s
+		}
+		r.MaxDownloads = maxDownloads
+		if r.IsRevoked {
+			r.Status = "revoked"
+		} else if expiresAt != nil && expiresAt.Before(time.Now()) {
+			r.Status = "expired"
+		} else {
+			r.Status = "active"
+		}
+		transfers = append(transfers, r)
+	}
+
+	var total int
+	countQuery := `SELECT count(*) FROM transfer.transfers t LEFT JOIN auth.users u ON t.owner_id = u.id ` + where
+	_ = db.QueryRow(c.Context(), countQuery).Scan(&total)
+
+	return c.JSON(fiber.Map{"transfers": transfers, "total": total})
 }
 
 // GET /api/v1/admin/system/health

@@ -37,3 +37,31 @@ export async function logout() {
 export function storeTokens(res: TokenResponse) {
   setTokens(res.access_token, res.refresh_token);
 }
+
+export interface APIKey {
+  id: string;
+  name: string;
+  key_prefix: string;
+  created_at: string;
+  expires_at: string | null;
+  key?: string; // only present on creation
+}
+
+export interface APIKeysListResponse {
+  keys: APIKey[];
+}
+
+export async function listAPIKeys(): Promise<APIKeysListResponse> {
+  return request<APIKeysListResponse>('/users/apikeys');
+}
+
+export async function createAPIKey(name: string): Promise<APIKey> {
+  return request<APIKey>('/users/apikeys', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function deleteAPIKey(id: string): Promise<void> {
+  return request<void>(`/users/apikeys/${id}`, { method: 'DELETE' });
+}

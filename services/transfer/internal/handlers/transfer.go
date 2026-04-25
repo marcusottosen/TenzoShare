@@ -23,12 +23,13 @@ import (
 
 type Handler struct {
 	svc           *service.TransferService
+	requestSvc    *service.RequestService
 	validate      *validator.Validate
 	jwtPrivateKey *rsa.PrivateKey
 	storageURL    string
 }
 
-func New(svc *service.TransferService, jwtPrivateKeyPEM, storageURL string) *Handler {
+func New(svc *service.TransferService, requestSvc *service.RequestService, jwtPrivateKeyPEM, storageURL string) *Handler {
 	privKey, err := jwtkeys.ParsePrivateKey(jwtPrivateKeyPEM)
 	if err != nil {
 		// panic at startup — private key is required for service-to-service tokens
@@ -36,6 +37,7 @@ func New(svc *service.TransferService, jwtPrivateKeyPEM, storageURL string) *Han
 	}
 	return &Handler{
 		svc:           svc,
+		requestSvc:    requestSvc,
 		validate:      validator.New(),
 		jwtPrivateKey: privKey,
 		storageURL:    storageURL,
@@ -232,7 +234,8 @@ func (h *Handler) DownloadURL(c fiber.Ctx) error {
 	// Issue a short-lived (30 s) service JWT with role=admin so the Storage
 	// service's existing presign endpoint accepts the request without needing the
 	// file owner's credentials.
-	svcToken, err := h.issueServiceToken()
+	// The transfer owner's UUID is used as the subject (presign doesn't create records).
+	svcToken, err := h.issueServiceToken(result.Transfer.OwnerID)
 	if err != nil {
 		return apperrors.Internal("issue service token", err)
 	}
@@ -288,10 +291,11 @@ func (h *Handler) ListRecipients(c fiber.Ctx) error {
 
 // issueServiceToken mints a short-lived (30 s) RS256 JWT with role=admin for
 // internal service-to-service calls. The Storage service's JWT middleware accepts it.
-func (h *Handler) issueServiceToken() (string, error) {
+// subject must be a valid UUID (used as owner_id by the Storage service).
+func (h *Handler) issueServiceToken(subject string) (string, error) {
 	now := time.Now()
 	claims := jwt.MapClaims{
-		"sub":  "service-transfer",
+		"sub":  subject,
 		"role": "admin",
 		"jti":  uuid.New().String(),
 		"iat":  now.Unix(),

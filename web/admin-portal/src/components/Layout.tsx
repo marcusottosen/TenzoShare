@@ -24,8 +24,14 @@ export default function Layout() {
         <NavLink to="/users" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
           Users
         </NavLink>
+        <NavLink to="/transfers" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+          Transfers
+        </NavLink>
         <NavLink to="/audit" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
           Audit Logs
+        </NavLink>
+        <NavLink to="/apikeys" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+          API Keys
         </NavLink>
         <div className="sidebar-spacer" />
         <div className="sidebar-user">{user?.user_id?.slice(0, 8)}… ({user?.role})</div>

@@ -46,6 +46,7 @@ func main() {
 	defer pool.Close()
 
 	repo := repository.NewTransferRepository(pool)
+	requestRepo := repository.NewRequestRepository(pool)
 
 	// NATS JetStream — non-fatal if unavailable
 	jsClient, err := jetstream.New(cfg.NATS.URL)
@@ -60,7 +61,9 @@ func main() {
 	}
 
 	svc := service.New(repo, cfg, jsClient, log)
-	h := handlers.New(svc, cfg.JWT.PrivateKeyPEM, getEnvOr("STORAGE_SERVICE_URL", "http://tenzoshare-storage:8083"))
+	storageURL := getEnvOr("STORAGE_SERVICE_URL", "http://tenzoshare-storage:8083")
+	requestSvc := service.NewRequestService(requestRepo, cfg, jsClient, log, storageURL)
+	h := handlers.New(svc, requestSvc, cfg.JWT.PrivateKeyPEM, storageURL)
 
 	pubKey, err := jwtkeys.ParsePublicKey(cfg.JWT.PublicKeyPEM)
 	if err != nil {
@@ -96,6 +99,17 @@ func main() {
 	v1.Get("/:id", h.Get)
 	v1.Get("/:id/recipients", h.ListRecipients)
 	v1.Delete("/:id", h.Revoke)
+
+	// File request endpoints (auth required — owner manages requests)
+	requests := app.Group("/api/v1/requests", auth)
+	requests.Post("/", h.CreateFileRequest)
+	requests.Get("/", h.ListFileRequests)
+	requests.Get("/:id", h.GetFileRequest)
+	requests.Delete("/:id", h.DeactivateFileRequest)
+
+	// Public file request endpoints (no auth — guests view and upload)
+	app.Get("/api/v1/r/:slug", h.GetPublicFileRequest)
+	app.Post("/api/v1/r/:slug/upload", h.UploadToRequest)
 
 	// Background goroutine: expire stale transfers every 5 minutes.
 	go func() {
