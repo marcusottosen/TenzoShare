@@ -57,7 +57,7 @@ func main() {
 	}
 
 	svc := service.New(repo, cfg, jsClient, log)
-	h := handlers.New(svc)
+	h := handlers.New(svc, cfg.JWT.Secret, getEnvOr("STORAGE_SERVICE_URL", "http://tenzoshare-storage:8083"))
 
 	app := fiber.New(fiber.Config{
 		AppName:      "tenzoshare-transfer",
@@ -72,6 +72,7 @@ func main() {
 
 	// Public: access a transfer by slug (downloaders, no auth required)
 	app.Get("/api/v1/t/:slug", h.Access)
+	app.Get("/api/v1/t/:slug/files/:fileId/download", h.DownloadURL)
 	app.Get("/api/v1/transfers/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "service": "transfer"})
 	})

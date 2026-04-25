@@ -31,11 +31,11 @@ func (r *TransferRepository) Create(ctx context.Context, t *domain.Transfer, fil
 	var out domain.Transfer
 	err = tx.QueryRow(ctx, `
 		INSERT INTO transfer.transfers
-			(owner_id, recipient_email, slug, password_hash, max_downloads, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, owner_id, recipient_email, slug, password_hash, max_downloads, download_count, expires_at, is_revoked, created_at
-	`, t.OwnerID, t.RecipientEmail, t.Slug, t.PasswordHash, t.MaxDownloads, t.ExpiresAt).Scan(
-		&out.ID, &out.OwnerID, &out.RecipientEmail, &out.Slug, &out.PasswordHash,
+			(owner_id, name, description, recipient_email, slug, password_hash, max_downloads, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id, owner_id, name, description, recipient_email, slug, password_hash, max_downloads, download_count, expires_at, is_revoked, created_at
+	`, t.OwnerID, t.Name, t.Description, t.RecipientEmail, t.Slug, t.PasswordHash, t.MaxDownloads, t.ExpiresAt).Scan(
+		&out.ID, &out.OwnerID, &out.Name, &out.Description, &out.RecipientEmail, &out.Slug, &out.PasswordHash,
 		&out.MaxDownloads, &out.DownloadCount, &out.ExpiresAt, &out.IsRevoked, &out.CreatedAt,
 	)
 	if err != nil {
@@ -60,11 +60,11 @@ func (r *TransferRepository) Create(ctx context.Context, t *domain.Transfer, fil
 func (r *TransferRepository) GetBySlug(ctx context.Context, slug string) (*domain.Transfer, error) {
 	var t domain.Transfer
 	err := r.db.QueryRow(ctx, `
-		SELECT id, owner_id, recipient_email, slug, password_hash, max_downloads, download_count, expires_at, is_revoked, created_at
+		SELECT id, owner_id, name, description, recipient_email, slug, password_hash, max_downloads, download_count, expires_at, is_revoked, created_at
 		FROM transfer.transfers
 		WHERE slug = $1
 	`, slug).Scan(
-		&t.ID, &t.OwnerID, &t.RecipientEmail, &t.Slug, &t.PasswordHash,
+		&t.ID, &t.OwnerID, &t.Name, &t.Description, &t.RecipientEmail, &t.Slug, &t.PasswordHash,
 		&t.MaxDownloads, &t.DownloadCount, &t.ExpiresAt, &t.IsRevoked, &t.CreatedAt,
 	)
 	if err != nil {
@@ -80,11 +80,11 @@ func (r *TransferRepository) GetBySlug(ctx context.Context, slug string) (*domai
 func (r *TransferRepository) GetByID(ctx context.Context, id string) (*domain.Transfer, error) {
 	var t domain.Transfer
 	err := r.db.QueryRow(ctx, `
-		SELECT id, owner_id, recipient_email, slug, password_hash, max_downloads, download_count, expires_at, is_revoked, created_at
+		SELECT id, owner_id, name, description, recipient_email, slug, password_hash, max_downloads, download_count, expires_at, is_revoked, created_at
 		FROM transfer.transfers
 		WHERE id = $1
 	`, id).Scan(
-		&t.ID, &t.OwnerID, &t.RecipientEmail, &t.Slug, &t.PasswordHash,
+		&t.ID, &t.OwnerID, &t.Name, &t.Description, &t.RecipientEmail, &t.Slug, &t.PasswordHash,
 		&t.MaxDownloads, &t.DownloadCount, &t.ExpiresAt, &t.IsRevoked, &t.CreatedAt,
 	)
 	if err != nil {
@@ -99,7 +99,7 @@ func (r *TransferRepository) GetByID(ctx context.Context, id string) (*domain.Tr
 // ListByOwner returns all transfers belonging to ownerID (newest first).
 func (r *TransferRepository) ListByOwner(ctx context.Context, ownerID string, limit, offset int) ([]*domain.Transfer, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT id, owner_id, recipient_email, slug, password_hash, max_downloads, download_count, expires_at, is_revoked, created_at
+		SELECT id, owner_id, name, description, recipient_email, slug, password_hash, max_downloads, download_count, expires_at, is_revoked, created_at
 		FROM transfer.transfers
 		WHERE owner_id = $1
 		ORDER BY created_at DESC
@@ -114,7 +114,7 @@ func (r *TransferRepository) ListByOwner(ctx context.Context, ownerID string, li
 	for rows.Next() {
 		var t domain.Transfer
 		if err := rows.Scan(
-			&t.ID, &t.OwnerID, &t.RecipientEmail, &t.Slug, &t.PasswordHash,
+			&t.ID, &t.OwnerID, &t.Name, &t.Description, &t.RecipientEmail, &t.Slug, &t.PasswordHash,
 			&t.MaxDownloads, &t.DownloadCount, &t.ExpiresAt, &t.IsRevoked, &t.CreatedAt,
 		); err != nil {
 			return nil, apperrors.Internal("scan transfer", err)

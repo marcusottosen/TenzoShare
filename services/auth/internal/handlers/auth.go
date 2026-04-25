@@ -1,9 +1,12 @@
 package handlers
 
 import (
+	"time"
+
 	"github.com/go-playground/validator/v10"
 	"github.com/gofiber/fiber/v3"
 
+	"github.com/tenzoshare/tenzoshare/services/auth/internal/domain"
 	"github.com/tenzoshare/tenzoshare/services/auth/internal/service"
 	apperrors "github.com/tenzoshare/tenzoshare/shared/pkg/errors"
 )
@@ -229,16 +232,60 @@ func (h *Handler) PasswordResetConfirm(c fiber.Ctx) error {
 // ── Me ────────────────────────────────────────────────────────────────────────
 
 func (h *Handler) Me(c fiber.Ctx) error {
-	claims, _ := c.Locals("claims").(*interface{})
 	userID, _ := c.Locals("userID").(string)
-	_ = claims
 	if userID == "" {
 		return apperrors.Unauthorized("unauthenticated")
 	}
-	return c.JSON(fiber.Map{
-		"user_id": userID,
-		"role":    c.Locals("userRole"),
-	})
+	user, err := h.svc.GetMe(c.Context(), userID)
+	if err != nil {
+		return err
+	}
+	return c.JSON(profileResponse(user))
+}
+
+// UpdateMe PATCH /me — allows password change.
+func (h *Handler) UpdateMe(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := c.Bind().JSON(&req); err != nil {
+		return apperrors.BadRequest("invalid JSON")
+	}
+	if req.CurrentPassword == "" || req.NewPassword == "" {
+		return apperrors.Validation("current_password and new_password are required")
+	}
+
+	if err := h.svc.ChangePassword(c.Context(), service.ChangePasswordParams{
+		UserID:          userID,
+		CurrentPassword: req.CurrentPassword,
+		NewPassword:     req.NewPassword,
+	}); err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"message": "password updated"})
+}
+
+func profileResponse(u *domain.User) fiber.Map {
+	m := fiber.Map{
+		"id":             u.ID,
+		"email":          u.Email,
+		"role":           string(u.Role),
+		"is_active":      u.IsActive,
+		"email_verified": u.EmailVerified,
+		"mfa_enabled":    u.MFAEnabled,
+		"created_at":     u.CreatedAt,
+		"updated_at":     u.UpdatedAt,
+	}
+	if u.LockedUntil != nil && u.LockedUntil.After(time.Now()) {
+		m["locked_until"] = u.LockedUntil
+	}
+	return m
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

@@ -42,6 +42,28 @@ func (r *UserRepository) Create(ctx context.Context, email, passwordHash string,
 	return &u, nil
 }
 
+func (r *UserRepository) UpsertAdminByEmail(ctx context.Context, email, passwordHash string) (*domain.User, error) {
+	var u domain.User
+	err := r.db.QueryRow(ctx, `
+		INSERT INTO auth.users (email, password_hash, role, is_active, email_verified)
+		VALUES ($1, $2, $3, true, true)
+		ON CONFLICT (email) DO UPDATE
+		SET password_hash = EXCLUDED.password_hash,
+		    role = EXCLUDED.role,
+		    is_active = true,
+		    email_verified = true,
+		    updated_at = now()
+		RETURNING id, email, password_hash, role, is_active, email_verified, created_at, updated_at
+	`, email, passwordHash, string(domain.RoleAdmin)).Scan(
+		&u.ID, &u.Email, &u.PasswordHash, &u.Role,
+		&u.IsActive, &u.EmailVerified, &u.CreatedAt, &u.UpdatedAt,
+	)
+	if err != nil {
+		return nil, apperrors.Internal("upsert bootstrap admin", err)
+	}
+	return &u, nil
+}
+
 func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*domain.User, error) {
 	var u domain.User
 	err := r.db.QueryRow(ctx, `

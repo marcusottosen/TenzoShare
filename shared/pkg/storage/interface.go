@@ -24,7 +24,9 @@ type Backend interface {
 	Delete(ctx context.Context, key string) error
 
 	// GetPresignedURL returns a time-limited URL for direct client access.
-	GetPresignedURL(ctx context.Context, key string, expiry time.Duration) (string, error)
+	// filename is used to set Content-Disposition: attachment; filename="<filename>" so browsers
+	// download the file rather than displaying it inline.
+	GetPresignedURL(ctx context.Context, key, filename string, expiry time.Duration) (string, error)
 
 	// Exists returns true if an object with the given key exists.
 	Exists(ctx context.Context, key string) (bool, error)

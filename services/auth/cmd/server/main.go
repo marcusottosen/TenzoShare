@@ -5,6 +5,7 @@ import (
 	stdlog "log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/gofiber/fiber/v3"
@@ -63,6 +64,17 @@ func main() {
 
 	repo := repository.NewUserRepository(pool)
 	svc := service.New(repo, cfg, cacheClient, jsClient, log)
+
+	bootstrapAdminEmail := strings.TrimSpace(os.Getenv("BOOTSTRAP_ADMIN_EMAIL"))
+	bootstrapAdminPassword := os.Getenv("BOOTSTRAP_ADMIN_PASSWORD")
+	if bootstrapAdminEmail != "" && bootstrapAdminPassword != "" {
+		if err := svc.EnsureBootstrapAdmin(ctx, bootstrapAdminEmail, bootstrapAdminPassword); err != nil {
+			log.Fatal("failed to ensure bootstrap admin", zap.Error(err))
+		}
+	} else {
+		log.Warn("bootstrap admin not configured; set BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD")
+	}
+
 	h := handlers.New(svc)
 
 	app := fiber.New(fiber.Config{
@@ -93,6 +105,7 @@ func main() {
 	protected := v1.Group("", middleware.JWTAuth(cfg.JWT.Secret))
 	protected.Post("/logout", h.Logout)
 	protected.Get("/me", h.Me)
+	protected.Patch("/me", h.UpdateMe)
 	protected.Post("/mfa/setup", h.MFASetup)
 	protected.Post("/mfa/verify", h.MFAVerify)
 

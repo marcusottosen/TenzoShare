@@ -86,6 +86,7 @@ type JWTConfig struct {
 // S3Config holds S3-compatible object storage parameters.
 type S3Config struct {
 	Endpoint  string
+	PublicURL string // optional public URL used to rewrite presigned URLs for browser access
 	Region    string
 	Bucket    string
 	AccessKey string
@@ -151,6 +152,7 @@ func Load() (*Config, error) {
 
 	// S3 / MinIO
 	cfg.S3.Endpoint = getEnv("S3_ENDPOINT", "http://localhost:9000")
+	cfg.S3.PublicURL = getEnv("S3_PUBLIC_URL", "") // e.g. http://192.168.10.150:9000
 	cfg.S3.Region = getEnv("S3_REGION", "us-east-1")
 	cfg.S3.Bucket = getEnv("S3_BUCKET", "tenzoshare")
 	cfg.S3.AccessKey = getEnv("S3_ACCESS_KEY", "")

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -15,7 +16,7 @@ import (
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
 )
 
-const defaultSlugBytes = 12 // 96-bit slug → 16 URL-safe base64 chars
+const defaultSlugBytes = 32 // 256-bit slug → 43 URL-safe base64 chars — astronomically hard to guess
 
 // TransferService handles business logic for creating and accessing transfers.
 type TransferService struct {
@@ -32,11 +33,13 @@ func New(repo *repository.TransferRepository, cfg *config.Config, js *jetstream.
 // CreateParams carries creation inputs from the handler.
 type CreateParams struct {
 	OwnerID        string
+	Name           string
+	Description    string
 	FileIDs        []string
 	RecipientEmail string
 	Password       string // empty = no password
 	MaxDownloads   int
-	ExpiresIn      time.Duration // 0 = no expiry
+	ExpiresIn      time.Duration // must be > 0 and <= 90 days
 }
 
 // CreateResult is returned to the handler after successful creation.
@@ -45,9 +48,20 @@ type CreateResult struct {
 	FileIDs  []string
 }
 
+const maxExpiresIn = 90 * 24 * time.Hour // 3 months
+
 func (s *TransferService) Create(ctx context.Context, p CreateParams) (*CreateResult, error) {
+	if strings.TrimSpace(p.Name) == "" {
+		return nil, apperrors.Validation("name is required")
+	}
 	if len(p.FileIDs) == 0 {
 		return nil, apperrors.Validation("at least one file is required")
+	}
+	if p.ExpiresIn <= 0 {
+		return nil, apperrors.Validation("expiry is required")
+	}
+	if p.ExpiresIn > maxExpiresIn {
+		return nil, apperrors.Validation("expiry cannot exceed 90 days")
 	}
 
 	slug, err := crypto.RandomToken(defaultSlugBytes)
@@ -57,6 +71,8 @@ func (s *TransferService) Create(ctx context.Context, p CreateParams) (*CreateRe
 
 	t := &domain.Transfer{
 		OwnerID:        p.OwnerID,
+		Name:           strings.TrimSpace(p.Name),
+		Description:    strings.TrimSpace(p.Description),
 		RecipientEmail: p.RecipientEmail,
 		Slug:           slug,
 		MaxDownloads:   p.MaxDownloads,
@@ -189,6 +205,46 @@ func (s *TransferService) Access(ctx context.Context, p AccessParams) (*AccessRe
 			s.log.Warn("failed to increment download count", zap.String("transfer_id", t.ID), zap.Error(err))
 		}
 	}()
+
+	return &AccessResult{Transfer: t, FileIDs: fileIDs}, nil
+}
+
+// Validate checks a transfer is accessible (slug + password + state) without
+// modifying any state. Used by the file-download endpoint so the download counter
+// is not incremented a second time.
+func (s *TransferService) Validate(ctx context.Context, p AccessParams) (*AccessResult, error) {
+	t, err := s.repo.GetBySlug(ctx, p.Slug)
+	if err != nil {
+		return nil, err
+	}
+
+	if t.IsRevoked {
+		return nil, apperrors.Forbidden("this transfer has been revoked")
+	}
+	if t.ExpiresAt != nil && time.Now().After(*t.ExpiresAt) {
+		return nil, apperrors.Forbidden("this transfer has expired")
+	}
+	if t.MaxDownloads > 0 && t.DownloadCount >= t.MaxDownloads {
+		return nil, apperrors.Forbidden("download limit reached")
+	}
+
+	if t.PasswordHash != "" {
+		if p.Password == "" {
+			return nil, apperrors.Unauthorized("password required")
+		}
+		ok, err := crypto.VerifyPassword(p.Password, t.PasswordHash, s.cfg.App.BaseURL)
+		if err != nil {
+			return nil, apperrors.Internal("verify transfer password", err)
+		}
+		if !ok {
+			return nil, apperrors.Unauthorized("incorrect password")
+		}
+	}
+
+	fileIDs, err := s.repo.GetFileIDs(ctx, t.ID)
+	if err != nil {
+		return nil, err
+	}
 
 	return &AccessResult{Transfer: t, FileIDs: fileIDs}, nil
 }
