@@ -18,6 +18,7 @@ import (
 	"go.uber.org/zap"
 
 	appconfig "github.com/tenzoshare/tenzoshare/shared/pkg/config"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/logger"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 )
@@ -38,6 +39,20 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// ── NATS JetStream ─────────────────────────────────────────────────────────
+	var js *jetstream.Client
+	if cfg.NATS.URL != "" {
+		js, err = jetstream.New(cfg.NATS.URL)
+		if err != nil {
+			log.Warn("failed to connect to NATS — upload events will not be published", zap.Error(err))
+		} else {
+			if err2 := js.EnsureStreams(ctx); err2 != nil {
+				log.Warn("failed to ensure NATS streams", zap.Error(err2))
+			}
+			log.Info("connected to NATS JetStream")
+		}
+	}
+
 	// ── Build AWS S3 client for MinIO ──────────────────────────────────────────
 	s3Client, err := buildS3Client(ctx, cfg)
 	if err != nil {
@@ -56,6 +71,11 @@ func main() {
 	})
 	if err != nil {
 		log.Fatal("failed to create tusd handler", zap.Error(err))
+	}
+
+	// ── Wire upload-completion events to NATS ──────────────────────────────────
+	if js != nil {
+		go publishCompletions(ctx, tusHandler, js, log)
 	}
 
 	// Wrap tusd net/http handler → fasthttp → fiber.Handler
@@ -98,6 +118,35 @@ func main() {
 	log.Info("shutting down upload service")
 	if err := app.Shutdown(); err != nil {
 		log.Error("shutdown error", zap.Error(err))
+	}
+}
+
+// publishCompletions drains the tusd CompleteUploads channel and publishes each
+// completed upload as an UPLOADS.completed event to NATS JetStream.
+func publishCompletions(ctx context.Context, h *handler.Handler, js *jetstream.Client, log *zap.Logger) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-h.CompleteUploads:
+			if !ok {
+				return
+			}
+			info := event.Upload
+			payload := map[string]any{
+				"upload_id":    info.ID,
+				"size":         info.Size,
+				"filename":     info.MetaData["filename"],
+				"filetype":     info.MetaData["filetype"],
+				"owner_id":     info.MetaData["owner_id"],
+				"storage_type": "s3",
+			}
+			if err := js.Publish(ctx, "UPLOADS.completed", payload); err != nil {
+				log.Warn("failed to publish UPLOADS.completed", zap.String("upload_id", info.ID), zap.Error(err))
+			} else {
+				log.Info("published UPLOADS.completed", zap.String("upload_id", info.ID))
+			}
+		}
 	}
 }
 

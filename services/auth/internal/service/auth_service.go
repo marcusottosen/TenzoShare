@@ -417,3 +417,50 @@ func (s *AuthService) publishAudit(ctx context.Context, ev AuditEvent) {
 		}
 	}()
 }
+
+// GetMe returns the full profile for the authenticated user.
+func (s *AuthService) GetMe(ctx context.Context, userID string) (*domain.User, error) {
+	return s.repo.GetByID(ctx, userID)
+}
+
+// ChangePasswordParams holds inputs for a self-service password change.
+type ChangePasswordParams struct {
+	UserID          string
+	CurrentPassword string
+	NewPassword     string
+}
+
+// ChangePassword verifies the current password then replaces it with the new one.
+func (s *AuthService) ChangePassword(ctx context.Context, p ChangePasswordParams) error {
+	user, err := s.repo.GetByID(ctx, p.UserID)
+	if err != nil {
+		return err
+	}
+
+	ok, err := crypto.VerifyPassword(p.CurrentPassword, user.PasswordHash, s.cfg.App.BaseURL)
+	if err != nil {
+		return apperrors.Internal("verify current password", err)
+	}
+	if !ok {
+		return apperrors.Unauthorized("current password is incorrect")
+	}
+
+	if len(p.NewPassword) < 8 {
+		return apperrors.Validation("new password must be at least 8 characters")
+	}
+
+	newHash, err := crypto.HashPassword(p.NewPassword, s.cfg.App.BaseURL)
+	if err != nil {
+		return apperrors.Internal("hash new password", err)
+	}
+	if err := s.repo.UpdatePassword(ctx, p.UserID, newHash); err != nil {
+		return err
+	}
+
+	s.publishAudit(ctx, AuditEvent{
+		Action:  "auth.password_changed",
+		UserID:  p.UserID,
+		Success: true,
+	})
+	return nil
+}

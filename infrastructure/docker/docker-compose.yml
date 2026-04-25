@@ -342,6 +342,44 @@ services:
       - "traefik.http.routers.admin.rule=PathPrefix(`/api/v1/admin`)"
       - "traefik.http.services.admin.loadbalancer.server.port=8087"
 
+# ── UI Applications ────────────────────────────────────────────────────────────
+
+  tenzoshare-web:
+    image: tenzoshare/user-portal:local
+    build:
+      context: ../../
+      dockerfile: web/user-portal/Dockerfile
+    container_name: tenzoshare-web
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    networks:
+      - tenzoshare-net
+
+  tenzoshare-admin-ui:
+    image: tenzoshare/admin-portal:local
+    build:
+      context: ../../
+      dockerfile: web/admin-portal/Dockerfile
+    container_name: tenzoshare-admin-ui
+    restart: unless-stopped
+    ports:
+      - "3001:80"
+    networks:
+      - tenzoshare-net
+
+  tenzoshare-download-ui:
+    image: tenzoshare/download-ui:local
+    build:
+      context: ../../
+      dockerfile: web/download-ui/Dockerfile
+    container_name: tenzoshare-download-ui
+    restart: unless-stopped
+    ports:
+      - "3003:80"
+    networks:
+      - tenzoshare-net
+
 # ── Named Volumes ──────────────────────────────────────────────────────────────
 volumes:
   postgres-data:

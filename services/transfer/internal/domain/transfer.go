@@ -18,6 +18,17 @@ type Transfer struct {
 	CreatedAt      time.Time
 }
 
+// Status returns the current lifecycle state: "revoked", "expired", or "active".
+func (t *Transfer) Status() string {
+	if t.IsRevoked {
+		return "revoked"
+	}
+	if t.ExpiresAt != nil && time.Now().After(*t.ExpiresAt) {
+		return "expired"
+	}
+	return "active"
+}
+
 // TransferFile is a row in transfer.transfer_files.
 type TransferFile struct {
 	TransferID string

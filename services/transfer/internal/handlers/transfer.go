@@ -113,8 +113,13 @@ func (h *Handler) List(c fiber.Ctx) error {
 		return err
 	}
 
+	// By default exclude expired and revoked; pass ?status=all to include them.
+	statusFilter := c.Query("status")
 	items := make([]fiber.Map, 0, len(transfers))
 	for _, t := range transfers {
+		if statusFilter != "all" && t.Status() != "active" {
+			continue
+		}
 		items = append(items, transferResponse(t, nil))
 	}
 	return c.JSON(fiber.Map{"transfers": items, "limit": limit, "offset": offset})
@@ -159,6 +164,7 @@ func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 		"name":           t.Name,
 		"description":    t.Description,
 		"slug":           t.Slug,
+		"status":         t.Status(),
 		"max_downloads":  t.MaxDownloads,
 		"download_count": t.DownloadCount,
 		"is_revoked":     t.IsRevoked,

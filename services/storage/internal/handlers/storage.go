@@ -8,23 +8,26 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 
 	"github.com/tenzoshare/tenzoshare/services/storage/internal/domain"
 	"github.com/tenzoshare/tenzoshare/services/storage/internal/repository"
 	apperrors "github.com/tenzoshare/tenzoshare/shared/pkg/errors"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
 	sharedStorage "github.com/tenzoshare/tenzoshare/shared/pkg/storage"
 )
 
 type Handler struct {
 	repo    *repository.FileRepository
 	backend sharedStorage.Backend
+	js      *jetstream.Client
+	log     *zap.Logger
 }
 
-func New(repo *repository.FileRepository, backend sharedStorage.Backend) *Handler {
-	return &Handler{repo: repo, backend: backend}
+func New(repo *repository.FileRepository, backend sharedStorage.Backend, js *jetstream.Client, log *zap.Logger) *Handler {
+	return &Handler{repo: repo, backend: backend, js: js, log: log}
 }
 
-// Upload handles multipart file uploads.
 func (h *Handler) Upload(c fiber.Ctx) error {
 	ownerID, _ := c.Locals("userID").(string)
 	if ownerID == "" {
@@ -59,6 +62,10 @@ func (h *Handler) Upload(c fiber.Ctx) error {
 		return err
 	}
 
+	h.publishAudit(c.Context(), "storage.upload", ownerID, record.ID, map[string]any{
+		"filename": record.Filename,
+		"size":     record.SizeBytes,
+	})
 	return c.Status(fiber.StatusCreated).JSON(fileResponse(record))
 }
 
@@ -134,6 +141,7 @@ func (h *Handler) DeleteFile(c fiber.Ctx) error {
 	// fire-and-forget object deletion; a background job can clean up orphans
 	go func() { _ = h.backend.Delete(context.Background(), file.ObjectKey) }() //nolint:errcheck
 
+	h.publishAudit(c.Context(), "storage.delete", ownerID, id, nil)
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
@@ -169,4 +177,25 @@ func fileResponse(f *domain.File) fiber.Map {
 		"size_bytes":   f.SizeBytes,
 		"created_at":   f.CreatedAt,
 	}
+}
+
+func (h *Handler) publishAudit(ctx context.Context, action, userID, fileID string, extra map[string]any) {
+	if h.js == nil {
+		return
+	}
+	ev := map[string]any{
+		"action":    action,
+		"user_id":   userID,
+		"file_id":   fileID,
+		"success":   true,
+		"timestamp": time.Now(),
+	}
+	for k, v := range extra {
+		ev[k] = v
+	}
+	go func() {
+		if err := h.js.Publish(ctx, "AUDIT.storage", ev); err != nil {
+			h.log.Warn("failed to publish storage audit event", zap.String("action", action), zap.Error(err))
+		}
+	}()
 }

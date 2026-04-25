@@ -105,6 +105,7 @@ func main() {
 	protected := v1.Group("", middleware.JWTAuth(cfg.JWT.Secret))
 	protected.Post("/logout", h.Logout)
 	protected.Get("/me", h.Me)
+	protected.Patch("/me", h.UpdateMe)
 	protected.Post("/mfa/setup", h.MFASetup)
 	protected.Post("/mfa/verify", h.MFAVerify)
 

@@ -15,6 +15,7 @@ import (
 	"github.com/tenzoshare/tenzoshare/services/storage/internal/repository"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/config"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/database"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/logger"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 )
@@ -47,7 +48,22 @@ func main() {
 	}
 
 	repo := repository.NewFileRepository(pool)
-	h := handlers.New(repo, minioBackend)
+
+	// ── NATS JetStream (optional — graceful degradation if unavailable) ────────
+	var js *jetstream.Client
+	if cfg.NATS.URL != "" {
+		js, err = jetstream.New(cfg.NATS.URL)
+		if err != nil {
+			log.Warn("failed to connect to NATS — audit events will not be published", zap.Error(err))
+		} else {
+			if err2 := js.EnsureStreams(ctx); err2 != nil {
+				log.Warn("failed to ensure NATS streams", zap.Error(err2))
+			}
+			log.Info("connected to NATS JetStream")
+		}
+	}
+
+	h := handlers.New(repo, minioBackend, js, log)
 
 	app := fiber.New(fiber.Config{
 		AppName:      "tenzoshare-storage",
