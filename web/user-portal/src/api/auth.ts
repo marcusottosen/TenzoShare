@@ -1,0 +1,82 @@
+import { request, setTokens } from './client';
+
+export interface TokenResponse {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+  token_type: string;
+}
+
+export interface LoginResult {
+  mfa_required?: boolean;
+  user_id?: string;
+  access_token?: string;
+  refresh_token?: string;
+  expires_in?: number;
+  token_type?: string;
+}
+
+export interface MeResponse {
+  user_id: string;
+  role: string;
+}
+
+export async function login(email: string, password: string): Promise<LoginResult> {
+  return request<LoginResult>('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export async function loginMFA(userId: string, otpCode: string): Promise<TokenResponse> {
+  return request<TokenResponse>('/auth/login/mfa', {
+    method: 'POST',
+    body: JSON.stringify({ user_id: userId, otp_code: otpCode }),
+  });
+}
+
+export async function register(email: string, password: string) {
+  return request<{ id: string; email: string; role: string }>('/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export async function logout() {
+  return request<void>('/auth/logout', { method: 'POST' });
+}
+
+export async function getMe(): Promise<MeResponse> {
+  return request<MeResponse>('/auth/me');
+}
+
+export async function setupMFA() {
+  return request<{ secret: string; provisioning_uri: string }>('/auth/mfa/setup', {
+    method: 'POST',
+  });
+}
+
+export async function verifyMFA(otpCode: string) {
+  return request<{ mfa_enabled: boolean }>('/auth/mfa/verify', {
+    method: 'POST',
+    body: JSON.stringify({ otp_code: otpCode }),
+  });
+}
+
+export async function requestPasswordReset(email: string) {
+  return request<{ message: string }>('/auth/password-reset/request', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+}
+
+export async function confirmPasswordReset(token: string, newPassword: string) {
+  return request<{ message: string }>('/auth/password-reset/confirm', {
+    method: 'POST',
+    body: JSON.stringify({ token, new_password: newPassword }),
+  });
+}
+
+export function storeTokens(res: TokenResponse) {
+  setTokens(res.access_token, res.refresh_token);
+}

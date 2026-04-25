@@ -6,12 +6,14 @@ import "time"
 type Transfer struct {
 	ID             string
 	OwnerID        string
-	RecipientEmail string    // empty = public link
-	Slug           string    // short URL token
-	PasswordHash   string    // empty = no password
-	MaxDownloads   int       // 0 = unlimited
+	Name           string // human-readable label, required
+	Description    string // optional longer note
+	RecipientEmail string // empty = public link
+	Slug           string // short URL token
+	PasswordHash   string // empty = no password
+	MaxDownloads   int    // 0 = unlimited
 	DownloadCount  int
-	ExpiresAt      *time.Time
+	ExpiresAt      *time.Time // always set; "never" is not permitted
 	IsRevoked      bool
 	CreatedAt      time.Time
 }

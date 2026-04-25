@@ -7,11 +7,12 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 
 	"github.com/tenzoshare/tenzoshare/services/storage/internal/domain"
 	"github.com/tenzoshare/tenzoshare/services/storage/internal/repository"
-	sharedStorage "github.com/tenzoshare/tenzoshare/shared/pkg/storage"
 	apperrors "github.com/tenzoshare/tenzoshare/shared/pkg/errors"
+	sharedStorage "github.com/tenzoshare/tenzoshare/shared/pkg/storage"
 )
 
 type Handler struct {
@@ -41,7 +42,7 @@ func (h *Handler) Upload(c fiber.Ctx) error {
 	}
 	defer f.Close()
 
-	objectKey := fmt.Sprintf("uploads/%s/%s", ownerID, fileHeader.Filename)
+	objectKey := fmt.Sprintf("uploads/%s/%s/%s", ownerID, uuid.New().String(), fileHeader.Filename)
 	contentType := fileHeader.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "application/octet-stream"

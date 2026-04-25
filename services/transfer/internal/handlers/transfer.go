@@ -1,11 +1,17 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"strconv"
 	"time"
 
-	"github.com/gofiber/fiber/v3"
 	"github.com/go-playground/validator/v10"
+	"github.com/gofiber/fiber/v3"
+	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/tenzoshare/tenzoshare/services/transfer/internal/domain"
 	"github.com/tenzoshare/tenzoshare/services/transfer/internal/service"
@@ -13,20 +19,29 @@ import (
 )
 
 type Handler struct {
-	svc      *service.TransferService
-	validate *validator.Validate
+	svc        *service.TransferService
+	validate   *validator.Validate
+	jwtSecret  string
+	storageURL string
 }
 
-func New(svc *service.TransferService) *Handler {
-	return &Handler{svc: svc, validate: validator.New()}
+func New(svc *service.TransferService, jwtSecret, storageURL string) *Handler {
+	return &Handler{
+		svc:        svc,
+		validate:   validator.New(),
+		jwtSecret:  jwtSecret,
+		storageURL: storageURL,
+	}
 }
 
 type createRequest struct {
-	FileIDs        []string `json:"file_ids" validate:"required,min=1,dive,uuid4"`
+	Name           string   `json:"name"            validate:"required,min=1,max=200"`
+	Description    string   `json:"description"     validate:"max=1000"`
+	FileIDs        []string `json:"file_ids"        validate:"required,min=1,dive,uuid4"`
 	RecipientEmail string   `json:"recipient_email" validate:"omitempty,email"`
 	Password       string   `json:"password"`
-	MaxDownloads   int      `json:"max_downloads" validate:"min=0"`
-	ExpiresInHours int      `json:"expires_in_hours" validate:"min=0"`
+	MaxDownloads   int      `json:"max_downloads"   validate:"min=0"`
+	ExpiresInHours int      `json:"expires_in_hours" validate:"required,min=1,max=2160"`
 }
 
 // Create POST /api/v1/transfers
@@ -44,18 +59,15 @@ func (h *Handler) Create(c fiber.Ctx) error {
 		return apperrors.Validation(err.Error())
 	}
 
-	var expiry time.Duration
-	if req.ExpiresInHours > 0 {
-		expiry = time.Duration(req.ExpiresInHours) * time.Hour
-	}
-
 	result, err := h.svc.Create(c.Context(), service.CreateParams{
 		OwnerID:        ownerID,
+		Name:           req.Name,
+		Description:    req.Description,
 		FileIDs:        req.FileIDs,
 		RecipientEmail: req.RecipientEmail,
 		Password:       req.Password,
 		MaxDownloads:   req.MaxDownloads,
-		ExpiresIn:      expiry,
+		ExpiresIn:      time.Duration(req.ExpiresInHours) * time.Hour,
 	})
 	if err != nil {
 		return err
@@ -141,14 +153,16 @@ func (h *Handler) Access(c fiber.Ctx) error {
 
 func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 	m := fiber.Map{
-		"id":              t.ID,
-		"owner_id":        t.OwnerID,
-		"slug":            t.Slug,
-		"max_downloads":   t.MaxDownloads,
-		"download_count":  t.DownloadCount,
-		"is_revoked":      t.IsRevoked,
-		"has_password":    t.PasswordHash != "",
-		"created_at":      t.CreatedAt,
+		"id":             t.ID,
+		"owner_id":       t.OwnerID,
+		"name":           t.Name,
+		"description":    t.Description,
+		"slug":           t.Slug,
+		"max_downloads":  t.MaxDownloads,
+		"download_count": t.DownloadCount,
+		"is_revoked":     t.IsRevoked,
+		"has_password":   t.PasswordHash != "",
+		"created_at":     t.CreatedAt,
 	}
 	if t.RecipientEmail != "" {
 		m["recipient_email"] = t.RecipientEmail
@@ -160,4 +174,104 @@ func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 		m["file_ids"] = fileIDs
 	}
 	return m
+}
+
+// DownloadURL returns a presigned download URL for a single file in a public transfer.
+//
+// GET /api/v1/t/:slug/files/:fileId/download[?password=...]
+//
+// This endpoint:
+//  1. Validates the transfer (slug, optional password, expiry, revocation, download limit).
+//  2. Confirms the requested file belongs to this transfer.
+//  3. Issues a short-lived internal service JWT and proxies to the Storage service
+//     presign endpoint. No auth is required from the caller.
+//
+// Response: { "url": "<presigned MinIO URL>", "expires_in": 900 }
+func (h *Handler) DownloadURL(c fiber.Ctx) error {
+	slug := c.Params("slug")
+	fileID := c.Params("fileId")
+	password := c.Query("password")
+
+	// Validate transfer without incrementing the download counter a second time
+	// (the counter is bumped when the recipient first fetches the transfer via Access).
+	result, err := h.svc.Validate(c.Context(), service.AccessParams{
+		Slug:     slug,
+		Password: password,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Confirm the file belongs to this transfer.
+	found := false
+	for _, fid := range result.FileIDs {
+		if fid == fileID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return apperrors.NotFound("file not found in this transfer")
+	}
+
+	// Issue a short-lived (30 s) service JWT with role=admin so the Storage
+	// service's existing presign endpoint accepts the request without needing the
+	// file owner's credentials.
+	svcToken, err := h.issueServiceToken()
+	if err != nil {
+		return apperrors.Internal("issue service token", err)
+	}
+
+	// Proxy the presign request to the Storage service.
+	presignURL, err := h.fetchPresignURL(c.Context(), fileID, svcToken)
+	if err != nil {
+		return apperrors.Internal("get presigned url from storage service", err)
+	}
+
+	return c.JSON(fiber.Map{"url": presignURL, "expires_in": 900})
+}
+
+// issueServiceToken mints a short-lived (30 s) HS256 JWT with role=admin for
+// internal service-to-service calls. The Storage service's JWT middleware accepts it.
+func (h *Handler) issueServiceToken() (string, error) {
+	now := time.Now()
+	claims := jwt.MapClaims{
+		"sub":  "service-transfer",
+		"role": "admin",
+		"iat":  now.Unix(),
+		"exp":  now.Add(30 * time.Second).Unix(),
+	}
+	t := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return t.SignedString([]byte(h.jwtSecret))
+}
+
+// fetchPresignURL calls the Storage service's presign endpoint using a service JWT.
+func (h *Handler) fetchPresignURL(ctx context.Context, fileID, token string) (string, error) {
+	endpoint := fmt.Sprintf("%s/api/v1/files/%s/presign", h.storageURL, fileID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("storage service unreachable: %w", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("storage service returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse {"url":"...","expires_in":900}
+	var parsed struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil || parsed.URL == "" {
+		return "", fmt.Errorf("parse storage response: %w", err)
+	}
+	return parsed.URL, nil
 }

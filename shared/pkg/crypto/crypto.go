@@ -121,10 +121,12 @@ func RandomBytes(n int) ([]byte, error) {
 }
 
 // RandomToken returns a URL-safe base64-encoded random token of byteLen random bytes.
+// No padding characters ('=') are included so the token is safe to use directly
+// as a URL path segment without percent-encoding.
 func RandomToken(byteLen int) (string, error) {
 	b, err := RandomBytes(byteLen)
 	if err != nil {
 		return "", err
 	}
-	return base64.URLEncoding.EncodeToString(b), nil
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
