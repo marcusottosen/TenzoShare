@@ -67,7 +67,12 @@ export default function AuditPage() {
 
   return (
     <div className="page">
-      <h1 className="page-title">Audit Logs</h1>
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">Audit Logs</h1>
+          <p className="page-subtitle">Real-time security and operational event trail</p>
+        </div>
+      </div>
 
       <form onSubmit={handleSearch}>
         <div className="filter-bar mb-16">

@@ -66,8 +66,11 @@ export default function DashboardPage() {
 
   return (
     <div className="page">
-      <div className="row mb-16" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1 className="page-title" style={{ margin: 0 }}>Dashboard</h1>
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">System Overview</h1>
+          <p className="page-subtitle">Infrastructure health and platform statistics</p>
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           {lastChecked && (
             <span className="text-sm">
@@ -86,23 +89,55 @@ export default function DashboardPage() {
       {stats && (
         <div className="stat-grid mb-16">
           <div className="stat-card">
-            <div className="stat-label">Total Users</div>
-            <div className="stat-value">{stats.total_users}</div>
-            {stats.new_users_30d > 0 && (
-              <div className="stat-trend">+{stats.new_users_30d} this month</div>
-            )}
+            <div className="stat-card-icon blue">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+              </svg>
+            </div>
+            <div className="stat-card-body">
+              <div className="stat-label">Total Users</div>
+              <div className="stat-value">{stats.total_users}</div>
+              {stats.new_users_30d > 0 && (
+                <div className="stat-trend">+{stats.new_users_30d} this month</div>
+              )}
+            </div>
           </div>
           <div className="stat-card">
-            <div className="stat-label">Active Transfers</div>
-            <div className="stat-value">{stats.total_transfers}</div>
+            <div className="stat-card-icon teal">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+                <polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+              </svg>
+            </div>
+            <div className="stat-card-body">
+              <div className="stat-label">Active Transfers</div>
+              <div className="stat-value">{stats.total_transfers}</div>
+            </div>
           </div>
           <div className="stat-card">
-            <div className="stat-label">Files Stored</div>
-            <div className="stat-value">{stats.total_files}</div>
+            <div className="stat-card-icon purple">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+              </svg>
+            </div>
+            <div className="stat-card-body">
+              <div className="stat-label">Files Stored</div>
+              <div className="stat-value">{stats.total_files}</div>
+            </div>
           </div>
           <div className="stat-card">
-            <div className="stat-label">Storage Used</div>
-            <div className="stat-value">{formatBytes(stats.total_storage_bytes)}</div>
+            <div className="stat-card-icon amber">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+                <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+              </svg>
+            </div>
+            <div className="stat-card-body">
+              <div className="stat-label">Storage Used</div>
+              <div className="stat-value">{formatBytes(stats.total_storage_bytes)}</div>
+            </div>
           </div>
         </div>
       )}

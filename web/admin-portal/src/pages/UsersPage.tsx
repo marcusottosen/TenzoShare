@@ -280,10 +280,13 @@ export default function UsersPage() {
         />
       )}
 
-      <div className="row mb-16" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1 className="page-title" style={{ margin: 0 }}>Users</h1>
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">User Management</h1>
+          <p className="page-subtitle">Manage accounts, roles, and access controls</p>
+        </div>
         <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
-          + Create User
+          + Add User
         </button>
       </div>
 

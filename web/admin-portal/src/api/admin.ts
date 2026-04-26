@@ -89,12 +89,28 @@ export interface AdminTransfer {
   id: string;
   owner_email: string;
   name: string;
+  description: string;
+  recipient_email: string;
+  slug: string;
   is_revoked: boolean;
+  has_password: boolean;
   expires_at: string | null;
   download_count: number;
   max_downloads: number | null;
+  file_count: number;
   created_at: string;
   status: 'active' | 'expired' | 'revoked';
+}
+
+export interface TransferFile {
+  file_id: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+}
+
+export interface AdminTransferDetail extends AdminTransfer {
+  files: TransferFile[];
 }
 
 export interface TransfersListResponse {
@@ -112,4 +128,12 @@ export async function listTransfers(params?: {
   if (params?.offset) qs.set('offset', String(params.offset));
   if (params?.status) qs.set('status', params.status);
   return request<TransfersListResponse>(`/admin/transfers?${qs.toString()}`);
+}
+
+export async function getTransfer(id: string): Promise<AdminTransferDetail> {
+  return request<AdminTransferDetail>(`/admin/transfers/${id}`);
+}
+
+export async function revokeTransfer(id: string): Promise<void> {
+  await request<{ ok: boolean }>(`/admin/transfers/${id}/revoke`, { method: 'POST' });
 }

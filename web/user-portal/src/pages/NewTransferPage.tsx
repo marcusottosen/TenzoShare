@@ -2,6 +2,8 @@ import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import { listFiles, uploadFile, type FileRecord, type UploadProgress } from '../api/files';
 import { createTransfer } from '../api/transfers';
+import { pendingUploadStore } from '../stores/pendingUpload';
+import { pendingFileStore } from '../stores/pendingFileStore';
 
 function fmtBytes(n: number) {
   if (n < 1024) return `${n} B`;
@@ -64,6 +66,54 @@ export default function NewTransferPage() {
       .catch(() => {})
       .finally(() => setLoadingLibrary(false));
   }, [showLibrary]);
+
+  // Consume any files forwarded from the dashboard upload zone
+  useEffect(() => {
+    const pending = pendingUploadStore.get();
+    if (pending.length === 0) return;
+    pendingUploadStore.clear();
+    // Synthesize a fake ChangeEvent-like call by uploading directly
+    (async () => {
+      for (const file of pending) {
+        setUploading(true);
+        setUploadProgress(null);
+        try {
+          const record = await uploadFile(file, (p) => setUploadProgress(p));
+          setStaged((prev) =>
+            prev.some((s) => s.id === record.id)
+              ? prev
+              : [...prev, { id: record.id, filename: record.filename, size_bytes: record.size_bytes }],
+          );
+          setLibrary((prev) =>
+            prev.some((f) => f.id === record.id) ? prev : [record, ...prev],
+          );
+        } catch (err: any) {
+          setError(`Upload failed for "${file.name}": ${err.message}`);
+        } finally {
+          setUploading(false);
+          setUploadProgress(null);
+        }
+      }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Consume existing file records forwarded from My Files share button
+  useEffect(() => {
+    const preStaged = pendingFileStore.get();
+    if (preStaged.length === 0) return;
+    pendingFileStore.clear();
+    setStaged((prev) => {
+      const next = [...prev];
+      for (const f of preStaged) {
+        if (!next.some((s) => s.id === f.id)) {
+          next.push({ id: f.id, filename: f.filename, size_bytes: f.size_bytes });
+        }
+      }
+      return next;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handlePickFiles(e: React.ChangeEvent<HTMLInputElement>) {
     const picked = Array.from(e.target.files ?? []);
@@ -137,7 +187,7 @@ export default function NewTransferPage() {
   const stagedIds = new Set(staged.map((f) => f.id));
 
   return (
-    <div className="page">
+    <div className="page page-wide" style={{ maxWidth: 860 }}>
       <div className="page-header">
         <div>
           <h1 className="page-title">New Transfer</h1>

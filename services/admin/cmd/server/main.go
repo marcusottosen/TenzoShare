@@ -116,6 +116,8 @@ func main() {
 	v1.Get("/stats", handleGetStats)
 	v1.Get("/system/health", handleSystemHealth)
 	v1.Get("/transfers", handleListTransfers)
+	v1.Get("/transfers/:id", handleGetTransfer)
+	v1.Post("/transfers/:id/revoke", handleRevokeTransfer)
 
 	go func() {
 		log.Info("admin service starting", zap.String("port", cfg.Server.Port))
@@ -345,6 +347,53 @@ func handleGetStats(c fiber.Ctx) error {
 	return c.JSON(s)
 }
 
+// transferRow is the shared shape for list and detail responses.
+type transferRow struct {
+	ID             string  `json:"id"`
+	OwnerEmail     string  `json:"owner_email"`
+	Name           string  `json:"name"`
+	Description    string  `json:"description"`
+	RecipientEmail string  `json:"recipient_email"`
+	Slug           string  `json:"slug"`
+	IsRevoked      bool    `json:"is_revoked"`
+	ExpiresAt      *string `json:"expires_at"`
+	DownloadCount  int     `json:"download_count"`
+	MaxDownloads   *int    `json:"max_downloads"`
+	CreatedAt      string  `json:"created_at"`
+	Status         string  `json:"status"`
+	HasPassword    bool    `json:"has_password"`
+	FileCount      int     `json:"file_count"`
+}
+
+type transferFile struct {
+	FileID      string `json:"file_id"`
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type"`
+	SizeBytes   int64  `json:"size_bytes"`
+}
+
+type transferDetail struct {
+	transferRow
+	Files []transferFile `json:"files"`
+}
+
+func scanTransferRow(r *transferRow, expiresAt *time.Time, maxDownloads *int, createdAt time.Time, passwordHash *string) {
+	r.CreatedAt = createdAt.Format(time.RFC3339)
+	if expiresAt != nil {
+		s := expiresAt.Format(time.RFC3339)
+		r.ExpiresAt = &s
+	}
+	r.MaxDownloads = maxDownloads
+	r.HasPassword = passwordHash != nil && *passwordHash != ""
+	if r.IsRevoked {
+		r.Status = "revoked"
+	} else if expiresAt != nil && expiresAt.Before(time.Now()) {
+		r.Status = "expired"
+	} else {
+		r.Status = "active"
+	}
+}
+
 // GET /api/v1/admin/transfers?limit=50&offset=0&status=all|active|expired|revoked
 func handleListTransfers(c fiber.Ctx) error {
 	limit := 50
@@ -372,8 +421,12 @@ func handleListTransfers(c fiber.Ctx) error {
 	}
 
 	query := `
-		SELECT t.id, COALESCE(u.email, '—') AS owner_email, t.name, t.is_revoked,
-		       t.expires_at, t.download_count, t.max_downloads, t.created_at
+		SELECT t.id, COALESCE(u.email, '—') AS owner_email, t.name,
+		       COALESCE(t.description, '') AS description,
+		       COALESCE(t.recipient_email, '') AS recipient_email,
+		       t.slug, t.is_revoked, t.expires_at, t.download_count,
+		       t.max_downloads, t.created_at, t.password_hash,
+		       (SELECT count(*) FROM transfer.transfer_files tf WHERE tf.transfer_id = t.id) AS file_count
 		FROM transfer.transfers t
 		LEFT JOIN auth.users u ON t.owner_id = u.id
 		` + where + `
@@ -386,41 +439,19 @@ func handleListTransfers(c fiber.Ctx) error {
 	}
 	defer rows.Close()
 
-	type transferRow struct {
-		ID            string  `json:"id"`
-		OwnerEmail    string  `json:"owner_email"`
-		Name          string  `json:"name"`
-		IsRevoked     bool    `json:"is_revoked"`
-		ExpiresAt     *string `json:"expires_at"`
-		DownloadCount int     `json:"download_count"`
-		MaxDownloads  *int    `json:"max_downloads"`
-		CreatedAt     string  `json:"created_at"`
-		Status        string  `json:"status"`
-	}
-
 	transfers := make([]transferRow, 0)
 	for rows.Next() {
 		var r transferRow
 		var expiresAt *time.Time
 		var maxDownloads *int
 		var createdAt time.Time
-		if err := rows.Scan(&r.ID, &r.OwnerEmail, &r.Name, &r.IsRevoked,
-			&expiresAt, &r.DownloadCount, &maxDownloads, &createdAt); err != nil {
+		var passwordHash *string
+		if err := rows.Scan(&r.ID, &r.OwnerEmail, &r.Name, &r.Description,
+			&r.RecipientEmail, &r.Slug, &r.IsRevoked,
+			&expiresAt, &r.DownloadCount, &maxDownloads, &createdAt, &passwordHash, &r.FileCount); err != nil {
 			continue
 		}
-		r.CreatedAt = createdAt.Format(time.RFC3339)
-		if expiresAt != nil {
-			s := expiresAt.Format(time.RFC3339)
-			r.ExpiresAt = &s
-		}
-		r.MaxDownloads = maxDownloads
-		if r.IsRevoked {
-			r.Status = "revoked"
-		} else if expiresAt != nil && expiresAt.Before(time.Now()) {
-			r.Status = "expired"
-		} else {
-			r.Status = "active"
-		}
+		scanTransferRow(&r, expiresAt, maxDownloads, createdAt, passwordHash)
 		transfers = append(transfers, r)
 	}
 
@@ -429,6 +460,71 @@ func handleListTransfers(c fiber.Ctx) error {
 	_ = db.QueryRow(c.Context(), countQuery).Scan(&total)
 
 	return c.JSON(fiber.Map{"transfers": transfers, "total": total})
+}
+
+// GET /api/v1/admin/transfers/:id
+func handleGetTransfer(c fiber.Ctx) error {
+	id := c.Params("id")
+
+	var r transferRow
+	var expiresAt *time.Time
+	var maxDownloads *int
+	var createdAt time.Time
+	var passwordHash *string
+	err := db.QueryRow(c.Context(), `
+		SELECT t.id, COALESCE(u.email, '—') AS owner_email, t.name,
+		       COALESCE(t.description, '') AS description,
+		       COALESCE(t.recipient_email, '') AS recipient_email,
+		       t.slug, t.is_revoked, t.expires_at, t.download_count,
+		       t.max_downloads, t.created_at, t.password_hash,
+		       (SELECT count(*) FROM transfer.transfer_files tf WHERE tf.transfer_id = t.id) AS file_count
+		FROM transfer.transfers t
+		LEFT JOIN auth.users u ON t.owner_id = u.id
+		WHERE t.id = $1`, id,
+	).Scan(&r.ID, &r.OwnerEmail, &r.Name, &r.Description,
+		&r.RecipientEmail, &r.Slug, &r.IsRevoked,
+		&expiresAt, &r.DownloadCount, &maxDownloads, &createdAt, &passwordHash, &r.FileCount)
+	if err != nil {
+		return apperrors.NotFound("transfer not found")
+	}
+	scanTransferRow(&r, expiresAt, maxDownloads, createdAt, passwordHash)
+
+	// Fetch files via cross-schema join
+	fileRows, err := db.Query(c.Context(), `
+		SELECT f.id, f.filename, f.content_type, f.size_bytes
+		FROM transfer.transfer_files tf
+		JOIN storage.files f ON f.id = tf.file_id
+		WHERE tf.transfer_id = $1 AND f.deleted_at IS NULL
+		ORDER BY f.filename`, id)
+	if err != nil {
+		return apperrors.Internal("list transfer files", err)
+	}
+	defer fileRows.Close()
+
+	files := make([]transferFile, 0)
+	for fileRows.Next() {
+		var f transferFile
+		if err := fileRows.Scan(&f.FileID, &f.Filename, &f.ContentType, &f.SizeBytes); err != nil {
+			continue
+		}
+		files = append(files, f)
+	}
+
+	return c.JSON(transferDetail{transferRow: r, Files: files})
+}
+
+// POST /api/v1/admin/transfers/:id/revoke
+func handleRevokeTransfer(c fiber.Ctx) error {
+	id := c.Params("id")
+	tag, err := db.Exec(c.Context(),
+		"UPDATE transfer.transfers SET is_revoked = true WHERE id = $1", id)
+	if err != nil {
+		return apperrors.Internal("revoke transfer", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperrors.NotFound("transfer not found")
+	}
+	return c.JSON(fiber.Map{"ok": true})
 }
 
 // GET /api/v1/admin/system/health
