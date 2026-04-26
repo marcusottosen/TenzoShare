@@ -1,8 +1,15 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router';
-import { login, storeTokens } from '../api/auth';
+import { login, storeTokens, getMe } from '../api/auth';
 import { useAuth } from '../stores/auth';
-import { getMe } from '../api/auth';
+
+function IconTenz() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+    </svg>
+  );
+}
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -38,37 +45,36 @@ export default function LoginPage() {
   return (
     <div className="auth-page">
       <div className="auth-box">
-        <h1>Sign in to TenzoShare</h1>
+        <div className="auth-logo">
+          <div className="auth-logo-icon"><IconTenz /></div>
+          <span className="auth-logo-name">TenzoShare</span>
+        </div>
+        <h1>Welcome back</h1>
+        <p className="auth-sub">Sign in to your account to continue</p>
+
         {error && <div className="alert alert-error">{error}</div>}
+
         <form onSubmit={handleSubmit}>
           <div className="form-group">
-            <label>Email</label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              autoFocus
-            />
+            <label>Email address</label>
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" required autoFocus />
           </div>
           <div className="form-group">
-            <label>Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
+            <div className="form-label-row">
+              <label style={{ margin: 0 }}>Password</label>
+              <Link to="/forgot-password" className="text-link" style={{ fontSize: 12 }}>Forgot password?</Link>
+            </div>
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" required />
           </div>
-          <button className="btn btn-primary btn-full" type="submit" disabled={loading}>
+          <button className="btn btn-primary btn-full btn-lg" type="submit" disabled={loading} style={{ marginTop: 8 }}>
             {loading ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
-        <div className="mt-16 text-sm">
-          <Link to="/forgot-password" className="text-link">Forgot password?</Link>
-          {' · '}
-          <Link to="/register" className="text-link">Create account</Link>
-        </div>
+
+        <p style={{ textAlign: 'center', marginTop: 20, fontSize: 14, color: 'var(--color-text-muted)' }}>
+          Don't have an account?{' '}
+          <Link to="/register" className="text-link">Create one</Link>
+        </p>
       </div>
     </div>
   );

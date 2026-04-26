@@ -98,11 +98,16 @@ export default function SettingsPage() {
 
   return (
     <div className="page">
-      <h1 className="page-title">Settings</h1>
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">Settings</h1>
+          <p className="page-subtitle">Manage your account and preferences</p>
+        </div>
+      </div>
 
       {/* Profile */}
       <div className="card">
-        <div className="card-title">Account</div>
+        <div className="card-header"><h2 className="card-title">Account</h2></div>
         {profileLoading ? (
           <p className="text-sm" style={{ color: 'var(--color-text-muted)' }}>Loading…</p>
         ) : profile ? (
@@ -163,7 +168,7 @@ export default function SettingsPage() {
 
       {/* Change password */}
       <div className="card">
-        <div className="card-title">Change password</div>
+        <div className="card-header"><h2 className="card-title">Change password</h2></div>
         {pwError && <div className="alert alert-error">{pwError}</div>}
         {pwSuccess && <div className="alert alert-success">{pwSuccess}</div>}
         <form onSubmit={handleChangePassword}>
@@ -206,7 +211,7 @@ export default function SettingsPage() {
 
       {/* Two-Factor Authentication */}
       <div className="card">
-        <div className="card-title">Two-Factor Authentication (TOTP)</div>
+        <div className="card-header"><h2 className="card-title">Two-Factor Authentication</h2></div>
         {mfaError && <div className="alert alert-error">{mfaError}</div>}
         {mfaSuccess && <div className="alert alert-success">{mfaSuccess}</div>}
         {!mfaSetupData ? (

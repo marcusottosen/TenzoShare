@@ -79,10 +79,10 @@ export default function TransferDetailPage() {
 
   return (
     <div className="page">
-      <div className="row mb-16" style={{ alignItems: 'center', justifyContent: 'space-between' }}>
+      <div className="page-header">
         <div>
           <Link to="/" className="text-link text-sm">← Transfers</Link>
-          <h1 className="page-title" style={{ marginTop: 4, marginBottom: 0 }}>Transfer detail</h1>
+          <h1 className="page-title" style={{ marginTop: 4, marginBottom: 0 }}>Transfer details</h1>
         </div>
         {!transfer.is_revoked && (
           <button className="btn btn-danger" onClick={handleRevoke} disabled={revoking}>
@@ -92,7 +92,7 @@ export default function TransferDetailPage() {
       </div>
 
       <div className="card">
-        <div className="card-title">Info</div>
+        <div className="card-header"><h2 className="card-title">Info</h2></div>
         <table style={{ width: 'auto', border: 'none' }}>
           <tbody>
             <tr>

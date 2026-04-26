@@ -288,8 +288,11 @@ export default function RequestsPage() {
 
   return (
     <div className="page">
-      <div className="row mb-16" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1 className="page-title" style={{ margin: 0 }}>File Requests</h1>
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">File Requests</h1>
+          <p className="page-subtitle">Request files from anyone — no account needed</p>
+        </div>
         {!showCreate && (
           <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
             + New request

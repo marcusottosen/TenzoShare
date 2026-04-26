@@ -138,14 +138,19 @@ export default function NewTransferPage() {
 
   return (
     <div className="page">
-      <h1 className="page-title">New Transfer</h1>
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">New Transfer</h1>
+          <p className="page-subtitle">Upload files and create a shareable link</p>
+        </div>
+      </div>
       {error && <div className="alert alert-error">{error}</div>}
 
       <form onSubmit={handleSubmit}>
 
         {/* ── Transfer details ─────────────────────────────────── */}
         <div className="card">
-          <div className="card-title">Details</div>
+          <div className="card-header"><h2 className="card-title">Details</h2></div>
           <div className="form-group">
             <label>Name <span style={{ color: 'var(--color-danger)' }}>*</span></label>
             <input
@@ -175,7 +180,7 @@ export default function NewTransferPage() {
 
         {/* ── Files ────────────────────────────────────────────── */}
         <div className="card">
-          <div className="card-title">Files</div>
+          <div className="card-header"><h2 className="card-title">Files</h2></div>
 
           {/* Upload drop-zone */}
           <div
@@ -302,7 +307,7 @@ export default function NewTransferPage() {
 
         {/* ── Options ──────────────────────────────────────────── */}
         <div className="card">
-          <div className="card-title">Options</div>
+          <div className="card-header"><h2 className="card-title">Options</h2></div>
           <div className="row">
             <div className="col">
               <div className="form-group">
