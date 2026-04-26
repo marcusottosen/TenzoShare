@@ -18,9 +18,21 @@ import (
 
 const defaultSlugBytes = 32 // 256-bit slug → 43 URL-safe base64 chars — astronomically hard to guess
 
+// transferRepository is the data-access interface required by TransferService.
+// It is satisfied by *repository.TransferRepository.
+type transferRepository interface {
+	Create(ctx context.Context, t *domain.Transfer, fileIDs []string) (*domain.Transfer, error)
+	GetBySlug(ctx context.Context, slug string) (*domain.Transfer, error)
+	GetByID(ctx context.Context, id string) (*domain.Transfer, error)
+	ListByOwner(ctx context.Context, ownerID string, limit, offset int) ([]*domain.Transfer, error)
+	GetFileIDs(ctx context.Context, transferID string) ([]string, error)
+	IncrementDownloads(ctx context.Context, id string) error
+	Revoke(ctx context.Context, id, ownerID string) error
+}
+
 // TransferService handles business logic for creating and accessing transfers.
 type TransferService struct {
-	repo *repository.TransferRepository
+	repo transferRepository
 	cfg  *config.Config
 	js   *jetstream.Client
 	log  *zap.Logger

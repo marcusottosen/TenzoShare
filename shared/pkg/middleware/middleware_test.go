@@ -279,3 +279,100 @@ func TestTokenRevocation_NilChecker(t *testing.T) {
 		t.Errorf("expected 200 got %d", code)
 	}
 }
+
+// ── OptionalJWTAuth tests ─────────────────────────────────────────────────────
+
+func TestOptionalJWTAuth_ValidToken_SetsLocals(t *testing.T) {
+	key := generateRSAKey(t)
+	tok := validToken(t, key, "user")
+
+	app := newTestApp(func(c fiber.Ctx) error {
+		uid, _ := c.Locals("userID").(string)
+		if uid == "" {
+			return c.SendStatus(401)
+		}
+		return c.SendStatus(200)
+	}, middleware.OptionalJWTAuth(&key.PublicKey))
+
+	code := get(app, "/test", "Bearer "+tok)
+	if code != 200 {
+		t.Errorf("expected 200 got %d", code)
+	}
+}
+
+func TestOptionalJWTAuth_NoToken_StillPasses(t *testing.T) {
+	key := generateRSAKey(t)
+
+	app := newTestApp(func(c fiber.Ctx) error {
+		// userID should be empty — no token provided
+		uid, _ := c.Locals("userID").(string)
+		if uid != "" {
+			return c.SendStatus(500)
+		}
+		return c.SendStatus(200)
+	}, middleware.OptionalJWTAuth(&key.PublicKey))
+
+	code := get(app, "/test", "")
+	if code != 200 {
+		t.Errorf("expected 200 (unauthenticated) got %d", code)
+	}
+}
+
+func TestOptionalJWTAuth_InvalidToken_StillPasses(t *testing.T) {
+	key := generateRSAKey(t)
+
+	app := newTestApp(func(c fiber.Ctx) error {
+		return c.SendStatus(200)
+	}, middleware.OptionalJWTAuth(&key.PublicKey))
+
+	// Bad token — should be treated as unauthenticated, not 401
+	code := get(app, "/test", "Bearer badtoken.notvalid.jwt")
+	if code != 200 {
+		t.Errorf("expected 200 (invalid token gracefully ignored) got %d", code)
+	}
+}
+
+func TestOptionalJWTAuth_WrongKey_StillPasses(t *testing.T) {
+	signingKey := generateRSAKey(t)
+	verifyKey := generateRSAKey(t)
+	tok := validToken(t, signingKey, "user")
+
+	app := newTestApp(func(c fiber.Ctx) error {
+		return c.SendStatus(200)
+	}, middleware.OptionalJWTAuth(&verifyKey.PublicKey))
+
+	code := get(app, "/test", "Bearer "+tok)
+	if code != 200 {
+		t.Errorf("expected 200 (wrong key treated as unauthenticated) got %d", code)
+	}
+}
+
+// ── SecurityHeaders tests ─────────────────────────────────────────────────────
+
+func TestSecurityHeaders_Present(t *testing.T) {
+	app := fiber.New()
+	app.Use(middleware.SecurityHeaders())
+	app.Get("/test", func(c fiber.Ctx) error {
+		return c.SendStatus(200)
+	})
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	io.ReadAll(resp.Body) //nolint:errcheck
+
+	headers := map[string]string{
+		"X-Frame-Options":        "DENY",
+		"X-Content-Type-Options": "nosniff",
+		"X-Xss-Protection":       "1; mode=block",
+	}
+	for h, want := range headers {
+		got := resp.Header.Get(h)
+		if got != want {
+			t.Errorf("header %s = %q, want %q", h, got, want)
+		}
+	}
+}

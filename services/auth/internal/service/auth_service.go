@@ -59,8 +59,31 @@ type AuditEvent struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
+// userRepository is the data-access interface required by AuthService.
+// It is satisfied by *repository.UserRepository.
+type userRepository interface {
+	Create(ctx context.Context, email, passwordHash string, role domain.Role) (*domain.User, error)
+	UpsertAdminByEmail(ctx context.Context, email, passwordHash string) (*domain.User, error)
+	GetByEmail(ctx context.Context, email string) (*domain.User, error)
+	GetByID(ctx context.Context, id string) (*domain.User, error)
+	StoreRefreshToken(ctx context.Context, userID, rawToken string, expiresAt time.Time) error
+	ConsumeRefreshToken(ctx context.Context, rawToken string) (*domain.RefreshToken, error)
+	RevokeAllRefreshTokens(ctx context.Context, userID string) error
+	GetMFASecret(ctx context.Context, userID string) (*domain.MFASecret, error)
+	UpsertMFASecret(ctx context.Context, userID, encryptedSecret string) error
+	EnableMFA(ctx context.Context, userID string) error
+	StorePasswordResetToken(ctx context.Context, userID, rawToken string, expiresAt time.Time) error
+	ConsumePasswordResetToken(ctx context.Context, rawToken string) (*domain.PasswordResetToken, error)
+	UpdatePassword(ctx context.Context, userID, newHash string) error
+	RecordFailedLogin(ctx context.Context, userID string, maxAttempts int, lockDuration time.Duration) error
+	RecordSuccessfulLogin(ctx context.Context, userID string) error
+	CreateAPIKey(ctx context.Context, userID, name, keyHash, keyPrefix string, expiresAt *time.Time) (*domain.APIKey, error)
+	ListAPIKeys(ctx context.Context, userID string) ([]*domain.APIKey, error)
+	DeleteAPIKey(ctx context.Context, id, userID string) error
+}
+
 type AuthService struct {
-	repo       *repository.UserRepository
+	repo       userRepository
 	cfg        *config.Config
 	cache      *cache.Client
 	js         *jetstream.Client
@@ -72,8 +95,7 @@ type AuthService struct {
 
 func New(
 	repo *repository.UserRepository,
-	cfg *config.Config,
-	cache *cache.Client,
+	cfg *config.Config, cache *cache.Client,
 	js *jetstream.Client,
 	log *zap.Logger,
 ) (*AuthService, error) {
