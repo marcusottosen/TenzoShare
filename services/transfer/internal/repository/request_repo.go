@@ -71,12 +71,17 @@ func (r *RequestRepository) GetByID(ctx context.Context, id string) (*domain.Fil
 	return &out, nil
 }
 
-// ListByOwner returns all file requests for a given owner, newest first.
+// ListByOwner returns all file requests for a given owner, newest first, with submission counts.
 func (r *RequestRepository) ListByOwner(ctx context.Context, ownerID string, limit, offset int) ([]*domain.FileRequest, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT id, owner_id, slug, name, description, allowed_types, max_size_mb, max_files, expires_at, is_active, created_at
-		FROM transfer.file_requests WHERE owner_id = $1
-		ORDER BY created_at DESC LIMIT $2 OFFSET $3
+		SELECT fr.id, fr.owner_id, fr.slug, fr.name, fr.description, fr.allowed_types,
+		       fr.max_size_mb, fr.max_files, fr.expires_at, fr.is_active, fr.created_at,
+		       COUNT(rs.id) AS submission_count
+		FROM transfer.file_requests fr
+		LEFT JOIN transfer.request_submissions rs ON rs.request_id = fr.id
+		WHERE fr.owner_id = $1
+		GROUP BY fr.id
+		ORDER BY fr.created_at DESC LIMIT $2 OFFSET $3
 	`, ownerID, limit, offset)
 	if err != nil {
 		return nil, apperrors.Internal("list file requests", err)
@@ -89,6 +94,7 @@ func (r *RequestRepository) ListByOwner(ctx context.Context, ownerID string, lim
 		if err := rows.Scan(
 			&out.ID, &out.OwnerID, &out.Slug, &out.Name, &out.Description,
 			&out.AllowedTypes, &out.MaxSizeMB, &out.MaxFiles, &out.ExpiresAt, &out.IsActive, &out.CreatedAt,
+			&out.SubmissionCount,
 		); err != nil {
 			return nil, apperrors.Internal("scan file request", err)
 		}

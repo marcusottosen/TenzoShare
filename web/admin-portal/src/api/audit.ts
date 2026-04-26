@@ -27,6 +27,8 @@ export interface AuditFilters {
   end?: string;
   limit?: number;
   offset?: number;
+  sort_by?: string;
+  sort_dir?: string;
 }
 
 export async function listAuditEvents(filters: AuditFilters = {}): Promise<AuditListResponse> {
@@ -36,6 +38,8 @@ export async function listAuditEvents(filters: AuditFilters = {}): Promise<Audit
   if (filters.action) params.set('action', filters.action);
   if (filters.start) params.set('start', filters.start);
   if (filters.end) params.set('end', filters.end);
+  if (filters.sort_by) params.set('sort_by', filters.sort_by);
+  if (filters.sort_dir) params.set('sort_dir', filters.sort_dir);
   params.set('limit', String(filters.limit ?? 50));
   params.set('offset', String(filters.offset ?? 0));
 

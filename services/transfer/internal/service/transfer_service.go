@@ -45,6 +45,7 @@ func New(repo *repository.TransferRepository, cfg *config.Config, js *jetstream.
 // CreateParams carries creation inputs from the handler.
 type CreateParams struct {
 	OwnerID        string
+	SenderEmail    string // email of the creating user, stored for display to recipients
 	Name           string
 	Description    string
 	FileIDs        []string
@@ -83,6 +84,7 @@ func (s *TransferService) Create(ctx context.Context, p CreateParams) (*CreateRe
 
 	t := &domain.Transfer{
 		OwnerID:        p.OwnerID,
+		SenderEmail:    p.SenderEmail,
 		Name:           strings.TrimSpace(p.Name),
 		Description:    strings.TrimSpace(p.Description),
 		RecipientEmail: p.RecipientEmail,

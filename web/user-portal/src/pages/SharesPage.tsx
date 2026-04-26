@@ -32,9 +32,9 @@ function buildRequestUrl(slug: string) {
   return `${base}/r/${slug}`;
 }
 function buildTransferUrl(slug: string) {
-  const base = (import.meta.env.VITE_TRANSFER_UI_URL as string | undefined)?.replace(/\/$/, '')
-    ?? `${window.location.protocol}//${window.location.hostname}:3001`;
-  return `${base}/s/${slug}`;
+  const base = (import.meta.env.VITE_DOWNLOAD_UI_URL as string | undefined)?.replace(/\/$/, '')
+    ?? `${window.location.protocol}//${window.location.hostname}:3003`;
+  return `${base}/t/${slug}`;
 }
 function fmt(d: string) { return new Date(d).toLocaleString(); }
 function fmtDate(d: string) { return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
@@ -63,7 +63,8 @@ function IconInbox() {
 
 // ── Badges ────────────────────────────────────────────────────────────────────
 function TransferBadge({ t }: { t: Transfer }) {
-  if (t.is_revoked) return <span className="badge badge-red">Revoked</span>;
+  if (t.is_revoked || t.status === 'revoked') return <span className="badge badge-red">Revoked</span>;
+  if (t.status === 'exhausted' || (t.max_downloads > 0 && t.download_count >= t.max_downloads)) return <span className="badge badge-yellow">Exhausted</span>;
   if (t.expires_at && new Date(t.expires_at) < new Date()) return <span className="badge badge-gray">Expired</span>;
   return <span className="badge badge-green">Active</span>;
 }
@@ -96,6 +97,13 @@ function SubmissionList({ subs }: { subs: Submission[] }) {
 }
 
 // ── My Shares tab ─────────────────────────────────────────────────────────────
+type ShareSortKey = 'name' | 'recipient' | 'downloads' | 'expires';
+
+function SortArrow({ col, sortKey, sortDir }: { col: ShareSortKey; sortKey: ShareSortKey; sortDir: 'asc'|'desc' }) {
+  if (col !== sortKey) return <span className="sort-arrow" style={{ opacity: 0.3 }}>{'\u2195'}</span>;
+  return <span className="sort-arrow">{sortDir === 'asc' ? '\u2191' : '\u2193'}</span>;
+}
+
 function MySharesTab() {
   const navigate = useNavigate();
   const [transfers, setTransfers] = useState<Transfer[]>([]);
@@ -103,6 +111,13 @@ function MySharesTab() {
   const [error, setError] = useState('');
   const [revoking, setRevoking] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState<ShareSortKey>('expires');
+  const [sortDir, setSortDir] = useState<'asc'|'desc'>('desc');
+
+  function toggleSort(key: ShareSortKey) {
+    if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortKey(key); setSortDir('asc'); }
+  }
 
   useEffect(() => {
     setLoading(true);
@@ -140,46 +155,74 @@ function MySharesTab() {
     );
   }
 
+  const sorted = [...transfers].sort((a, b) => {
+    let cmp = 0;
+    if (sortKey === 'name') cmp = (a.name || '').localeCompare(b.name || '');
+    else if (sortKey === 'recipient') cmp = (a.recipient_email || '').localeCompare(b.recipient_email || '');
+    else if (sortKey === 'downloads') cmp = (a.download_count ?? 0) - (b.download_count ?? 0);
+    else cmp = new Date(a.expires_at ?? 0).getTime() - new Date(b.expires_at ?? 0).getTime();
+    return sortDir === 'asc' ? cmp : -cmp;
+  });
+
   return (
     <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-      <div className="share-row-header">
-        <span>Name</span><span>Recipient</span><span>Downloads</span><span>Expires</span><span style={{ textAlign: 'right' }}>Actions</span>
+      <div className="table-wrap" style={{ border: 'none', borderRadius: 0 }}>
+        <table>
+          <thead>
+            <tr>
+              <th className="sort-th" onClick={() => toggleSort('name')}>
+                Name <SortArrow col="name" sortKey={sortKey} sortDir={sortDir} />
+              </th>
+              <th>Status</th>
+              <th className="sort-th" onClick={() => toggleSort('recipient')}>
+                Recipient <SortArrow col="recipient" sortKey={sortKey} sortDir={sortDir} />
+              </th>
+              <th className="sort-th" onClick={() => toggleSort('downloads')}>
+                Downloads <SortArrow col="downloads" sortKey={sortKey} sortDir={sortDir} />
+              </th>
+              <th className="sort-th" onClick={() => toggleSort('expires')}>
+                Expires <SortArrow col="expires" sortKey={sortKey} sortDir={sortDir} />
+              </th>
+              <th style={{ textAlign: 'right' }}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((t) => (
+              <tr key={t.id}>
+                <td style={{ maxWidth: 260 }}>
+                  <div style={{ fontWeight: 500, fontSize: 13, color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.name}</div>
+                  {t.description && <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.description}</div>}
+                </td>
+                <td><TransferBadge t={t} /></td>
+                <td style={{ fontSize: 13, color: 'var(--color-text-muted)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {t.recipient_email ?? <em>anyone</em>}
+                </td>
+                <td style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>
+                  {t.download_count ?? 0}{t.max_downloads ? ` / ${t.max_downloads}` : ''}
+                </td>
+                <td style={{ fontSize: 12, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }}>
+                  {t.expires_at ? fmtDate(t.expires_at) : '—'}
+                </td>
+                <td>
+                  <div style={{ display: 'flex', gap: 5, justifyContent: 'flex-end' }}>
+                    <button className="btn btn-secondary btn-sm" onClick={() => navigate(`/transfers/${t.id}`)}>View</button>
+                    <button className="btn btn-secondary btn-sm" onClick={() => handleCopy(t.slug)}>
+                      <IconLink /> {copied === t.slug ? 'Copied!' : 'Copy link'}
+                    </button>
+                    {!t.is_revoked && (
+                      <button className="btn btn-danger btn-sm" onClick={() => handleRevoke(t.id)} disabled={revoking === t.id}>
+                        <IconBan /> {revoking === t.id ? '…' : 'Revoke'}
+                      </button>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
-      {transfers.map((t) => (
-        <div key={t.id} className="share-row">
-          <div style={{ minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <TransferBadge t={t} />
-              <span style={{ fontWeight: 500, fontSize: 13, color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.name}</span>
-            </div>
-            {t.description && <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.description}</div>}
-          </div>
-          <span style={{ fontSize: 12, color: 'var(--color-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {t.recipient_email ?? <em>anyone</em>}
-          </span>
-          <span style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>
-            {t.download_count ?? 0}{t.max_downloads ? ` / ${t.max_downloads}` : ''}
-          </span>
-          <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
-            {t.expires_at ? fmtDate(t.expires_at) : '—'}
-          </span>
-          <div style={{ display: 'flex', gap: 5, justifyContent: 'flex-end' }}>
-            <button className="btn btn-secondary btn-sm" onClick={() => navigate(`/transfers/${t.id}`)}>
-              View
-            </button>
-            <button className="btn btn-secondary btn-sm" onClick={() => handleCopy(t.slug)}>
-              <IconLink /> {copied === t.slug ? 'Copied!' : 'Copy link'}
-            </button>
-            {!t.is_revoked && (
-              <button className="btn btn-danger btn-sm" onClick={() => handleRevoke(t.id)} disabled={revoking === t.id}>
-                <IconBan /> {revoking === t.id ? '…' : 'Revoke'}
-              </button>
-            )}
-          </div>
-        </div>
-      ))}
       <div style={{ padding: '10px 20px', fontSize: 12, color: 'var(--color-text-muted)', borderTop: '1px solid var(--color-border)' }}>
-        {transfers.length} transfer{transfers.length !== 1 ? 's' : ''} total
+        {sorted.length} transfer{sorted.length !== 1 ? 's' : ''} total
       </div>
     </div>
   );
@@ -255,6 +298,11 @@ function FileRequestsTab() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                     <RequestBadge r={r} />
                     <span style={{ fontWeight: 600, fontSize: 14, color: 'var(--color-text-primary)' }}>{r.name}</span>
+                    {(r.submission_count ?? 0) > 0 ? (
+                      <span className="badge badge-blue">📥 {r.submission_count} file{r.submission_count !== 1 ? 's' : ''} received</span>
+                    ) : (
+                      <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>No submissions</span>
+                    )}
                   </div>
                   {r.description && (
                     <p style={{ margin: '0 0 6px', fontSize: 13, color: 'var(--color-text-muted)' }}>{r.description}</p>

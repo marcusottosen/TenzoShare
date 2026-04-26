@@ -6,17 +6,18 @@ import "time"
 // It generates a slug that can be shared with guests so they can upload files
 // without needing an account.
 type FileRequest struct {
-	ID           string
-	OwnerID      string
-	Slug         string
-	Name         string
-	Description  string
-	AllowedTypes string // comma-separated MIME prefixes; empty = all types accepted
-	MaxSizeMB    int    // 0 = unlimited
-	MaxFiles     int    // 0 = unlimited
-	ExpiresAt    time.Time
-	IsActive     bool
-	CreatedAt    time.Time
+	ID              string
+	OwnerID         string
+	Slug            string
+	Name            string
+	Description     string
+	AllowedTypes    string // comma-separated MIME prefixes; empty = all types accepted
+	MaxSizeMB       int    // 0 = unlimited
+	MaxFiles        int    // 0 = unlimited
+	ExpiresAt       time.Time
+	IsActive        bool
+	CreatedAt       time.Time
+	SubmissionCount int // populated by ListByOwner only
 }
 
 // IsExpired reports whether the request has passed its expiry time or been deactivated.

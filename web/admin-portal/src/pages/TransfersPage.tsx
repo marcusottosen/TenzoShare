@@ -3,6 +3,10 @@ import {
   listTransfers, getTransfer, revokeTransfer,
   type AdminTransfer, type AdminTransferDetail, type TransferFile,
 } from '../api/admin';
+import { useSortState } from '../hooks/useSort';
+import { SortHeader } from '../components/SortHeader';
+
+type TransferSortKey = 'owner_email' | 'name' | 'status' | 'file_count' | 'download_count' | 'expires_at' | 'created_at';
 
 const PAGE_SIZE = 50;
 
@@ -25,6 +29,7 @@ function fmtBytes(bytes: number): string {
 function StatusBadge({ status }: { status: AdminTransfer['status'] }) {
   const cls =
     status === 'active' ? 'badge badge-green' :
+    status === 'exhausted' ? 'badge badge-orange' :
     status === 'expired' ? 'badge badge-gray' :
     'badge badge-red';
   return <span className={cls}>{status}</span>;
@@ -213,12 +218,19 @@ export default function TransfersPage() {
   const [status, setStatus] = useState<'all' | 'active' | 'expired' | 'revoked'>('all');
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<AdminTransfer | null>(null);
+  const sort = useSortState<TransferSortKey>('created_at', 'desc', () => setPage(0));
 
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      const res = await listTransfers({ limit: PAGE_SIZE, offset: page * PAGE_SIZE, status });
+      const res = await listTransfers({
+        limit: PAGE_SIZE,
+        offset: page * PAGE_SIZE,
+        status,
+        sort_by: sort.sortKey,
+        sort_dir: sort.sortDir,
+      });
       setTransfers(res.transfers ?? []);
       setTotal(res.total ?? 0);
     } catch (err: unknown) {
@@ -226,7 +238,7 @@ export default function TransfersPage() {
     } finally {
       setLoading(false);
     }
-  }, [status, page]);
+  }, [status, page, sort.sortKey, sort.sortDir]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -259,7 +271,7 @@ export default function TransfersPage() {
         {/* Status filter */}
         <div style={{ display: 'flex', gap: 6, marginBottom: 16, alignItems: 'center', flexWrap: 'wrap' }}>
           <span className="text-sm" style={{ marginRight: 4 }}>Status:</span>
-          {(['all', 'active', 'expired', 'revoked'] as const).map((s) => (
+          {(['all', 'active', 'exhausted', 'expired', 'revoked'] as const).map((s) => (
             <button
               key={s}
               className={`btn btn-sm ${status === s ? 'btn-primary' : 'btn-secondary'}`}
@@ -281,15 +293,15 @@ export default function TransfersPage() {
             <table>
               <thead>
                 <tr>
-                  <th>Owner</th>
-                  <th>Transfer Name</th>
+                  <SortHeader label="Owner" sortKey="owner_email" sort={sort} />
+                  <SortHeader label="Transfer Name" sortKey="name" sort={sort} />
                   <th>Shared To</th>
-                  <th>Status</th>
-                  <th>Files</th>
-                  <th>Downloads</th>
+                  <SortHeader label="Status" sortKey="status" sort={sort} />
+                  <SortHeader label="Files" sortKey="file_count" sort={sort} />
+                  <SortHeader label="Downloads" sortKey="download_count" sort={sort} />
                   <th>Password</th>
-                  <th>Expires</th>
-                  <th>Created</th>
+                  <SortHeader label="Expires" sortKey="expires_at" sort={sort} />
+                  <SortHeader label="Created" sortKey="created_at" sort={sort} />
                   <th></th>
                 </tr>
               </thead>

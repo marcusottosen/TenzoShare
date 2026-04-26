@@ -36,6 +36,23 @@ type ListFilter struct {
 	EndTime   *time.Time
 	Limit     int
 	Offset    int
+	SortBy    string
+	SortDir   string
+}
+
+// auditOrderClause returns a safe ORDER BY expression.
+func auditOrderClause(sortBy, sortDir string) string {
+	if sortDir != "asc" {
+		sortDir = "desc"
+	}
+	switch sortBy {
+	case "source":
+		return "source " + sortDir
+	case "action":
+		return "action " + sortDir
+	default:
+		return "created_at " + sortDir
+	}
 }
 
 // Repository handles audit_logs persistence.
@@ -108,7 +125,7 @@ func (r *Repository) List(ctx context.Context, f ListFilter) ([]AuditLog, int, e
 	// Data query
 	dataSQL := "SELECT id, source, action, user_id, client_ip, subject, payload, success, created_at " +
 		"FROM audit.audit_logs " + where +
-		" ORDER BY created_at DESC" +
+		" ORDER BY " + auditOrderClause(f.SortBy, f.SortDir) +
 		" LIMIT $" + itoa(argIdx) + " OFFSET $" + itoa(argIdx+1)
 	args = append(args, f.Limit, f.Offset)
 

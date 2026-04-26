@@ -39,12 +39,33 @@ type UserRow struct {
 	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
+type DayStat struct {
+	Day   string `json:"day"`
+	Count int    `json:"count"`
+}
+
+type StorageDayStat struct {
+	Day   string `json:"day"`
+	Bytes int64  `json:"bytes"`
+}
+
+type TransferBreakdown struct {
+	Active    int `json:"active"`
+	Exhausted int `json:"exhausted"`
+	Expired   int `json:"expired"`
+	Revoked   int `json:"revoked"`
+}
+
 type SystemStats struct {
-	TotalUsers     int   `json:"total_users"`
-	NewUsers30d    int   `json:"new_users_30d"`
-	TotalTransfers int   `json:"total_transfers"`
-	TotalFiles     int   `json:"total_files"`
-	TotalStorageB  int64 `json:"total_storage_bytes"`
+	TotalUsers        int               `json:"total_users"`
+	NewUsers30d       int               `json:"new_users_30d"`
+	TotalTransfers    int               `json:"total_transfers"`
+	TotalFiles        int               `json:"total_files"`
+	TotalStorageB     int64             `json:"total_storage_bytes"`
+	TransfersPerDay   []DayStat         `json:"transfers_per_day"`
+	UsersPerDay       []DayStat         `json:"users_per_day"`
+	StoragePerDay     []StorageDayStat  `json:"storage_per_day"`
+	TransferBreakdown TransferBreakdown `json:"transfer_breakdown"`
 }
 
 type ServiceHealthItem struct {
@@ -135,7 +156,47 @@ func main() {
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
-// GET /api/v1/admin/users?limit=50&offset=0&search=<email>&role=<role>
+// userSortClause returns a safe ORDER BY clause for the users table.
+func userSortClause(sortBy, sortDir string) string {
+	if sortDir != "asc" {
+		sortDir = "desc"
+	}
+	switch sortBy {
+	case "email":
+		return "email " + sortDir
+	case "role":
+		return "role " + sortDir
+	case "is_active":
+		return "is_active " + sortDir
+	default:
+		return "created_at " + sortDir
+	}
+}
+
+// transferSortClause returns a safe ORDER BY clause for the transfers query.
+func transferSortClause(sortBy, sortDir string) string {
+	if sortDir != "asc" {
+		sortDir = "desc"
+	}
+	switch sortBy {
+	case "owner_email":
+		return "owner_email " + sortDir
+	case "name":
+		return "t.name " + sortDir
+	case "download_count":
+		return "t.download_count " + sortDir
+	case "file_count":
+		return "file_count " + sortDir
+	case "expires_at":
+		return "t.expires_at " + sortDir + " NULLS LAST"
+	case "status":
+		return "CASE WHEN t.is_revoked THEN 2 WHEN t.expires_at IS NOT NULL AND t.expires_at <= now() THEN 1 ELSE 0 END " + sortDir
+	default:
+		return "t.created_at " + sortDir
+	}
+}
+
+// GET /api/v1/admin/users?limit=50&offset=0&search=<email>&role=<role>&sort_by=<col>&sort_dir=asc|desc
 func handleListUsers(c fiber.Ctx) error {
 	limit := 50
 	offset := 0
@@ -151,6 +212,7 @@ func handleListUsers(c fiber.Ctx) error {
 	}
 	search := c.Query("search")
 	role := c.Query("role")
+	orderBy := userSortClause(c.Query("sort_by", "created_at"), c.Query("sort_dir", "desc"))
 
 	args := []any{}
 	where := ""
@@ -179,7 +241,7 @@ func handleListUsers(c fiber.Ctx) error {
 	}
 
 	dataSQL := "SELECT id, email, role, is_active, email_verified, failed_login_attempts, locked_until, created_at, updated_at FROM auth.users " +
-		where + " ORDER BY created_at DESC LIMIT $" + itoa(idx) + " OFFSET $" + itoa(idx+1)
+		where + " ORDER BY " + orderBy + " LIMIT $" + itoa(idx) + " OFFSET $" + itoa(idx+1)
 	args = append(args, limit, offset)
 
 	rows, err := db.Query(c.Context(), dataSQL, args...)
@@ -339,11 +401,78 @@ func handleVerifyEmail(c fiber.Ctx) error {
 // GET /api/v1/admin/stats
 func handleGetStats(c fiber.Ctx) error {
 	var s SystemStats
+
+	// Scalar totals
 	_ = db.QueryRow(c.Context(), "SELECT count(*) FROM auth.users").Scan(&s.TotalUsers)
 	_ = db.QueryRow(c.Context(), "SELECT count(*) FROM auth.users WHERE created_at >= now() - interval '30 days'").Scan(&s.NewUsers30d)
 	_ = db.QueryRow(c.Context(), "SELECT count(*) FROM transfer.transfers WHERE is_revoked = false").Scan(&s.TotalTransfers)
 	_ = db.QueryRow(c.Context(), "SELECT count(*), coalesce(sum(size_bytes),0) FROM storage.files WHERE deleted_at IS NULL").
 		Scan(&s.TotalFiles, &s.TotalStorageB)
+
+	// Transfer status breakdown
+	_ = db.QueryRow(c.Context(), `
+		SELECT
+			count(*) FILTER (WHERE NOT is_revoked AND (expires_at IS NULL OR expires_at > now()) AND (max_downloads IS NULL OR max_downloads = 0 OR download_count < max_downloads)),
+			count(*) FILTER (WHERE NOT is_revoked AND max_downloads > 0 AND download_count >= max_downloads),
+			count(*) FILTER (WHERE NOT is_revoked AND expires_at IS NOT NULL AND expires_at <= now()),
+			count(*) FILTER (WHERE is_revoked)
+		FROM transfer.transfers`,
+	).Scan(&s.TransferBreakdown.Active, &s.TransferBreakdown.Exhausted, &s.TransferBreakdown.Expired, &s.TransferBreakdown.Revoked)
+
+	// Transfers created per day — last 14 days
+	s.TransfersPerDay = make([]DayStat, 0)
+	if rows, err := db.Query(c.Context(), `
+		SELECT to_char(date_trunc('day', created_at), 'Mon DD') as day, count(*)
+		FROM transfer.transfers
+		WHERE created_at >= now() - interval '14 days'
+		GROUP BY date_trunc('day', created_at), day
+		ORDER BY date_trunc('day', created_at)`,
+	); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var d DayStat
+			if err := rows.Scan(&d.Day, &d.Count); err == nil {
+				s.TransfersPerDay = append(s.TransfersPerDay, d)
+			}
+		}
+	}
+
+	// New users per day — last 14 days
+	s.UsersPerDay = make([]DayStat, 0)
+	if rows, err := db.Query(c.Context(), `
+		SELECT to_char(date_trunc('day', created_at), 'Mon DD') as day, count(*)
+		FROM auth.users
+		WHERE created_at >= now() - interval '14 days'
+		GROUP BY date_trunc('day', created_at), day
+		ORDER BY date_trunc('day', created_at)`,
+	); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var d DayStat
+			if err := rows.Scan(&d.Day, &d.Count); err == nil {
+				s.UsersPerDay = append(s.UsersPerDay, d)
+			}
+		}
+	}
+
+	// Storage added per day — last 14 days (running bytes uploaded)
+	s.StoragePerDay = make([]StorageDayStat, 0)
+	if rows, err := db.Query(c.Context(), `
+		SELECT to_char(date_trunc('day', created_at), 'Mon DD') as day, coalesce(sum(size_bytes), 0)
+		FROM storage.files
+		WHERE created_at >= now() - interval '14 days' AND deleted_at IS NULL
+		GROUP BY date_trunc('day', created_at), day
+		ORDER BY date_trunc('day', created_at)`,
+	); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var d StorageDayStat
+			if err := rows.Scan(&d.Day, &d.Bytes); err == nil {
+				s.StoragePerDay = append(s.StoragePerDay, d)
+			}
+		}
+	}
+
 	return c.JSON(s)
 }
 
@@ -387,6 +516,8 @@ func scanTransferRow(r *transferRow, expiresAt *time.Time, maxDownloads *int, cr
 	r.HasPassword = passwordHash != nil && *passwordHash != ""
 	if r.IsRevoked {
 		r.Status = "revoked"
+	} else if maxDownloads != nil && *maxDownloads > 0 && r.DownloadCount >= *maxDownloads {
+		r.Status = "exhausted"
 	} else if expiresAt != nil && expiresAt.Before(time.Now()) {
 		r.Status = "expired"
 	} else {
@@ -394,7 +525,7 @@ func scanTransferRow(r *transferRow, expiresAt *time.Time, maxDownloads *int, cr
 	}
 }
 
-// GET /api/v1/admin/transfers?limit=50&offset=0&status=all|active|expired|revoked
+// GET /api/v1/admin/transfers?limit=50&offset=0&status=all|active|expired|revoked&sort_by=<col>&sort_dir=asc|desc
 func handleListTransfers(c fiber.Ctx) error {
 	limit := 50
 	offset := 0
@@ -413,12 +544,16 @@ func handleListTransfers(c fiber.Ctx) error {
 	where := ""
 	switch status {
 	case "active":
-		where = "WHERE t.is_revoked = false AND (t.expires_at IS NULL OR t.expires_at > now())"
+		where = "WHERE t.is_revoked = false AND (t.expires_at IS NULL OR t.expires_at > now()) AND (t.max_downloads IS NULL OR t.max_downloads = 0 OR t.download_count < t.max_downloads)"
+	case "exhausted":
+		where = "WHERE t.is_revoked = false AND t.max_downloads > 0 AND t.download_count >= t.max_downloads"
 	case "expired":
 		where = "WHERE t.is_revoked = false AND t.expires_at IS NOT NULL AND t.expires_at <= now()"
 	case "revoked":
 		where = "WHERE t.is_revoked = true"
 	}
+
+	transferOrderBy := transferSortClause(c.Query("sort_by", "created_at"), c.Query("sort_dir", "desc"))
 
 	query := `
 		SELECT t.id, COALESCE(u.email, '—') AS owner_email, t.name,
@@ -430,7 +565,7 @@ func handleListTransfers(c fiber.Ctx) error {
 		FROM transfer.transfers t
 		LEFT JOIN auth.users u ON t.owner_id = u.id
 		` + where + `
-		ORDER BY t.created_at DESC
+		ORDER BY ` + transferOrderBy + `
 		LIMIT $1 OFFSET $2`
 
 	rows, err := db.Query(c.Context(), query, limit, offset)

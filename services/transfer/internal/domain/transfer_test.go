@@ -48,3 +48,43 @@ func TestTransfer_Status_NilExpiresAt(t *testing.T) {
 		t.Errorf("Status() = %q, want %q (nil ExpiresAt should be active)", got, "active")
 	}
 }
+
+func TestTransfer_Status_Exhausted(t *testing.T) {
+	exp := time.Now().Add(1 * time.Hour)
+	tr := &domain.Transfer{IsRevoked: false, ExpiresAt: &exp, MaxDownloads: 5, DownloadCount: 5}
+	if got := tr.Status(); got != "exhausted" {
+		t.Errorf("Status() = %q, want %q (download limit reached)", got, "exhausted")
+	}
+}
+
+func TestTransfer_Status_ExhaustedOverLimit(t *testing.T) {
+	exp := time.Now().Add(1 * time.Hour)
+	tr := &domain.Transfer{IsRevoked: false, ExpiresAt: &exp, MaxDownloads: 3, DownloadCount: 7}
+	if got := tr.Status(); got != "exhausted" {
+		t.Errorf("Status() = %q, want %q (download count exceeds limit)", got, "exhausted")
+	}
+}
+
+func TestTransfer_Status_NotExhaustedUnderLimit(t *testing.T) {
+	exp := time.Now().Add(1 * time.Hour)
+	tr := &domain.Transfer{IsRevoked: false, ExpiresAt: &exp, MaxDownloads: 5, DownloadCount: 4}
+	if got := tr.Status(); got != "active" {
+		t.Errorf("Status() = %q, want %q (one download remaining)", got, "active")
+	}
+}
+
+func TestTransfer_Status_UnlimitedDownloads(t *testing.T) {
+	exp := time.Now().Add(1 * time.Hour)
+	tr := &domain.Transfer{IsRevoked: false, ExpiresAt: &exp, MaxDownloads: 0, DownloadCount: 1000}
+	if got := tr.Status(); got != "active" {
+		t.Errorf("Status() = %q, want %q (MaxDownloads=0 means unlimited)", got, "active")
+	}
+}
+
+func TestTransfer_Status_RevokedTakesPrecedenceOverExhausted(t *testing.T) {
+	exp := time.Now().Add(1 * time.Hour)
+	tr := &domain.Transfer{IsRevoked: true, ExpiresAt: &exp, MaxDownloads: 5, DownloadCount: 5}
+	if got := tr.Status(); got != "revoked" {
+		t.Errorf("Status() = %q, want %q (revoked takes precedence)", got, "revoked")
+	}
+}

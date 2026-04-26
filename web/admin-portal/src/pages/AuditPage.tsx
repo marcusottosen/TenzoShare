@@ -1,5 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { listAuditEvents, type AuditEvent, type AuditFilters } from '../api/audit';
+import { useSortState } from '../hooks/useSort';
+import { SortHeader } from '../components/SortHeader';
+
+type AuditSortKey = 'created_at' | 'source' | 'action';
 
 function fmt(date: string) {
   return new Date(date).toLocaleString();
@@ -19,6 +23,7 @@ export default function AuditPage() {
   const [filterAction, setFilterAction] = useState('');
   const [filterStart, setFilterStart] = useState('');
   const [filterEnd, setFilterEnd] = useState('');
+  const sort = useSortState<AuditSortKey>('created_at', 'desc', () => setPage(0));
 
   async function load(offset = 0) {
     setLoading(true);
@@ -26,6 +31,8 @@ export default function AuditPage() {
     const filters: AuditFilters = {
       limit: PAGE_SIZE,
       offset,
+      sort_by: sort.sortKey,
+      sort_dir: sort.sortDir,
     };
     if (filterUserId.trim()) filters.user_id = filterUserId.trim();
     if (filterSource.trim()) filters.source = filterSource.trim();
@@ -46,7 +53,7 @@ export default function AuditPage() {
 
   useEffect(() => {
     load(page * PAGE_SIZE);
-  }, [page]);
+  }, [page, sort.sortKey, sort.sortDir]);
 
   function handleSearch(e: React.FormEvent) {
     e.preventDefault();
@@ -151,9 +158,9 @@ export default function AuditPage() {
           <table>
             <thead>
               <tr>
-                <th>Time</th>
-                <th>Source</th>
-                <th>Action</th>
+                <SortHeader label="Time" sortKey="created_at" sort={sort} />
+                <SortHeader label="Source" sortKey="source" sort={sort} />
+                <SortHeader label="Action" sortKey="action" sort={sort} />
                 <th>User ID</th>
                 <th>IP</th>
                 <th>Payload</th>

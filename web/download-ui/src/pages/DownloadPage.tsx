@@ -100,7 +100,9 @@ export default function DownloadPage() {
   const slug = resolveSlug();
   const [view, setView] = useState<View>({ kind: 'loading' });
   const [passwordInput, setPasswordInput] = useState('');
+  const [passwordError, setPasswordError] = useState('');
   const [downloading, setDownloading] = useState<Record<string, boolean>>({});
+  const [downloadErrors, setDownloadErrors] = useState<Record<string, string>>({});
 
   // Initial fetch — no password yet.
   useEffect(() => {
@@ -126,15 +128,15 @@ export default function DownloadPage() {
     (e: React.FormEvent) => {
       e.preventDefault();
       if (view.kind !== 'password') return;
+      setPasswordError('');
       setView({ kind: 'loading' });
       fetchTransfer(view.slug, passwordInput)
         .then((t) => setView({ kind: 'ready', transfer: t, password: passwordInput }))
         .catch((err: unknown) => {
           const message =
             err instanceof TransferApiError ? err.message : 'Incorrect password.';
-          setView({ kind: 'password', slug: view.slug });
-          // show inline error without unmounting the form
-          alert(message);
+          setView({ kind: 'password', slug: (view as { kind: 'password'; slug: string }).slug });
+          setPasswordError(message);
         });
     },
     [view, passwordInput],
@@ -142,17 +144,16 @@ export default function DownloadPage() {
 
   // Trigger download for a single file.
   const handleDownload = useCallback(
-    async (fileId: string, fileName: string) => {
+    async (fileId: string) => {
       if (!slug) return;
       const password = view.kind === 'ready' ? view.password : undefined;
       setDownloading((d) => ({ ...d, [fileId]: true }));
+      setDownloadErrors((d) => { const n = { ...d }; delete n[fileId]; return n; });
       try {
         const { url } = await fetchDownloadUrl(slug, fileId, password);
-        // Trigger browser download via a transient <a> — works cross-browser
-        // without popups being blocked (it's inside a user-gesture handler).
         const a = document.createElement('a');
         a.href = url;
-        a.download = fileName;
+        a.download = fileId;
         a.rel = 'noopener noreferrer';
         document.body.appendChild(a);
         a.click();
@@ -160,7 +161,7 @@ export default function DownloadPage() {
       } catch (err: unknown) {
         const message =
           err instanceof TransferApiError ? err.message : 'Download failed.';
-        alert(message);
+        setDownloadErrors((d) => ({ ...d, [fileId]: message }));
       } finally {
         setDownloading((d) => ({ ...d, [fileId]: false }));
       }
@@ -168,20 +169,30 @@ export default function DownloadPage() {
     [slug, view],
   );
 
-  // ---------------------------------------------------------------------------
-  // Render
-  // ---------------------------------------------------------------------------
+  // ─── Render ────────────────────────────────────────────────────────────────
 
   if (view.kind === 'loading') {
-    return <Layout><p style={styles.muted}>Loading…</p></Layout>;
+    return (
+      <Layout>
+        <div className="state-center">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, justifyContent: 'center' }}>
+            <span className="spinner" />
+            <span className="tenzo-muted">Loading transfer…</span>
+          </div>
+        </div>
+      </Layout>
+    );
   }
 
   if (view.kind === 'error') {
     return (
       <Layout>
-        <div style={styles.errorBox}>
-          <strong>{errorTitle(view.status)}</strong>
-          <p style={{ margin: '8px 0 0' }}>{view.message}</p>
+        <div className="state-center">
+          <div className="state-icon state-icon-error">
+            <IconAlert />
+          </div>
+          <h2 className="tenzo-title">{errorTitle(view.status)}</h2>
+          <p className="tenzo-subtitle">{view.message}</p>
         </div>
       </Layout>
     );
@@ -190,20 +201,32 @@ export default function DownloadPage() {
   if (view.kind === 'password') {
     return (
       <Layout>
-        <h2 style={styles.heading}>Password required</h2>
-        <p style={styles.muted}>This transfer is password-protected.</p>
-        <form onSubmit={handlePasswordSubmit} style={styles.form}>
-          <input
-            type="password"
-            placeholder="Enter password"
-            value={passwordInput}
-            onChange={(e) => setPasswordInput(e.target.value)}
-            autoFocus
-            required
-            style={styles.input}
-          />
-          <button type="submit" style={styles.btnPrimary}>
-            Unlock
+        <div className="state-icon state-icon-warn" style={{ margin: '0 auto 20px' }}>
+          <IconLock />
+        </div>
+        <h2 className="tenzo-title" style={{ textAlign: 'center' }}>Password required</h2>
+        <p className="tenzo-subtitle" style={{ textAlign: 'center' }}>
+          This transfer is password-protected. Enter the password to access the files.
+        </p>
+        {passwordError && (
+          <div className="alert alert-error">{passwordError}</div>
+        )}
+        <form onSubmit={handlePasswordSubmit}>
+          <div className="form-group">
+            <label htmlFor="dl-password">Password</label>
+            <input
+              id="dl-password"
+              type="password"
+              className="tenzo-input"
+              placeholder="Enter password"
+              value={passwordInput}
+              onChange={(e) => setPasswordInput(e.target.value)}
+              autoFocus
+              required
+            />
+          </div>
+          <button type="submit" className="btn btn-primary btn-full btn-lg" style={{ marginTop: 8 }}>
+            Unlock transfer
           </button>
         </form>
       </Layout>
@@ -212,75 +235,121 @@ export default function DownloadPage() {
 
   // view.kind === 'ready'
   const { transfer } = view;
+  const downloadsLeft = transfer.max_downloads > 0
+    ? Math.max(0, transfer.max_downloads - transfer.download_count)
+    : null;
 
   return (
     <Layout>
-      <h2 style={styles.heading}>{transfer.name || 'Files ready to download'}</h2>
-      {transfer.description && (
-        <p style={{ ...styles.muted, marginBottom: 20 }}>{transfer.description}</p>
+      {transfer.is_revoked && (
+        <div className="revoked-banner" style={{ marginBottom: 20 }}>
+          ⚠️ This transfer has been revoked by the sender.
+        </div>
       )}
 
-      {/* Transfer metadata */}
-      <dl style={styles.meta}>
-        <dt style={styles.dt}>Expires</dt>
-        <dd style={styles.dd}>{formatDate(transfer.expires_at)}</dd>
-        {transfer.max_downloads > 0 && (
-          <>
-            <dt style={styles.dt}>Downloads left</dt>
-            <dd style={styles.dd}>
-              {Math.max(0, transfer.max_downloads - transfer.download_count)}
-              {' / '}
-              {transfer.max_downloads}
-            </dd>
-          </>
+      <h2 className="tenzo-title">{transfer.name || 'Files ready to download'}</h2>
+      {transfer.sender_email && (
+        <p className="tenzo-subtitle">
+          Shared by <strong>{transfer.sender_email}</strong>
+        </p>
+      )}
+      {transfer.description && (
+        <p className="tenzo-subtitle">{transfer.description}</p>
+      )}
+
+      {/* Metadata chips */}
+      <div className="chips-row">
+        <span className="chip">Expires {formatDate(transfer.expires_at)}</span>
+        {downloadsLeft !== null && (
+          <span className={`chip ${downloadsLeft > 0 ? 'chip-teal' : ''}`}>
+            {downloadsLeft} download{downloadsLeft !== 1 ? 's' : ''} remaining
+          </span>
         )}
-      </dl>
+        {transfer.file_ids.length > 0 && (
+          <span className="chip">
+            {transfer.file_ids.length} file{transfer.file_ids.length !== 1 ? 's' : ''}
+          </span>
+        )}
+      </div>
+
+      <hr className="tenzo-divider" />
 
       {/* File list */}
-      <ul style={styles.fileList}>
+      <ul className="file-list">
         {transfer.file_ids.map((fid) => (
-          <li key={fid} style={styles.fileItem}>
-            <span style={styles.fileId}>{fid}</span>
+          <li key={fid} className="file-item">
+            <div className="file-icon">
+              <IconFile />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="file-name">{fid}</div>
+              {downloadErrors[fid] && (
+                <div style={{ fontSize: 11, color: 'var(--color-error-text)', marginTop: 2 }}>
+                  {downloadErrors[fid]}
+                </div>
+              )}
+            </div>
             <button
-              onClick={() => handleDownload(fid, fid)}
-              disabled={!!downloading[fid]}
-              style={downloading[fid] ? styles.btnDisabled : styles.btnPrimary}
+              className="btn btn-primary btn-sm"
+              onClick={() => handleDownload(fid)}
+              disabled={!!downloading[fid] || transfer.is_revoked || downloadsLeft === 0}
             >
-              {downloading[fid] ? 'Preparing…' : 'Download'}
+              {downloading[fid] ? (
+                <>
+                  <span className="spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} />
+                  Preparing…
+                </>
+              ) : (
+                <>
+                  <IconDownload />
+                  Download
+                </>
+              )}
             </button>
           </li>
         ))}
       </ul>
 
-      {transfer.is_revoked && (
-        <div style={styles.errorBox}>This transfer has been revoked by the sender.</div>
-      )}
+      <TenzoFooter />
     </Layout>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Layout
-// ---------------------------------------------------------------------------
+// ─── Layout ────────────────────────────────────────────────────────────────
 
 function Layout({ children }: { children: React.ReactNode }) {
   return (
-    <div style={styles.page}>
-      <header style={styles.header}>
-        <span style={styles.logo}>TenzoShare</span>
-      </header>
-      <main style={styles.main}>{children}</main>
+    <div className="tenzo-page">
+      <div className="tenzo-card">
+        <div className="tenzo-brand">
+          <div className="tenzo-brand-icon">
+            <IconBolt />
+          </div>
+          <span className="tenzo-brand-name">TenzoShare</span>
+        </div>
+        {children}
+      </div>
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// ─── Footer ────────────────────────────────────────────────────────────────
+
+function TenzoFooter() {
+  return (
+    <div className="tenzo-footer">
+      <IconShield />
+      Files are encrypted and served securely via TenzoShare
+    </div>
+  );
+}
+
+// ─── Helpers ───────────────────────────────────────────────────────────────
 
 function errorTitle(status?: number): string {
   if (status === 404) return 'Transfer not found';
   if (status === 403) return 'Access denied';
+  if (status === 410) return 'Transfer expired';
   if (status === 401) return 'Authentication required';
   return 'Something went wrong';
 }
@@ -292,137 +361,3 @@ function formatDate(iso: string): string {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Inline styles — intentionally plain so there are zero build-time deps.
-// Replace with any CSS solution you prefer.
-// ---------------------------------------------------------------------------
-
-const styles = {
-  page: {
-    minHeight: '100vh',
-    fontFamily: 'system-ui, sans-serif',
-    background: '#f5f5f5',
-    color: '#111',
-  } as React.CSSProperties,
-
-  header: {
-    background: '#0f172a',
-    padding: '12px 24px',
-  } as React.CSSProperties,
-
-  logo: {
-    color: '#fff',
-    fontWeight: 700,
-    fontSize: '1.1rem',
-    letterSpacing: '-0.01em',
-  } as React.CSSProperties,
-
-  main: {
-    maxWidth: 560,
-    margin: '48px auto',
-    padding: '0 16px',
-  } as React.CSSProperties,
-
-  heading: {
-    fontSize: '1.4rem',
-    fontWeight: 600,
-    margin: '0 0 16px',
-  } as React.CSSProperties,
-
-  muted: {
-    color: '#666',
-    margin: 0,
-  } as React.CSSProperties,
-
-  meta: {
-    display: 'grid',
-    gridTemplateColumns: 'max-content 1fr',
-    gap: '4px 16px',
-    margin: '0 0 24px',
-    fontSize: '0.9rem',
-  } as React.CSSProperties,
-
-  dt: {
-    color: '#555',
-    fontWeight: 500,
-  } as React.CSSProperties,
-
-  dd: {
-    margin: 0,
-  } as React.CSSProperties,
-
-  form: {
-    display: 'flex',
-    gap: 8,
-    marginTop: 16,
-  } as React.CSSProperties,
-
-  input: {
-    flex: 1,
-    padding: '8px 12px',
-    border: '1px solid #ccc',
-    borderRadius: 6,
-    fontSize: '1rem',
-  } as React.CSSProperties,
-
-  fileList: {
-    listStyle: 'none',
-    margin: 0,
-    padding: 0,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 8,
-  } as React.CSSProperties,
-
-  fileItem: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    background: '#fff',
-    border: '1px solid #e2e8f0',
-    borderRadius: 8,
-    padding: '12px 16px',
-  } as React.CSSProperties,
-
-  fileId: {
-    fontFamily: 'monospace',
-    fontSize: '0.8rem',
-    color: '#444',
-    wordBreak: 'break-all',
-    flex: 1,
-    marginRight: 12,
-  } as React.CSSProperties,
-
-  btnPrimary: {
-    padding: '8px 18px',
-    background: '#0f172a',
-    color: '#fff',
-    border: 'none',
-    borderRadius: 6,
-    cursor: 'pointer',
-    fontWeight: 500,
-    fontSize: '0.9rem',
-    whiteSpace: 'nowrap',
-  } as React.CSSProperties,
-
-  btnDisabled: {
-    padding: '8px 18px',
-    background: '#94a3b8',
-    color: '#fff',
-    border: 'none',
-    borderRadius: 6,
-    cursor: 'not-allowed',
-    fontWeight: 500,
-    fontSize: '0.9rem',
-    whiteSpace: 'nowrap',
-  } as React.CSSProperties,
-
-  errorBox: {
-    background: '#fef2f2',
-    border: '1px solid #fca5a5',
-    borderRadius: 8,
-    padding: '16px',
-    color: '#991b1b',
-    fontSize: '0.95rem',
-  } as React.CSSProperties,
-} as const;

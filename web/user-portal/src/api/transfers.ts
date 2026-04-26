@@ -6,6 +6,7 @@ export interface Transfer {
   name: string;
   description: string;
   slug: string;
+  status?: 'active' | 'exhausted' | 'expired' | 'revoked';
   recipient_email?: string;
   max_downloads: number;
   download_count: number;

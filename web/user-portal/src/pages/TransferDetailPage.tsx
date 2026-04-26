@@ -19,6 +19,24 @@ function buildDownloadUrl(slug: string): string {
   return `${base}/t/${slug}`;
 }
 
+function copyToClipboard(text: string, onSuccess: () => void) {
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(onSuccess).catch(() => execCopy(text, onSuccess));
+  } else {
+    execCopy(text, onSuccess);
+  }
+}
+function execCopy(text: string, onSuccess: () => void) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0;width:1px;height:1px';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try { if (document.execCommand('copy')) onSuccess(); }
+  finally { document.body.removeChild(ta); }
+}
+
 function fmt(date: string) {
   return new Date(date).toLocaleString();
 }
@@ -34,7 +52,7 @@ export default function TransferDetailPage() {
 
   function handleCopy() {
     if (!transfer) return;
-    navigator.clipboard.writeText(buildDownloadUrl(transfer.slug)).then(() => {
+    copyToClipboard(buildDownloadUrl(transfer.slug), () => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
@@ -98,8 +116,10 @@ export default function TransferDetailPage() {
             <tr>
               <td style={{ paddingLeft: 0, fontWeight: 500, width: 160 }}>Status</td>
               <td style={{ paddingLeft: 0 }}>
-                {transfer.is_revoked ? (
+                {transfer.is_revoked || transfer.status === 'revoked' ? (
                   <span className="badge badge-red">Revoked</span>
+                ) : transfer.status === 'exhausted' || (transfer.max_downloads > 0 && transfer.download_count >= transfer.max_downloads) ? (
+                  <span className="badge badge-yellow">Exhausted</span>
                 ) : transfer.expires_at && new Date(transfer.expires_at) < new Date() ? (
                   <span className="badge badge-gray">Expired</span>
                 ) : (

@@ -126,7 +126,14 @@ export default function FilesPage() {
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState<UploadProgress | null>(null);
   const [search, setSearch] = useState('');
+  const [sortKey, setSortKey] = useState<'name'|'size'|'modified'>('modified');
+  const [sortDir, setSortDir] = useState<'asc'|'desc'>('desc');
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  function toggleSort(key: 'name'|'size'|'modified') {
+    if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortKey(key); setSortDir('asc'); }
+  }
 
   async function load() {
     setLoading(true);
@@ -183,6 +190,13 @@ export default function FilesPage() {
   const pct = progress ? Math.round((progress.loaded / progress.total) * 100) : 0;
   const storagePct = Math.round((MOCK_STORAGE.usedGB / MOCK_STORAGE.totalGB) * 100);
   const filtered = files.filter((f) => f.filename.toLowerCase().includes(search.toLowerCase()));
+  const sorted = [...filtered].sort((a, b) => {
+    let cmp = 0;
+    if (sortKey === 'name') cmp = a.filename.localeCompare(b.filename);
+    else if (sortKey === 'size') cmp = a.size_bytes - b.size_bytes;
+    else cmp = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+    return sortDir === 'asc' ? cmp : -cmp;
+  });
 
   // Stats from real data
   const activeShares = transfers.filter((t) => !t.is_revoked && (!t.expires_at || new Date(t.expires_at) > new Date())).length;
@@ -240,7 +254,8 @@ export default function FilesPage() {
         </div>
 
         {/* Active Shares */}
-        <div className="card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', cursor: 'pointer' }}
+          onClick={() => navigate('/shares')} title="View active shares">
           <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>
             Active Shares
           </div>
@@ -253,9 +268,10 @@ export default function FilesPage() {
         </div>
 
         {/* Recent Downloads */}
-        <div className="card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+        <div className="card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', cursor: 'pointer' }}
+          onClick={() => navigate('/shares')} title="View transfers with downloads">
           <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>
-            Recent Downloads
+            Total Downloads
           </div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span style={{ fontSize: 32, fontWeight: 700, color: 'var(--color-text-primary)', letterSpacing: '-0.03em' }}>
@@ -307,13 +323,20 @@ export default function FilesPage() {
               fontSize: 11, fontWeight: 600, color: 'var(--color-text-muted)',
               textTransform: 'uppercase', letterSpacing: '0.06em',
             }}>
-              <span>Name</span><span>Size</span><span>Security</span><span style={{ textAlign: 'right' }}>Actions</span>
+              <span className="sort-th" onClick={() => toggleSort('name')} style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                Name <span className="sort-arrow">{sortKey === 'name' ? (sortDir === 'asc' ? '\u2191' : '\u2193') : '\u2195'}</span>
+              </span>
+              <span className="sort-th" onClick={() => toggleSort('size')} style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                Size <span className="sort-arrow">{sortKey === 'size' ? (sortDir === 'asc' ? '\u2191' : '\u2193') : '\u2195'}</span>
+              </span>
+              <span>Security</span>
+              <span style={{ textAlign: 'right' }}>Actions</span>
             </div>
 
             {filtered.length === 0 ? (
               <div className="empty-state" style={{ padding: '24px 0' }}>No files matching "{search}"</div>
             ) : (
-              filtered.map((f) => {
+              sorted.map((f) => {
                 const { icon, color } = fileTypeInfo(f.content_type);
                 return (
                   <div key={f.id} className="files-row">
@@ -358,7 +381,7 @@ export default function FilesPage() {
 
             {/* Footer */}
             <div style={{ padding: '10px 20px', borderTop: '1px solid var(--color-border)', fontSize: 12, color: 'var(--color-text-muted)' }}>
-              Showing {filtered.length} of {files.length} file{files.length !== 1 ? 's' : ''}
+              Showing {sorted.length} of {files.length} file{files.length !== 1 ? 's' : ''}
             </div>
           </>
         )}

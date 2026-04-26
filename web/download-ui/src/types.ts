@@ -34,6 +34,8 @@ export interface TransferPublic {
   expires_at: string;
   /** Email of the intended recipient, if restricted to one address. */
   recipient_email?: string;
+  /** Email address of the sender (person who created the transfer). */
+  sender_email?: string;
   /** ISO-8601 creation timestamp. */
   created_at: string;
 }

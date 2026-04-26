@@ -273,7 +273,9 @@ export default function DashboardPage() {
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--color-text-muted)', whiteSpace: 'nowrap', flexShrink: 0, marginRight: 8 }}>{a.time}</div>
                 <ActivityBadge type={a.type} />
-                <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)', padding: '4px', borderRadius: 4, flexShrink: 0 }}>
+                <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)', padding: '4px', borderRadius: 4, flexShrink: 0 }}
+                  onClick={() => navigate(a.id.startsWith('m') ? '/shares' : `/transfers/${a.id}`)}
+                  title="View details">
                   <IconDots />
                 </button>
               </li>

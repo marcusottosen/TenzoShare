@@ -6,6 +6,7 @@ import "time"
 type Transfer struct {
 	ID             string
 	OwnerID        string
+	SenderEmail    string // email of the owner at creation time, shown to recipients
 	Name           string // human-readable label, required
 	Description    string // optional longer note
 	RecipientEmail string // empty = public link
@@ -18,10 +19,14 @@ type Transfer struct {
 	CreatedAt      time.Time
 }
 
-// Status returns the current lifecycle state: "revoked", "expired", or "active".
+// Status returns the current lifecycle state: "revoked", "exhausted", "expired", or "active".
+// Priority: revoked > exhausted > expired > active.
 func (t *Transfer) Status() string {
 	if t.IsRevoked {
 		return "revoked"
+	}
+	if t.MaxDownloads > 0 && t.DownloadCount >= t.MaxDownloads {
+		return "exhausted"
 	}
 	if t.ExpiresAt != nil && time.Now().After(*t.ExpiresAt) {
 		return "expired"

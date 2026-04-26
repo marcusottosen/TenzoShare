@@ -22,7 +22,7 @@ func New(repo *repository.Repository) *Handler {
 }
 
 // ListEvents handles GET /api/v1/audit/events
-// Query params: user_id, source, action, start, end, limit, offset
+// Query params: user_id, source, action, start, end, limit, offset, sort_by, sort_dir
 func (h *Handler) ListEvents(c fiber.Ctx) error {
 	limit := 50
 	if v, err := strconv.Atoi(c.Query("limit")); err == nil && v > 0 {
@@ -33,11 +33,13 @@ func (h *Handler) ListEvents(c fiber.Ctx) error {
 		offset = v
 	}
 	f := repository.ListFilter{
-		UserID: c.Query("user_id"),
-		Source: c.Query("source"),
-		Action: c.Query("action"),
-		Limit:  limit,
-		Offset: offset,
+		UserID:  c.Query("user_id"),
+		Source:  c.Query("source"),
+		Action:  c.Query("action"),
+		Limit:   limit,
+		Offset:  offset,
+		SortBy:  c.Query("sort_by", "created_at"),
+		SortDir: c.Query("sort_dir", "desc"),
 	}
 
 	if s := c.Query("start"); s != "" {

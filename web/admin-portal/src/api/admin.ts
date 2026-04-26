@@ -19,12 +19,20 @@ export interface UsersListResponse {
   offset: number;
 }
 
+export interface DayStat { day: string; count: number; }
+export interface StorageDayStat { day: string; bytes: number; }
+export interface TransferBreakdown { active: number; exhausted: number; expired: number; revoked: number; }
+
 export interface SystemStats {
   total_users: number;
   new_users_30d: number;
   total_transfers: number;
   total_files: number;
   total_storage_bytes: number;
+  transfers_per_day: DayStat[];
+  users_per_day: DayStat[];
+  storage_per_day: StorageDayStat[];
+  transfer_breakdown: TransferBreakdown;
 }
 
 export interface ServiceHealth {
@@ -42,12 +50,16 @@ export async function listUsers(params: {
   offset?: number;
   search?: string;
   role?: string;
+  sort_by?: string;
+  sort_dir?: string;
 } = {}): Promise<UsersListResponse> {
   const p = new URLSearchParams();
   if (params.limit) p.set('limit', String(params.limit));
   if (params.offset) p.set('offset', String(params.offset));
   if (params.search) p.set('search', params.search);
   if (params.role) p.set('role', params.role);
+  if (params.sort_by) p.set('sort_by', params.sort_by);
+  if (params.sort_dir) p.set('sort_dir', params.sort_dir);
   return request<UsersListResponse>(`/admin/users?${p}`);
 }
 
@@ -99,7 +111,7 @@ export interface AdminTransfer {
   max_downloads: number | null;
   file_count: number;
   created_at: string;
-  status: 'active' | 'expired' | 'revoked';
+  status: 'active' | 'exhausted' | 'expired' | 'revoked';
 }
 
 export interface TransferFile {
@@ -121,12 +133,16 @@ export interface TransfersListResponse {
 export async function listTransfers(params?: {
   limit?: number;
   offset?: number;
-  status?: 'all' | 'active' | 'expired' | 'revoked';
+  status?: 'all' | 'active' | 'exhausted' | 'expired' | 'revoked';
+  sort_by?: string;
+  sort_dir?: string;
 }): Promise<TransfersListResponse> {
   const qs = new URLSearchParams();
   if (params?.limit) qs.set('limit', String(params.limit));
   if (params?.offset) qs.set('offset', String(params.offset));
   if (params?.status) qs.set('status', params.status);
+  if (params?.sort_by) qs.set('sort_by', params.sort_by);
+  if (params?.sort_dir) qs.set('sort_dir', params.sort_dir);
   return request<TransfersListResponse>(`/admin/transfers?${qs.toString()}`);
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/tenzoshare/tenzoshare/services/transfer/internal/service"
 	apperrors "github.com/tenzoshare/tenzoshare/shared/pkg/errors"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jwtkeys"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 )
 
 type Handler struct {
@@ -60,6 +61,11 @@ func (h *Handler) Create(c fiber.Ctx) error {
 	if ownerID == "" {
 		return apperrors.Unauthorized("unauthenticated")
 	}
+	claims, _ := c.Locals("claims").(*middleware.Claims)
+	senderEmail := ""
+	if claims != nil {
+		senderEmail = claims.Email
+	}
 
 	var req createRequest
 	if err := c.Bind().JSON(&req); err != nil {
@@ -71,6 +77,7 @@ func (h *Handler) Create(c fiber.Ctx) error {
 
 	result, err := h.svc.Create(c.Context(), service.CreateParams{
 		OwnerID:        ownerID,
+		SenderEmail:    senderEmail,
 		Name:           req.Name,
 		Description:    req.Description,
 		FileIDs:        req.FileIDs,
@@ -123,11 +130,13 @@ func (h *Handler) List(c fiber.Ctx) error {
 		return err
 	}
 
-	// By default exclude expired and revoked; pass ?status=all to include them.
+	// By default exclude expired and revoked; exhausted transfers are included.
+	// Pass ?status=all to include everything.
 	statusFilter := c.Query("status")
 	items := make([]fiber.Map, 0, len(transfers))
 	for _, t := range transfers {
-		if statusFilter != "all" && t.Status() != "active" {
+		s := t.Status()
+		if statusFilter != "all" && s != "active" && s != "exhausted" {
 			continue
 		}
 		items = append(items, transferResponse(t, nil))
@@ -171,6 +180,7 @@ func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 	m := fiber.Map{
 		"id":             t.ID,
 		"owner_id":       t.OwnerID,
+		"sender_email":   t.SenderEmail,
 		"name":           t.Name,
 		"description":    t.Description,
 		"slug":           t.Slug,

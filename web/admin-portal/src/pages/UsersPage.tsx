@@ -3,6 +3,10 @@ import {
   listUsers, createUser, updateUser, deleteUser, unlockUser, verifyUserEmail,
   type AdminUser,
 } from '../api/admin';
+import { useSortState } from '../hooks/useSort';
+import { SortHeader } from '../components/SortHeader';
+
+type UserSortKey = 'email' | 'role' | 'is_active' | 'created_at';
 
 const PAGE_SIZE = 50;
 
@@ -161,6 +165,7 @@ export default function UsersPage() {
   const [saving, setSaving] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<AdminUser | null>(null);
+  const sort = useSortState<UserSortKey>('created_at', 'desc', () => setPage(0));
 
   const load = useCallback(async (offset = 0) => {
     setLoading(true);
@@ -171,6 +176,8 @@ export default function UsersPage() {
         offset,
         search: search.trim() || undefined,
         role: roleFilter || undefined,
+        sort_by: sort.sortKey,
+        sort_dir: sort.sortDir,
       });
       setUsers(res.users ?? []);
       setTotal(res.total ?? 0);
@@ -179,7 +186,7 @@ export default function UsersPage() {
     } finally {
       setLoading(false);
     }
-  }, [search, roleFilter]);
+  }, [search, roleFilter, sort.sortKey, sort.sortDir]);
 
   useEffect(() => {
     load(page * PAGE_SIZE);
@@ -330,12 +337,12 @@ export default function UsersPage() {
           <table>
             <thead>
               <tr>
-                <th>User</th>
-                <th>Role</th>
-                <th>Status</th>
+                <SortHeader label="User" sortKey="email" sort={sort} />
+                <SortHeader label="Role" sortKey="role" sort={sort} />
+                <SortHeader label="Status" sortKey="is_active" sort={sort} />
                 <th>Email</th>
                 <th>Logins</th>
-                <th>Joined</th>
+                <SortHeader label="Joined" sortKey="created_at" sort={sort} />
                 <th>Actions</th>
               </tr>
             </thead>
