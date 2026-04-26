@@ -158,7 +158,9 @@ func (h *Handler) Revoke(c fiber.Ctx) error {
 
 // Access is the public (unauthenticated) download-info endpoint.
 // GET /api/v1/t/:slug  — optionally with ?password=
-// Does NOT increment the download counter — viewing a transfer page is not a download.
+// Does NOT increment any counter — viewing the download page is not a download.
+// Returns per-file download counts (file_download_counts map) when max_downloads > 0
+// so the download UI can show per-file availability without requiring an attempt.
 func (h *Handler) Access(c fiber.Ctx) error {
 	slug := c.Params("slug")
 	password := c.Query("password")
@@ -171,8 +173,13 @@ func (h *Handler) Access(c fiber.Ctx) error {
 		return err
 	}
 
+	resp := transferResponse(result.Transfer, result.FileIDs)
+	if result.FileDownloadCounts != nil {
+		resp["file_download_counts"] = result.FileDownloadCounts
+	}
+
 	return c.JSON(fiber.Map{
-		"transfer": transferResponse(result.Transfer, result.FileIDs),
+		"transfer": resp,
 	})
 }
 
@@ -208,11 +215,13 @@ func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 // GET /api/v1/t/:slug/files/:fileId/download[?password=...]
 //
 // This endpoint:
-//  1. Validates the transfer (slug, optional password, expiry, revocation, download limit).
+//  1. Validates the transfer (slug, optional password, expiry, revocation).
 //  2. Confirms the requested file belongs to this transfer.
-//  3. Issues a short-lived internal service JWT and proxies to the Storage service
+//  3. Atomically checks and increments the per-file download counter. If the
+//     file's individual limit is reached the request is rejected with 403.
+//     This prevents downloading file A from consuming quota for file B.
+//  4. Issues a short-lived internal service JWT and proxies to the Storage service
 //     presign endpoint. No auth is required from the caller.
-//  4. Increments the download counter (this is the actual download action).
 //
 // Response: { "url": "<presigned MinIO URL>", "expires_in": 900 }
 func (h *Handler) DownloadURL(c fiber.Ctx) error {
@@ -220,31 +229,18 @@ func (h *Handler) DownloadURL(c fiber.Ctx) error {
 	fileID := c.Params("fileId")
 	password := c.Query("password")
 
-	// Use Access (which increments the download counter) — this is the real download event.
-	result, err := h.svc.Access(c.Context(), service.AccessParams{
+	// AttemptFileDownload validates the transfer, confirms file ownership, and
+	// atomically enforces the per-file download limit.
+	result, err := h.svc.AttemptFileDownload(c.Context(), service.AttemptFileDownloadParams{
 		Slug:     slug,
+		FileID:   fileID,
 		Password: password,
 	})
 	if err != nil {
 		return err
 	}
 
-	// Confirm the file belongs to this transfer.
-	found := false
-	for _, fid := range result.FileIDs {
-		if fid == fileID {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return apperrors.NotFound("file not found in this transfer")
-	}
-
-	// Issue a short-lived (30 s) service JWT with role=admin so the Storage
-	// service's existing presign endpoint accepts the request without needing the
-	// file owner's credentials.
-	// The transfer owner's UUID is used as the subject (presign doesn't create records).
+	// Issue a short-lived (30 s) service JWT so the Storage service accepts the request.
 	svcToken, err := h.issueServiceToken(result.Transfer.OwnerID)
 	if err != nil {
 		return apperrors.Internal("issue service token", err)

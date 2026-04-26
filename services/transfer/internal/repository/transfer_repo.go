@@ -60,12 +60,21 @@ func (r *TransferRepository) Create(ctx context.Context, t *domain.Transfer, fil
 func (r *TransferRepository) GetBySlug(ctx context.Context, slug string) (*domain.Transfer, error) {
 	var t domain.Transfer
 	err := r.db.QueryRow(ctx, `
-		SELECT id, owner_id, sender_email, name, description, recipient_email, slug, password_hash, max_downloads, download_count, expires_at, is_revoked, created_at
-		FROM transfer.transfers
-		WHERE slug = $1
+		SELECT t.id, t.owner_id, t.sender_email, t.name, t.description, t.recipient_email, t.slug, t.password_hash,
+		       t.max_downloads, t.download_count, t.expires_at, t.is_revoked, t.created_at,
+		       COALESCE((SELECT count(*) FROM transfer.transfer_files tf WHERE tf.transfer_id = t.id), 0) AS file_count,
+		       (t.max_downloads > 0 AND NOT EXISTS (
+		           SELECT 1 FROM transfer.transfer_files tf
+		           LEFT JOIN transfer.file_download_counts fdc
+		               ON fdc.transfer_id = tf.transfer_id AND fdc.file_id = tf.file_id
+		           WHERE tf.transfer_id = t.id
+		             AND COALESCE(fdc.count, 0) < t.max_downloads
+		       )) AS is_exhausted
+		FROM transfer.transfers t
+		WHERE t.slug = $1
 	`, slug).Scan(
 		&t.ID, &t.OwnerID, &t.SenderEmail, &t.Name, &t.Description, &t.RecipientEmail, &t.Slug, &t.PasswordHash,
-		&t.MaxDownloads, &t.DownloadCount, &t.ExpiresAt, &t.IsRevoked, &t.CreatedAt,
+		&t.MaxDownloads, &t.DownloadCount, &t.ExpiresAt, &t.IsRevoked, &t.CreatedAt, &t.FileCount, &t.IsExhausted,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -80,12 +89,21 @@ func (r *TransferRepository) GetBySlug(ctx context.Context, slug string) (*domai
 func (r *TransferRepository) GetByID(ctx context.Context, id string) (*domain.Transfer, error) {
 	var t domain.Transfer
 	err := r.db.QueryRow(ctx, `
-		SELECT id, owner_id, sender_email, name, description, recipient_email, slug, password_hash, max_downloads, download_count, expires_at, is_revoked, created_at
-		FROM transfer.transfers
-		WHERE id = $1
+		SELECT t.id, t.owner_id, t.sender_email, t.name, t.description, t.recipient_email, t.slug, t.password_hash,
+		       t.max_downloads, t.download_count, t.expires_at, t.is_revoked, t.created_at,
+		       COALESCE((SELECT count(*) FROM transfer.transfer_files tf WHERE tf.transfer_id = t.id), 0) AS file_count,
+		       (t.max_downloads > 0 AND NOT EXISTS (
+		           SELECT 1 FROM transfer.transfer_files tf
+		           LEFT JOIN transfer.file_download_counts fdc
+		               ON fdc.transfer_id = tf.transfer_id AND fdc.file_id = tf.file_id
+		           WHERE tf.transfer_id = t.id
+		             AND COALESCE(fdc.count, 0) < t.max_downloads
+		       )) AS is_exhausted
+		FROM transfer.transfers t
+		WHERE t.id = $1
 	`, id).Scan(
 		&t.ID, &t.OwnerID, &t.SenderEmail, &t.Name, &t.Description, &t.RecipientEmail, &t.Slug, &t.PasswordHash,
-		&t.MaxDownloads, &t.DownloadCount, &t.ExpiresAt, &t.IsRevoked, &t.CreatedAt,
+		&t.MaxDownloads, &t.DownloadCount, &t.ExpiresAt, &t.IsRevoked, &t.CreatedAt, &t.FileCount, &t.IsExhausted,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -99,10 +117,19 @@ func (r *TransferRepository) GetByID(ctx context.Context, id string) (*domain.Tr
 // ListByOwner returns all transfers belonging to ownerID (newest first).
 func (r *TransferRepository) ListByOwner(ctx context.Context, ownerID string, limit, offset int) ([]*domain.Transfer, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT id, owner_id, sender_email, name, description, recipient_email, slug, password_hash, max_downloads, download_count, expires_at, is_revoked, created_at
-		FROM transfer.transfers
-		WHERE owner_id = $1
-		ORDER BY created_at DESC
+		SELECT t.id, t.owner_id, t.sender_email, t.name, t.description, t.recipient_email, t.slug, t.password_hash,
+		       t.max_downloads, t.download_count, t.expires_at, t.is_revoked, t.created_at,
+		       COALESCE((SELECT count(*) FROM transfer.transfer_files tf WHERE tf.transfer_id = t.id), 0) AS file_count,
+		       (t.max_downloads > 0 AND NOT EXISTS (
+		           SELECT 1 FROM transfer.transfer_files tf
+		           LEFT JOIN transfer.file_download_counts fdc
+		               ON fdc.transfer_id = tf.transfer_id AND fdc.file_id = tf.file_id
+		           WHERE tf.transfer_id = t.id
+		             AND COALESCE(fdc.count, 0) < t.max_downloads
+		       )) AS is_exhausted
+		FROM transfer.transfers t
+		WHERE t.owner_id = $1
+		ORDER BY t.created_at DESC
 		LIMIT $2 OFFSET $3
 	`, ownerID, limit, offset)
 	if err != nil {
@@ -115,7 +142,7 @@ func (r *TransferRepository) ListByOwner(ctx context.Context, ownerID string, li
 		var t domain.Transfer
 		if err := rows.Scan(
 			&t.ID, &t.OwnerID, &t.SenderEmail, &t.Name, &t.Description, &t.RecipientEmail, &t.Slug, &t.PasswordHash,
-			&t.MaxDownloads, &t.DownloadCount, &t.ExpiresAt, &t.IsRevoked, &t.CreatedAt,
+			&t.MaxDownloads, &t.DownloadCount, &t.ExpiresAt, &t.IsRevoked, &t.CreatedAt, &t.FileCount, &t.IsExhausted,
 		); err != nil {
 			return nil, apperrors.Internal("scan transfer", err)
 		}
@@ -168,6 +195,55 @@ func (r *TransferRepository) GetFileIDs(ctx context.Context, transferID string) 
 		ids = append(ids, fid)
 	}
 	return ids, rows.Err()
+}
+
+// AttemptFileDownload atomically checks and increments the per-file download counter.
+// Returns (true, nil) if the download is allowed (counter was incremented).
+// Returns (false, nil) if the per-file limit has already been reached.
+// The operation is race-safe: the PostgreSQL upsert's WHERE clause prevents concurrent
+// requests from exceeding the limit even under high concurrency.
+func (r *TransferRepository) AttemptFileDownload(ctx context.Context, transferID, fileID string, maxDownloads int) (bool, error) {
+	var newCount int
+	err := r.db.QueryRow(ctx, `
+		INSERT INTO transfer.file_download_counts (transfer_id, file_id, count, last_downloaded_at)
+		VALUES ($1::uuid, $2::uuid, 1, now())
+		ON CONFLICT (transfer_id, file_id) DO UPDATE
+		    SET count              = file_download_counts.count + 1,
+		        last_downloaded_at = now()
+		    WHERE file_download_counts.count < $3
+		RETURNING count
+	`, transferID, fileID, maxDownloads).Scan(&newCount)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// WHERE clause was not satisfied — file already at the download limit.
+			return false, nil
+		}
+		return false, apperrors.Internal("attempt file download", err)
+	}
+	return true, nil
+}
+
+// GetFileDownloadCounts returns a map of fileID → download count for all files
+// in a transfer that have been downloaded at least once.
+func (r *TransferRepository) GetFileDownloadCounts(ctx context.Context, transferID string) (map[string]int, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT file_id::text, count FROM transfer.file_download_counts WHERE transfer_id = $1
+	`, transferID)
+	if err != nil {
+		return nil, apperrors.Internal("get file download counts", err)
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var fid string
+		var count int
+		if err := rows.Scan(&fid, &count); err != nil {
+			return nil, apperrors.Internal("scan file download count", err)
+		}
+		counts[fid] = count
+	}
+	return counts, rows.Err()
 }
 
 // ExpireStale marks all non-revoked transfers whose expires_at is in the past as revoked.

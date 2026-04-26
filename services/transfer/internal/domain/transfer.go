@@ -12,8 +12,10 @@ type Transfer struct {
 	RecipientEmail string // empty = public link
 	Slug           string // short URL token
 	PasswordHash   string // empty = no password
-	MaxDownloads   int    // 0 = unlimited
-	DownloadCount  int
+	MaxDownloads   int    // 0 = unlimited; limit is enforced per individual file
+	DownloadCount  int    // informational grand total; not used for limit enforcement
+	FileCount      int    // number of files; populated by repo queries
+	IsExhausted    bool   // true when every file has reached MaxDownloads; populated by repo
 	ExpiresAt      *time.Time // always set; "never" is not permitted
 	IsRevoked      bool
 	CreatedAt      time.Time
@@ -21,11 +23,12 @@ type Transfer struct {
 
 // Status returns the current lifecycle state: "revoked", "exhausted", "expired", or "active".
 // Priority: revoked > exhausted > expired > active.
+// IsExhausted is populated by the repository (DB subquery on file_download_counts).
 func (t *Transfer) Status() string {
 	if t.IsRevoked {
 		return "revoked"
 	}
-	if t.MaxDownloads > 0 && t.DownloadCount >= t.MaxDownloads {
+	if t.MaxDownloads > 0 && t.IsExhausted {
 		return "exhausted"
 	}
 	if t.ExpiresAt != nil && time.Now().After(*t.ExpiresAt) {

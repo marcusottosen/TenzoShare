@@ -409,14 +409,32 @@ func handleGetStats(c fiber.Ctx) error {
 	_ = db.QueryRow(c.Context(), "SELECT count(*), coalesce(sum(size_bytes),0) FROM storage.files WHERE deleted_at IS NULL").
 		Scan(&s.TotalFiles, &s.TotalStorageB)
 
-	// Transfer status breakdown
+	// Transfer status breakdown — uses per-file download counts table for accuracy
 	_ = db.QueryRow(c.Context(), `
 		SELECT
-			count(*) FILTER (WHERE NOT is_revoked AND (expires_at IS NULL OR expires_at > now()) AND (max_downloads IS NULL OR max_downloads = 0 OR download_count < max_downloads)),
-			count(*) FILTER (WHERE NOT is_revoked AND max_downloads > 0 AND download_count >= max_downloads),
-			count(*) FILTER (WHERE NOT is_revoked AND expires_at IS NOT NULL AND expires_at <= now()),
-			count(*) FILTER (WHERE is_revoked)
-		FROM transfer.transfers`,
+		    count(*) FILTER (WHERE
+		        NOT t.is_revoked
+		        AND (t.expires_at IS NULL OR t.expires_at > now())
+		        AND (t.max_downloads = 0 OR t.max_downloads IS NULL OR EXISTS (
+		            SELECT 1 FROM transfer.transfer_files tf
+		            LEFT JOIN transfer.file_download_counts fdc
+		                ON fdc.transfer_id = tf.transfer_id AND fdc.file_id = tf.file_id
+		            WHERE tf.transfer_id = t.id AND COALESCE(fdc.count, 0) < t.max_downloads
+		        ))
+		    ),
+		    count(*) FILTER (WHERE
+		        NOT t.is_revoked
+		        AND t.max_downloads > 0
+		        AND NOT EXISTS (
+		            SELECT 1 FROM transfer.transfer_files tf
+		            LEFT JOIN transfer.file_download_counts fdc
+		                ON fdc.transfer_id = tf.transfer_id AND fdc.file_id = tf.file_id
+		            WHERE tf.transfer_id = t.id AND COALESCE(fdc.count, 0) < t.max_downloads
+		        )
+		    ),
+		    count(*) FILTER (WHERE NOT t.is_revoked AND t.expires_at IS NOT NULL AND t.expires_at <= now()),
+		    count(*) FILTER (WHERE t.is_revoked)
+		FROM transfer.transfers t`,
 	).Scan(&s.TransferBreakdown.Active, &s.TransferBreakdown.Exhausted, &s.TransferBreakdown.Expired, &s.TransferBreakdown.Revoked)
 
 	// Transfers created per day — last 14 days
@@ -492,6 +510,7 @@ type transferRow struct {
 	Status         string  `json:"status"`
 	HasPassword    bool    `json:"has_password"`
 	FileCount      int     `json:"file_count"`
+	IsExhausted    bool    `json:"-"` // populated by DB subquery; not exposed directly
 }
 
 type transferFile struct {
@@ -516,7 +535,7 @@ func scanTransferRow(r *transferRow, expiresAt *time.Time, maxDownloads *int, cr
 	r.HasPassword = passwordHash != nil && *passwordHash != ""
 	if r.IsRevoked {
 		r.Status = "revoked"
-	} else if maxDownloads != nil && *maxDownloads > 0 && r.DownloadCount >= *maxDownloads {
+	} else if r.IsExhausted {
 		r.Status = "exhausted"
 	} else if expiresAt != nil && expiresAt.Before(time.Now()) {
 		r.Status = "expired"
@@ -544,9 +563,21 @@ func handleListTransfers(c fiber.Ctx) error {
 	where := ""
 	switch status {
 	case "active":
-		where = "WHERE t.is_revoked = false AND (t.expires_at IS NULL OR t.expires_at > now()) AND (t.max_downloads IS NULL OR t.max_downloads = 0 OR t.download_count < t.max_downloads)"
+		where = `WHERE t.is_revoked = false AND (t.expires_at IS NULL OR t.expires_at > now())
+		  AND (t.max_downloads = 0 OR t.max_downloads IS NULL OR EXISTS (
+		      SELECT 1 FROM transfer.transfer_files tf
+		      LEFT JOIN transfer.file_download_counts fdc
+		          ON fdc.transfer_id = tf.transfer_id AND fdc.file_id = tf.file_id
+		      WHERE tf.transfer_id = t.id AND COALESCE(fdc.count, 0) < t.max_downloads
+		  ))`
 	case "exhausted":
-		where = "WHERE t.is_revoked = false AND t.max_downloads > 0 AND t.download_count >= t.max_downloads"
+		where = `WHERE t.is_revoked = false AND t.max_downloads > 0
+		  AND NOT EXISTS (
+		      SELECT 1 FROM transfer.transfer_files tf
+		      LEFT JOIN transfer.file_download_counts fdc
+		          ON fdc.transfer_id = tf.transfer_id AND fdc.file_id = tf.file_id
+		      WHERE tf.transfer_id = t.id AND COALESCE(fdc.count, 0) < t.max_downloads
+		  )`
 	case "expired":
 		where = "WHERE t.is_revoked = false AND t.expires_at IS NOT NULL AND t.expires_at <= now()"
 	case "revoked":
@@ -561,7 +592,13 @@ func handleListTransfers(c fiber.Ctx) error {
 		       COALESCE(t.recipient_email, '') AS recipient_email,
 		       t.slug, t.is_revoked, t.expires_at, t.download_count,
 		       t.max_downloads, t.created_at, t.password_hash,
-		       (SELECT count(*) FROM transfer.transfer_files tf WHERE tf.transfer_id = t.id) AS file_count
+		       (SELECT count(*) FROM transfer.transfer_files tf WHERE tf.transfer_id = t.id) AS file_count,
+		       (t.max_downloads > 0 AND NOT EXISTS (
+		           SELECT 1 FROM transfer.transfer_files tf
+		           LEFT JOIN transfer.file_download_counts fdc
+		               ON fdc.transfer_id = tf.transfer_id AND fdc.file_id = tf.file_id
+		           WHERE tf.transfer_id = t.id AND COALESCE(fdc.count, 0) < t.max_downloads
+		       )) AS is_exhausted
 		FROM transfer.transfers t
 		LEFT JOIN auth.users u ON t.owner_id = u.id
 		` + where + `
@@ -583,7 +620,7 @@ func handleListTransfers(c fiber.Ctx) error {
 		var passwordHash *string
 		if err := rows.Scan(&r.ID, &r.OwnerEmail, &r.Name, &r.Description,
 			&r.RecipientEmail, &r.Slug, &r.IsRevoked,
-			&expiresAt, &r.DownloadCount, &maxDownloads, &createdAt, &passwordHash, &r.FileCount); err != nil {
+			&expiresAt, &r.DownloadCount, &maxDownloads, &createdAt, &passwordHash, &r.FileCount, &r.IsExhausted); err != nil {
 			continue
 		}
 		scanTransferRow(&r, expiresAt, maxDownloads, createdAt, passwordHash)
@@ -612,13 +649,19 @@ func handleGetTransfer(c fiber.Ctx) error {
 		       COALESCE(t.recipient_email, '') AS recipient_email,
 		       t.slug, t.is_revoked, t.expires_at, t.download_count,
 		       t.max_downloads, t.created_at, t.password_hash,
-		       (SELECT count(*) FROM transfer.transfer_files tf WHERE tf.transfer_id = t.id) AS file_count
+		       (SELECT count(*) FROM transfer.transfer_files tf WHERE tf.transfer_id = t.id) AS file_count,
+		       (t.max_downloads > 0 AND NOT EXISTS (
+		           SELECT 1 FROM transfer.transfer_files tf
+		           LEFT JOIN transfer.file_download_counts fdc
+		               ON fdc.transfer_id = tf.transfer_id AND fdc.file_id = tf.file_id
+		           WHERE tf.transfer_id = t.id AND COALESCE(fdc.count, 0) < t.max_downloads
+		       )) AS is_exhausted
 		FROM transfer.transfers t
 		LEFT JOIN auth.users u ON t.owner_id = u.id
 		WHERE t.id = $1`, id,
 	).Scan(&r.ID, &r.OwnerEmail, &r.Name, &r.Description,
 		&r.RecipientEmail, &r.Slug, &r.IsRevoked,
-		&expiresAt, &r.DownloadCount, &maxDownloads, &createdAt, &passwordHash, &r.FileCount)
+		&expiresAt, &r.DownloadCount, &maxDownloads, &createdAt, &passwordHash, &r.FileCount, &r.IsExhausted)
 	if err != nil {
 		return apperrors.NotFound("transfer not found")
 	}

@@ -49,7 +49,7 @@ export default function LoginPage() {
           </div>
           <div>
             <div className="auth-logo-name">TenzoAdmin</div>
-            <div className="auth-logo-sub">Infrastructure Control</div>
+            <div className="auth-logo-sub">Admin Portal</div>
           </div>
         </div>
         <h1>Sign in</h1>

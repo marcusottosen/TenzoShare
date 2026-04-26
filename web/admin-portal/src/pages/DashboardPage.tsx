@@ -77,7 +77,7 @@ function TransferStatusChart({ stats }: { stats: SystemStats }) {
     <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
       <ResponsiveContainer width={140} height={140}>
         <PieChart>
-          <Pie data={data} cx="50%" cy="50%" innerRadius={42} outerRadius={62} dataKey="value" strokeWidth={0}>
+          <Pie data={data} cx="50%" cy="50%" innerRadius={42} outerRadius={62} dataKey="value" strokeWidth={0} isAnimationActive={true} animationBegin={0} animationDuration={600} animationEasing="ease-out">
             {data.map((entry, i) => (
               <Cell key={i} fill={entry.color} />
             ))}

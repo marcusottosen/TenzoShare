@@ -215,7 +215,7 @@ export default function TransfersPage() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [status, setStatus] = useState<'all' | 'active' | 'expired' | 'revoked'>('all');
+  const [status, setStatus] = useState<'all' | 'active' | 'exhausted' | 'expired' | 'revoked'>('all');
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<AdminTransfer | null>(null);
   const sort = useSortState<TransferSortKey>('created_at', 'desc', () => setPage(0));

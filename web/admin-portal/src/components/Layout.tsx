@@ -98,7 +98,7 @@ export default function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const [searchQuery, setSearchQuery] = React.useState('');
+
 
   const pageTitle = PAGE_TITLES[location.pathname] ?? 'Admin';
 
@@ -121,7 +121,7 @@ export default function Layout() {
           </div>
           <div>
             <div className="sidebar-title">TenzoAdmin</div>
-            <div className="sidebar-subtitle">Infrastructure Control</div>
+            <div className="sidebar-subtitle">Admin Portal</div>
           </div>
         </div>
 
@@ -165,16 +165,6 @@ export default function Layout() {
       {/* ── Navbar ──────────────────────────────────────────── */}
       <header className="navbar">
         <div className="navbar-breadcrumb">{pageTitle}</div>
-
-        <div className="navbar-search">
-          <IconSearch />
-          <input
-            type="text"
-            placeholder="Search users or events…"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
-        </div>
 
         <div className="navbar-avatar">{initials}</div>
       </header>
