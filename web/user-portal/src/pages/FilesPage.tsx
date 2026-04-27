@@ -81,6 +81,12 @@ function IconTrash() {
     </svg>
   );
 }
+type FileSortKey = 'name' | 'size' | 'modified';
+function SortArrow({ col, sortKey, sortDir }: { col: FileSortKey; sortKey: FileSortKey; sortDir: 'asc' | 'desc' }) {
+  if (col !== sortKey) return <span className="sort-arrow" style={{ opacity: 0.3 }}>{'↕'}</span>;
+  return <span className="sort-arrow">{sortDir === 'asc' ? '↑' : '↓'}</span>;
+}
+
 function IconLock() {
   return (
     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -126,11 +132,11 @@ export default function FilesPage() {
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState<UploadProgress | null>(null);
   const [search, setSearch] = useState('');
-  const [sortKey, setSortKey] = useState<'name'|'size'|'modified'>('modified');
+  const [sortKey, setSortKey] = useState<FileSortKey>('modified');
   const [sortDir, setSortDir] = useState<'asc'|'desc'>('desc');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  function toggleSort(key: 'name'|'size'|'modified') {
+  function toggleSort(key: FileSortKey) {
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
     else { setSortKey(key); setSortDir('asc'); }
   }
@@ -318,18 +324,21 @@ export default function FilesPage() {
           <>
             {/* Table header */}
             <div style={{
-              display: 'grid', gridTemplateColumns: '2.5fr 100px 130px 90px',
+              display: 'grid', gridTemplateColumns: '2.5fr 100px 130px 140px 90px',
               padding: '8px 20px', borderBottom: '1px solid var(--color-border)',
               fontSize: 11, fontWeight: 600, color: 'var(--color-text-muted)',
               textTransform: 'uppercase', letterSpacing: '0.06em',
             }}>
               <span className="sort-th" onClick={() => toggleSort('name')} style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-                Name <span className="sort-arrow">{sortKey === 'name' ? (sortDir === 'asc' ? '\u2191' : '\u2193') : '\u2195'}</span>
+                Name <SortArrow col="name" sortKey={sortKey} sortDir={sortDir} />
               </span>
               <span className="sort-th" onClick={() => toggleSort('size')} style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-                Size <span className="sort-arrow">{sortKey === 'size' ? (sortDir === 'asc' ? '\u2191' : '\u2193') : '\u2195'}</span>
+                Size <SortArrow col="size" sortKey={sortKey} sortDir={sortDir} />
               </span>
               <span>Security</span>
+              <span className="sort-th" onClick={() => toggleSort('modified')} style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                Uploaded <SortArrow col="modified" sortKey={sortKey} sortDir={sortDir} />
+              </span>
               <span style={{ textAlign: 'right' }}>Actions</span>
             </div>
 
@@ -353,13 +362,12 @@ export default function FilesPage() {
                         <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {f.filename}
                         </div>
-                        <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2 }}>
-                          Modified {timeAgo(f.created_at)}
-                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2 }}>{f.content_type}</div>
                       </div>
                     </div>
                     <span style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>{fmtBytes(f.size_bytes)}</span>
                     <span className="aes-badge"><IconLock /> AES-256</span>
+                    <span style={{ fontSize: 12, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }} title={new Date(f.created_at).toLocaleString()}>{timeAgo(f.created_at)}</span>
                     <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
                       <button className="files-icon-btn" title="Share" onClick={() => {
                         pendingFileStore.set([{ id: f.id, filename: f.filename, size_bytes: f.size_bytes }]);

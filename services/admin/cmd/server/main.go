@@ -35,6 +35,7 @@ type UserRow struct {
 	EmailVerified       bool       `json:"email_verified"`
 	FailedLoginAttempts int        `json:"failed_login_attempts"`
 	LockedUntil         *time.Time `json:"locked_until"`
+	LastLoginAt         *time.Time `json:"last_login_at"`
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
 }
@@ -136,6 +137,7 @@ func main() {
 	v1.Post("/users/:id/verify", handleVerifyEmail)
 	v1.Get("/stats", handleGetStats)
 	v1.Get("/system/health", handleSystemHealth)
+	v1.Get("/storage/usage", handleListStorageUsage)
 	v1.Get("/transfers", handleListTransfers)
 	v1.Get("/transfers/:id", handleGetTransfer)
 	v1.Post("/transfers/:id/revoke", handleRevokeTransfer)
@@ -187,6 +189,8 @@ func transferSortClause(sortBy, sortDir string) string {
 		return "t.download_count " + sortDir
 	case "file_count":
 		return "file_count " + sortDir
+	case "total_size_bytes":
+		return "total_size_bytes " + sortDir
 	case "expires_at":
 		return "t.expires_at " + sortDir + " NULLS LAST"
 	case "status":
@@ -240,7 +244,7 @@ func handleListUsers(c fiber.Ctx) error {
 		return apperrors.Internal("count users", err)
 	}
 
-	dataSQL := "SELECT id, email, role, is_active, email_verified, failed_login_attempts, locked_until, created_at, updated_at FROM auth.users " +
+	dataSQL := "SELECT id, email, role, is_active, email_verified, failed_login_attempts, locked_until, last_login_at, created_at, updated_at FROM auth.users " +
 		where + " ORDER BY " + orderBy + " LIMIT $" + itoa(idx) + " OFFSET $" + itoa(idx+1)
 	args = append(args, limit, offset)
 
@@ -254,7 +258,7 @@ func handleListUsers(c fiber.Ctx) error {
 	for rows.Next() {
 		var u UserRow
 		if err := rows.Scan(&u.ID, &u.Email, &u.Role, &u.IsActive, &u.EmailVerified,
-			&u.FailedLoginAttempts, &u.LockedUntil, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			&u.FailedLoginAttempts, &u.LockedUntil, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return apperrors.Internal("scan user row", err)
 		}
 		users = append(users, u)
@@ -510,6 +514,7 @@ type transferRow struct {
 	Status         string  `json:"status"`
 	HasPassword    bool    `json:"has_password"`
 	FileCount      int     `json:"file_count"`
+	TotalSizeBytes int64   `json:"total_size_bytes"`
 	IsExhausted    bool    `json:"-"` // populated by DB subquery; not exposed directly
 }
 
@@ -593,6 +598,10 @@ func handleListTransfers(c fiber.Ctx) error {
 		       t.slug, t.is_revoked, t.expires_at, t.download_count,
 		       t.max_downloads, t.created_at, t.password_hash,
 		       (SELECT count(*) FROM transfer.transfer_files tf WHERE tf.transfer_id = t.id) AS file_count,
+		       COALESCE((SELECT sum(f.size_bytes)
+		                 FROM transfer.transfer_files tf
+		                 JOIN storage.files f ON f.id = tf.file_id
+		                 WHERE tf.transfer_id = t.id AND f.deleted_at IS NULL), 0) AS total_size_bytes,
 		       (t.max_downloads > 0 AND NOT EXISTS (
 		           SELECT 1 FROM transfer.transfer_files tf
 		           LEFT JOIN transfer.file_download_counts fdc
@@ -620,7 +629,7 @@ func handleListTransfers(c fiber.Ctx) error {
 		var passwordHash *string
 		if err := rows.Scan(&r.ID, &r.OwnerEmail, &r.Name, &r.Description,
 			&r.RecipientEmail, &r.Slug, &r.IsRevoked,
-			&expiresAt, &r.DownloadCount, &maxDownloads, &createdAt, &passwordHash, &r.FileCount, &r.IsExhausted); err != nil {
+			&expiresAt, &r.DownloadCount, &maxDownloads, &createdAt, &passwordHash, &r.FileCount, &r.TotalSizeBytes, &r.IsExhausted); err != nil {
 			continue
 		}
 		scanTransferRow(&r, expiresAt, maxDownloads, createdAt, passwordHash)
@@ -650,6 +659,10 @@ func handleGetTransfer(c fiber.Ctx) error {
 		       t.slug, t.is_revoked, t.expires_at, t.download_count,
 		       t.max_downloads, t.created_at, t.password_hash,
 		       (SELECT count(*) FROM transfer.transfer_files tf WHERE tf.transfer_id = t.id) AS file_count,
+		       COALESCE((SELECT sum(f.size_bytes)
+		                 FROM transfer.transfer_files tf
+		                 JOIN storage.files f ON f.id = tf.file_id
+		                 WHERE tf.transfer_id = t.id AND f.deleted_at IS NULL), 0) AS total_size_bytes,
 		       (t.max_downloads > 0 AND NOT EXISTS (
 		           SELECT 1 FROM transfer.transfer_files tf
 		           LEFT JOIN transfer.file_download_counts fdc
@@ -661,7 +674,7 @@ func handleGetTransfer(c fiber.Ctx) error {
 		WHERE t.id = $1`, id,
 	).Scan(&r.ID, &r.OwnerEmail, &r.Name, &r.Description,
 		&r.RecipientEmail, &r.Slug, &r.IsRevoked,
-		&expiresAt, &r.DownloadCount, &maxDownloads, &createdAt, &passwordHash, &r.FileCount, &r.IsExhausted)
+		&expiresAt, &r.DownloadCount, &maxDownloads, &createdAt, &passwordHash, &r.FileCount, &r.TotalSizeBytes, &r.IsExhausted)
 	if err != nil {
 		return apperrors.NotFound("transfer not found")
 	}
@@ -703,6 +716,90 @@ func handleRevokeTransfer(c fiber.Ctx) error {
 		return apperrors.NotFound("transfer not found")
 	}
 	return c.JSON(fiber.Map{"ok": true})
+}
+
+// ── Storage usage ─────────────────────────────────────────────────────────────
+
+// StorageUserUsage is the per-user shape returned by the admin storage usage endpoint.
+type StorageUserUsage struct {
+	UserID     string `json:"user_id"`
+	Email      string `json:"email"`
+	FileCount  int64  `json:"file_count"`
+	TotalBytes int64  `json:"total_bytes"`
+}
+
+// storageUsageSortClause returns a safe ORDER BY expression for the storage usage query.
+func storageUsageSortClause(sortBy, sortDir string) string {
+	if sortDir != "asc" {
+		sortDir = "desc"
+	}
+	switch sortBy {
+	case "email":
+		return "u.email " + sortDir
+	case "file_count":
+		return "file_count " + sortDir
+	default: // total_bytes
+		return "total_bytes " + sortDir
+	}
+}
+
+// GET /api/v1/admin/storage/usage?limit=50&offset=0&sort_by=total_bytes&sort_dir=desc
+// Returns all users with their aggregated file count and total storage in bytes.
+// Users with no files are included (showing 0 for both counters).
+func handleListStorageUsage(c fiber.Ctx) error {
+	limit := 50
+	offset := 0
+	if v := c.Query("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	if v := c.Query("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+
+	orderBy := storageUsageSortClause(c.Query("sort_by", "total_bytes"), c.Query("sort_dir", "desc"))
+
+	rows, err := db.Query(c.Context(), `
+		SELECT u.id,
+		       u.email,
+		       count(f.id)                    AS file_count,
+		       coalesce(sum(f.size_bytes), 0) AS total_bytes
+		FROM auth.users u
+		LEFT JOIN storage.files f ON f.owner_id = u.id AND f.deleted_at IS NULL
+		GROUP BY u.id, u.email
+		ORDER BY `+orderBy+`
+		LIMIT $1 OFFSET $2`,
+		limit, offset,
+	)
+	if err != nil {
+		return apperrors.Internal("list storage usage", err)
+	}
+	defer rows.Close()
+
+	usage := make([]StorageUserUsage, 0)
+	for rows.Next() {
+		var u StorageUserUsage
+		if err := rows.Scan(&u.UserID, &u.Email, &u.FileCount, &u.TotalBytes); err != nil {
+			return apperrors.Internal("scan storage usage row", err)
+		}
+		usage = append(usage, u)
+	}
+	if err := rows.Err(); err != nil {
+		return apperrors.Internal("iterate storage usage", err)
+	}
+
+	var total int
+	_ = db.QueryRow(c.Context(), "SELECT count(*) FROM auth.users").Scan(&total)
+
+	return c.JSON(fiber.Map{
+		"usage":  usage,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	})
 }
 
 // GET /api/v1/admin/system/health

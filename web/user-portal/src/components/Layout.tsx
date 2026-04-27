@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { NavLink, useNavigate, Outlet, useLocation } from 'react-router';
 import { useAuth } from '../stores/auth';
 import { logout as apiLogout } from '../api/auth';
@@ -50,13 +50,6 @@ function IconSettings() {
     </svg>
   );
 }
-function IconSearch() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-    </svg>
-  );
-}
 function IconLogOut() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -100,7 +93,7 @@ export default function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const [searchQuery, setSearchQuery] = useState('');
+
 
   const pageTitle = PAGE_TITLES[location.pathname]
     ?? (location.pathname.startsWith('/transfers/') ? 'Transfer Details' : 'TenzoShare');
@@ -129,20 +122,25 @@ export default function Layout() {
         </div>
 
         <div className="sidebar-nav">
+          <div className="sidebar-section-label">Overview</div>
           <NavLink to="/" end className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             <IconGrid /> Dashboard
           </NavLink>
+
+          <div className="sidebar-section-label">Transfer</div>
           <NavLink to="/transfers/new" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             <IconUpload /> Upload
           </NavLink>
+          <NavLink to="/requests" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            <IconInbox /> File Requests
+          </NavLink>
+
+          <div className="sidebar-section-label">Library</div>
           <NavLink to="/files" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             <IconFolder /> My Files
           </NavLink>
           <NavLink to="/shares" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             <IconShare /> Shares &amp; Requests
-          </NavLink>
-          <NavLink to="/requests" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
-            <IconInbox /> File Requests
           </NavLink>
 
           <div className="sidebar-section-label">Account</div>
@@ -169,15 +167,6 @@ export default function Layout() {
       <header className="navbar">
         <div className="navbar-breadcrumb">{pageTitle}</div>
 
-        <div className="navbar-search">
-          <IconSearch />
-          <input
-            type="text"
-            placeholder="Search files…"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
-        </div>
         <div className="navbar-avatar">{initials}</div>
       </header>
 

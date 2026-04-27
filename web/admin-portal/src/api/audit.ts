@@ -5,6 +5,7 @@ export interface AuditEvent {
   source: string;
   action: string;
   user_id: string | null;
+  actor_email: string | null;
   client_ip: string | null;
   subject: string;
   payload: Record<string, unknown>;
@@ -20,8 +21,8 @@ export interface AuditListResponse {
 }
 
 export interface AuditFilters {
-  user_id?: string;
-  source?: string;
+  user_ids?: string[];
+  sources?: string[];
   action?: string;
   start?: string;
   end?: string;
@@ -33,8 +34,8 @@ export interface AuditFilters {
 
 export async function listAuditEvents(filters: AuditFilters = {}): Promise<AuditListResponse> {
   const params = new URLSearchParams();
-  if (filters.user_id) params.set('user_id', filters.user_id);
-  if (filters.source) params.set('source', filters.source);
+  if (filters.user_ids?.length) params.set('user_id', filters.user_ids.join(','));
+  if (filters.sources?.length) params.set('source', filters.sources.join(','));
   if (filters.action) params.set('action', filters.action);
   if (filters.start) params.set('start', filters.start);
   if (filters.end) params.set('end', filters.end);

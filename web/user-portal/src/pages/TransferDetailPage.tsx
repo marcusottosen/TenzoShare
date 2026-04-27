@@ -41,6 +41,14 @@ function fmt(date: string) {
   return new Date(date).toLocaleString();
 }
 
+function fmtBytes(b: number): string {
+  if (b === 0) return '0 B';
+  const k = 1024;
+  const u = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(b) / Math.log(k));
+  return `${(b / Math.pow(k, i)).toFixed(1)} ${u[i]}`;
+}
+
 export default function TransferDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -167,6 +175,14 @@ export default function TransferDetailPage() {
               <td style={{ paddingLeft: 0 }}>
                 {transfer.download_count}
                 {transfer.max_downloads > 0 && ` / ${transfer.max_downloads}`}
+              </td>
+            </tr>
+            <tr>
+              <td style={{ paddingLeft: 0, fontWeight: 500 }}>Total size</td>
+              <td style={{ paddingLeft: 0 }}>
+                {transfer.total_size_bytes != null
+                  ? `${fmtBytes(transfer.total_size_bytes)}${transfer.file_count != null ? ` (${transfer.file_count} file${transfer.file_count !== 1 ? 's' : ''})` : ''}`
+                  : '—'}
               </td>
             </tr>
             <tr>

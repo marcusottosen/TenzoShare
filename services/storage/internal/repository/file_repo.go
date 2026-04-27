@@ -95,3 +95,18 @@ func (r *FileRepository) SoftDelete(ctx context.Context, id, ownerID string) err
 	}
 	return nil
 }
+
+// GetUsageByOwner returns aggregated file count and total bytes for a single owner.
+// Only non-deleted files are counted.
+func (r *FileRepository) GetUsageByOwner(ctx context.Context, ownerID string) (*domain.UserStorageUsage, error) {
+	u := &domain.UserStorageUsage{UserID: ownerID}
+	err := r.db.QueryRow(ctx, `
+		SELECT count(*), coalesce(sum(size_bytes), 0)
+		FROM storage.files
+		WHERE owner_id = $1 AND deleted_at IS NULL
+	`, ownerID).Scan(&u.FileCount, &u.TotalBytes)
+	if err != nil {
+		return nil, apperrors.Internal("get storage usage", err)
+	}
+	return u, nil
+}

@@ -93,6 +93,7 @@ func main() {
 	auth := middleware.JWTAuth(pubKey)
 	v1 := app.Group("/api/v1/files") // no group-level middleware — Fiber's Group.Use applies prefix-wide
 	v1.Post("/", auth, h.Upload)
+	v1.Get("/usage", auth, h.GetMyUsage)
 	v1.Get("/", auth, h.ListFiles)
 	v1.Get("/:id", auth, h.GetFile)
 	v1.Delete("/:id", auth, h.DeleteFile)

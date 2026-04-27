@@ -15,6 +15,16 @@ export interface FileListResponse {
   offset: number;
 }
 
+export interface StorageUsage {
+  user_id: string;
+  file_count: number;
+  total_bytes: number;
+}
+
+export async function getMyUsage(): Promise<StorageUsage> {
+  return request<StorageUsage>('/files/usage');
+}
+
 export async function listFiles(limit = 50, offset = 0): Promise<FileListResponse> {
   return request<FileListResponse>(`/files?limit=${limit}&offset=${offset}`);
 }

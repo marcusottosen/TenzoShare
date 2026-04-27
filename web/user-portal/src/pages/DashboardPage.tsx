@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { listTransfers, revokeTransfer, type Transfer } from '../api/transfers';
+import { getMyUsage, type StorageUsage } from '../api/files';
 import { useAuth } from '../stores/auth';
 import { pendingUploadStore } from '../stores/pendingUpload';
 
@@ -101,9 +102,6 @@ function IconHDD() {
   );
 }
 
-// ─── Mock data ───────────────────────────────────────────────────
-const MOCK_STORAGE = { usedGB: 42.8, totalGB: 100 };
-
 // ─── Activity badge ──────────────────────────────────────────────
 function ActivityBadge({ type }: { type: string }) {
   if (type === 'secure') return <span className="act-badge act-badge-secure">SECURE</span>;
@@ -138,16 +136,20 @@ export default function DashboardPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [loading, setLoading] = useState(true);
+  const [storageUsage, setStorageUsage] = useState<StorageUsage | null>(null);
 
   useEffect(() => {
     listTransfers()
       .then((res) => setTransfers(res.transfers ?? []))
       .catch(() => {})
       .finally(() => setLoading(false));
+    getMyUsage()
+      .then(setStorageUsage)
+      .catch(() => {});
   }, []);
 
   const firstName = getFirstName(user?.email);
-  const storagePct = Math.round((MOCK_STORAGE.usedGB / MOCK_STORAGE.totalGB) * 100);
+  const usedBytes = storageUsage?.total_bytes ?? 0;
   const activity = buildActivity(transfers);
 
   function handleFilesPicked(e: React.ChangeEvent<HTMLInputElement>) {
@@ -210,13 +212,12 @@ export default function DashboardPage() {
               <span style={{ color: 'var(--color-text-muted)' }}><IconHDD /></span>
             </div>
             <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--color-text-primary)', letterSpacing: '-0.03em', marginBottom: 10 }}>
-              {MOCK_STORAGE.usedGB} GB
-            </div>
-            <div style={{ background: 'var(--color-border)', borderRadius: 4, height: 6, marginBottom: 8, overflow: 'hidden' }}>
-              <div style={{ width: `${storagePct}%`, height: '100%', background: 'var(--color-secondary)', borderRadius: 4, transition: 'width 0.6s ease' }} />
+              {storageUsage === null ? '—' : fmtBytes(usedBytes)}
             </div>
             <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
-              {storagePct}% of {MOCK_STORAGE.totalGB}GB total storage used
+              {storageUsage === null
+                ? 'Loading…'
+                : `${storageUsage.file_count} file${storageUsage.file_count !== 1 ? 's' : ''} stored`}
             </div>
           </div>
 

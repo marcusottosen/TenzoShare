@@ -329,6 +329,26 @@ func fileResponse(f *domain.File) fiber.Map {
 	}
 }
 
+// GetMyUsage returns storage consumption for the authenticated user.
+// GET /api/v1/files/usage
+func (h *Handler) GetMyUsage(c fiber.Ctx) error {
+	ownerID, _ := c.Locals("userID").(string)
+	if ownerID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+
+	usage, err := h.repo.GetUsageByOwner(c.Context(), ownerID)
+	if err != nil {
+		return err
+	}
+
+	return c.JSON(fiber.Map{
+		"user_id":     usage.UserID,
+		"file_count":  usage.FileCount,
+		"total_bytes": usage.TotalBytes,
+	})
+}
+
 func (h *Handler) publishAudit(ctx context.Context, action, userID, fileID string, extra map[string]any) {
 	if h.js == nil {
 		return

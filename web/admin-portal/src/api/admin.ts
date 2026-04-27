@@ -8,6 +8,7 @@ export interface AdminUser {
   email_verified: boolean;
   failed_login_attempts: number;
   locked_until: string | null;
+  last_login_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -110,6 +111,7 @@ export interface AdminTransfer {
   download_count: number;
   max_downloads: number | null;
   file_count: number;
+  total_size_bytes: number;
   created_at: string;
   status: 'active' | 'exhausted' | 'expired' | 'revoked';
 }
@@ -152,4 +154,32 @@ export async function getTransfer(id: string): Promise<AdminTransferDetail> {
 
 export async function revokeTransfer(id: string): Promise<void> {
   await request<{ ok: boolean }>(`/admin/transfers/${id}/revoke`, { method: 'POST' });
+}
+
+export interface StorageUserUsage {
+  user_id: string;
+  email: string;
+  file_count: number;
+  total_bytes: number;
+}
+
+export interface StorageUsageListResponse {
+  usage: StorageUserUsage[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export async function listStorageUsage(params: {
+  limit?: number;
+  offset?: number;
+  sort_by?: string;
+  sort_dir?: string;
+} = {}): Promise<StorageUsageListResponse> {
+  const qs = new URLSearchParams();
+  if (params.limit) qs.set('limit', String(params.limit));
+  if (params.offset) qs.set('offset', String(params.offset));
+  if (params.sort_by) qs.set('sort_by', params.sort_by);
+  if (params.sort_dir) qs.set('sort_dir', params.sort_dir);
+  return request<StorageUsageListResponse>(`/admin/storage/usage?${qs.toString()}`);
 }

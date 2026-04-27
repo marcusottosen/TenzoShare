@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { useLocation } from 'react-router';
 import {
   listTransfers, getTransfer, revokeTransfer,
   type AdminTransfer, type AdminTransferDetail, type TransferFile,
@@ -6,7 +7,7 @@ import {
 import { useSortState } from '../hooks/useSort';
 import { SortHeader } from '../components/SortHeader';
 
-type TransferSortKey = 'owner_email' | 'name' | 'status' | 'file_count' | 'download_count' | 'expires_at' | 'created_at';
+type TransferSortKey = 'owner_email' | 'name' | 'status' | 'file_count' | 'total_size_bytes' | 'download_count' | 'expires_at' | 'created_at';
 
 const PAGE_SIZE = 50;
 
@@ -131,6 +132,7 @@ function DetailModal({ transfer: initialTransfer, onClose, onRevoked }: DetailMo
               value={<span className="mono" style={{ fontSize: 12 }}>{transfer.slug}</span>}
             />
             <MetaItem label="Files" value={`${transfer.file_count}`} />
+            <MetaItem label="Total size" value={fmtBytes(transfer.total_size_bytes ?? 0)} />
           </div>
 
           {transfer.description && (
@@ -210,12 +212,21 @@ function FileRow({ file, last }: { file: TransferFile; last: boolean }) {
 
 // ── Main Page ────────────────────────────────────────────────────────────────
 
+const VALID_STATUSES = ['all', 'active', 'exhausted', 'expired', 'revoked'] as const;
+type StatusFilter = typeof VALID_STATUSES[number];
+
+function getInitialStatus(search: string): StatusFilter {
+  const param = new URLSearchParams(search).get('status');
+  return (VALID_STATUSES as readonly string[]).includes(param ?? '') ? (param as StatusFilter) : 'all';
+}
+
 export default function TransfersPage() {
+  const location = useLocation();
   const [transfers, setTransfers] = useState<AdminTransfer[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [status, setStatus] = useState<'all' | 'active' | 'exhausted' | 'expired' | 'revoked'>('all');
+  const [status, setStatus] = useState<StatusFilter>(() => getInitialStatus(location.search));
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<AdminTransfer | null>(null);
   const sort = useSortState<TransferSortKey>('created_at', 'desc', () => setPage(0));
@@ -271,7 +282,7 @@ export default function TransfersPage() {
         {/* Status filter */}
         <div style={{ display: 'flex', gap: 6, marginBottom: 16, alignItems: 'center', flexWrap: 'wrap' }}>
           <span className="text-sm" style={{ marginRight: 4 }}>Status:</span>
-          {(['all', 'active', 'exhausted', 'expired', 'revoked'] as const).map((s) => (
+          {VALID_STATUSES.map((s) => (
             <button
               key={s}
               className={`btn btn-sm ${status === s ? 'btn-primary' : 'btn-secondary'}`}
@@ -298,6 +309,7 @@ export default function TransfersPage() {
                   <th>Shared To</th>
                   <SortHeader label="Status" sortKey="status" sort={sort} />
                   <SortHeader label="Files" sortKey="file_count" sort={sort} />
+                  <SortHeader label="Size" sortKey="total_size_bytes" sort={sort} />
                   <SortHeader label="Downloads" sortKey="download_count" sort={sort} />
                   <th>Password</th>
                   <SortHeader label="Expires" sortKey="expires_at" sort={sort} />
@@ -330,6 +342,9 @@ export default function TransfersPage() {
                         <FileIcon />
                         {t.file_count}
                       </span>
+                    </td>
+                    <td className="text-sm" style={{ whiteSpace: 'nowrap' }}>
+                      {fmtBytes(t.total_size_bytes ?? 0)}
                     </td>
                     <td className="text-sm">
                       {t.download_count}

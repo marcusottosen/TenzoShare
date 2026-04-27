@@ -14,3 +14,10 @@ type File struct {
 	CreatedAt    time.Time
 	DeletedAt    *time.Time
 }
+
+// UserStorageUsage aggregates storage consumption for a single user.
+type UserStorageUsage struct {
+	UserID     string
+	FileCount  int64
+	TotalBytes int64
+}

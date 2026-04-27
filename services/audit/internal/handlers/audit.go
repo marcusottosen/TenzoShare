@@ -3,6 +3,7 @@ package handlers
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -22,7 +23,7 @@ func New(repo *repository.Repository) *Handler {
 }
 
 // ListEvents handles GET /api/v1/audit/events
-// Query params: user_id, source, action, start, end, limit, offset, sort_by, sort_dir
+// Query params: user_id (comma-separated), source (comma-separated), action, start, end, limit, offset, sort_by, sort_dir
 func (h *Handler) ListEvents(c fiber.Ctx) error {
 	limit := 50
 	if v, err := strconv.Atoi(c.Query("limit")); err == nil && v > 0 {
@@ -32,9 +33,24 @@ func (h *Handler) ListEvents(c fiber.Ctx) error {
 	if v, err := strconv.Atoi(c.Query("offset")); err == nil && v >= 0 {
 		offset = v
 	}
+
+	splitTrimmed := func(s string) []string {
+		if s == "" {
+			return nil
+		}
+		parts := strings.Split(s, ",")
+		out := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if v := strings.TrimSpace(p); v != "" {
+				out = append(out, v)
+			}
+		}
+		return out
+	}
+
 	f := repository.ListFilter{
-		UserID:  c.Query("user_id"),
-		Source:  c.Query("source"),
+		UserIDs: splitTrimmed(c.Query("user_id")),
+		Sources: splitTrimmed(c.Query("source")),
 		Action:  c.Query("action"),
 		Limit:   limit,
 		Offset:  offset,

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router';
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
@@ -178,6 +179,7 @@ function StorageAreaChart({ stats }: { stats: SystemStats }) {
 // ── Main Page ────────────────────────────────────────────────────────────────
 
 export default function DashboardPage() {
+  const navigate = useNavigate();
   const [health, setHealth] = useState<ServiceHealth[]>([]);
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [lastChecked, setLastChecked] = useState<Date | null>(null);
@@ -257,7 +259,7 @@ export default function DashboardPage() {
               )}
             </div>
           </div>
-          <div className="stat-card">
+          <div className="stat-card" style={{ cursor: 'pointer' }} onClick={() => navigate('/transfers?status=active')}>
             <div className="stat-card-icon teal">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/>

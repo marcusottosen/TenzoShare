@@ -63,6 +63,7 @@ func (r *TransferRepository) GetBySlug(ctx context.Context, slug string) (*domai
 		SELECT t.id, t.owner_id, t.sender_email, t.name, t.description, t.recipient_email, t.slug, t.password_hash,
 		       t.max_downloads, t.download_count, t.expires_at, t.is_revoked, t.created_at,
 		       COALESCE((SELECT count(*) FROM transfer.transfer_files tf WHERE tf.transfer_id = t.id), 0) AS file_count,
+		       COALESCE((SELECT sum(f.size_bytes) FROM transfer.transfer_files tf JOIN storage.files f ON f.id = tf.file_id WHERE tf.transfer_id = t.id AND f.deleted_at IS NULL), 0) AS total_size_bytes,
 		       (t.max_downloads > 0 AND NOT EXISTS (
 		           SELECT 1 FROM transfer.transfer_files tf
 		           LEFT JOIN transfer.file_download_counts fdc
@@ -74,7 +75,7 @@ func (r *TransferRepository) GetBySlug(ctx context.Context, slug string) (*domai
 		WHERE t.slug = $1
 	`, slug).Scan(
 		&t.ID, &t.OwnerID, &t.SenderEmail, &t.Name, &t.Description, &t.RecipientEmail, &t.Slug, &t.PasswordHash,
-		&t.MaxDownloads, &t.DownloadCount, &t.ExpiresAt, &t.IsRevoked, &t.CreatedAt, &t.FileCount, &t.IsExhausted,
+		&t.MaxDownloads, &t.DownloadCount, &t.ExpiresAt, &t.IsRevoked, &t.CreatedAt, &t.FileCount, &t.TotalSizeBytes, &t.IsExhausted,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -92,6 +93,7 @@ func (r *TransferRepository) GetByID(ctx context.Context, id string) (*domain.Tr
 		SELECT t.id, t.owner_id, t.sender_email, t.name, t.description, t.recipient_email, t.slug, t.password_hash,
 		       t.max_downloads, t.download_count, t.expires_at, t.is_revoked, t.created_at,
 		       COALESCE((SELECT count(*) FROM transfer.transfer_files tf WHERE tf.transfer_id = t.id), 0) AS file_count,
+		       COALESCE((SELECT sum(f.size_bytes) FROM transfer.transfer_files tf JOIN storage.files f ON f.id = tf.file_id WHERE tf.transfer_id = t.id AND f.deleted_at IS NULL), 0) AS total_size_bytes,
 		       (t.max_downloads > 0 AND NOT EXISTS (
 		           SELECT 1 FROM transfer.transfer_files tf
 		           LEFT JOIN transfer.file_download_counts fdc
@@ -103,7 +105,7 @@ func (r *TransferRepository) GetByID(ctx context.Context, id string) (*domain.Tr
 		WHERE t.id = $1
 	`, id).Scan(
 		&t.ID, &t.OwnerID, &t.SenderEmail, &t.Name, &t.Description, &t.RecipientEmail, &t.Slug, &t.PasswordHash,
-		&t.MaxDownloads, &t.DownloadCount, &t.ExpiresAt, &t.IsRevoked, &t.CreatedAt, &t.FileCount, &t.IsExhausted,
+		&t.MaxDownloads, &t.DownloadCount, &t.ExpiresAt, &t.IsRevoked, &t.CreatedAt, &t.FileCount, &t.TotalSizeBytes, &t.IsExhausted,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -120,6 +122,7 @@ func (r *TransferRepository) ListByOwner(ctx context.Context, ownerID string, li
 		SELECT t.id, t.owner_id, t.sender_email, t.name, t.description, t.recipient_email, t.slug, t.password_hash,
 		       t.max_downloads, t.download_count, t.expires_at, t.is_revoked, t.created_at,
 		       COALESCE((SELECT count(*) FROM transfer.transfer_files tf WHERE tf.transfer_id = t.id), 0) AS file_count,
+		       COALESCE((SELECT sum(f.size_bytes) FROM transfer.transfer_files tf JOIN storage.files f ON f.id = tf.file_id WHERE tf.transfer_id = t.id AND f.deleted_at IS NULL), 0) AS total_size_bytes,
 		       (t.max_downloads > 0 AND NOT EXISTS (
 		           SELECT 1 FROM transfer.transfer_files tf
 		           LEFT JOIN transfer.file_download_counts fdc
@@ -142,7 +145,7 @@ func (r *TransferRepository) ListByOwner(ctx context.Context, ownerID string, li
 		var t domain.Transfer
 		if err := rows.Scan(
 			&t.ID, &t.OwnerID, &t.SenderEmail, &t.Name, &t.Description, &t.RecipientEmail, &t.Slug, &t.PasswordHash,
-			&t.MaxDownloads, &t.DownloadCount, &t.ExpiresAt, &t.IsRevoked, &t.CreatedAt, &t.FileCount, &t.IsExhausted,
+			&t.MaxDownloads, &t.DownloadCount, &t.ExpiresAt, &t.IsRevoked, &t.CreatedAt, &t.FileCount, &t.TotalSizeBytes, &t.IsExhausted,
 		); err != nil {
 			return nil, apperrors.Internal("scan transfer", err)
 		}

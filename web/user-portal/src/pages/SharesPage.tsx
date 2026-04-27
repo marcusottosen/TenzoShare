@@ -97,7 +97,7 @@ function SubmissionList({ subs }: { subs: Submission[] }) {
 }
 
 // ── My Shares tab ─────────────────────────────────────────────────────────────
-type ShareSortKey = 'name' | 'recipient' | 'downloads' | 'expires';
+type ShareSortKey = 'name' | 'recipient' | 'downloads' | 'size' | 'expires';
 
 function SortArrow({ col, sortKey, sortDir }: { col: ShareSortKey; sortKey: ShareSortKey; sortDir: 'asc'|'desc' }) {
   if (col !== sortKey) return <span className="sort-arrow" style={{ opacity: 0.3 }}>{'\u2195'}</span>;
@@ -160,6 +160,7 @@ function MySharesTab() {
     if (sortKey === 'name') cmp = (a.name || '').localeCompare(b.name || '');
     else if (sortKey === 'recipient') cmp = (a.recipient_email || '').localeCompare(b.recipient_email || '');
     else if (sortKey === 'downloads') cmp = (a.download_count ?? 0) - (b.download_count ?? 0);
+    else if (sortKey === 'size') cmp = (a.total_size_bytes ?? 0) - (b.total_size_bytes ?? 0);
     else cmp = new Date(a.expires_at ?? 0).getTime() - new Date(b.expires_at ?? 0).getTime();
     return sortDir === 'asc' ? cmp : -cmp;
   });
@@ -180,6 +181,9 @@ function MySharesTab() {
               <th className="sort-th" onClick={() => toggleSort('downloads')}>
                 Downloads <SortArrow col="downloads" sortKey={sortKey} sortDir={sortDir} />
               </th>
+              <th className="sort-th" onClick={() => toggleSort('size')}>
+                Size <SortArrow col="size" sortKey={sortKey} sortDir={sortDir} />
+              </th>
               <th className="sort-th" onClick={() => toggleSort('expires')}>
                 Expires <SortArrow col="expires" sortKey={sortKey} sortDir={sortDir} />
               </th>
@@ -199,6 +203,9 @@ function MySharesTab() {
                 </td>
                 <td style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>
                   {t.download_count ?? 0}{t.max_downloads ? ` / ${t.max_downloads}` : ''}
+                </td>
+                <td style={{ fontSize: 13, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }}>
+                  {t.total_size_bytes != null ? fmtBytes(t.total_size_bytes) : '—'}
                 </td>
                 <td style={{ fontSize: 12, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }}>
                   {t.expires_at ? fmtDate(t.expires_at) : '—'}

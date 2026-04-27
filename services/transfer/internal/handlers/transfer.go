@@ -185,18 +185,20 @@ func (h *Handler) Access(c fiber.Ctx) error {
 
 func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 	m := fiber.Map{
-		"id":             t.ID,
-		"owner_id":       t.OwnerID,
-		"sender_email":   t.SenderEmail,
-		"name":           t.Name,
-		"description":    t.Description,
-		"slug":           t.Slug,
-		"status":         t.Status(),
-		"max_downloads":  t.MaxDownloads,
-		"download_count": t.DownloadCount,
-		"is_revoked":     t.IsRevoked,
-		"has_password":   t.PasswordHash != "",
-		"created_at":     t.CreatedAt,
+		"id":               t.ID,
+		"owner_id":         t.OwnerID,
+		"sender_email":     t.SenderEmail,
+		"name":             t.Name,
+		"description":      t.Description,
+		"slug":             t.Slug,
+		"status":           t.Status(),
+		"max_downloads":    t.MaxDownloads,
+		"download_count":   t.DownloadCount,
+		"is_revoked":       t.IsRevoked,
+		"has_password":     t.PasswordHash != "",
+		"created_at":       t.CreatedAt,
+		"file_count":       t.FileCount,
+		"total_size_bytes": t.TotalSizeBytes,
 	}
 	if t.RecipientEmail != "" {
 		m["recipient_email"] = t.RecipientEmail
