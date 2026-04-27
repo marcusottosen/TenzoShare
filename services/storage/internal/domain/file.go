@@ -21,3 +21,10 @@ type UserStorageUsage struct {
 	FileCount  int64
 	TotalBytes int64
 }
+
+// StorageConfig is the singleton storage-policy row from storage.storage_settings.
+type StorageConfig struct {
+	QuotaEnabled       bool
+	QuotaBytesPerUser  int64
+	MaxUploadSizeBytes int64
+}

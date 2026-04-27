@@ -138,6 +138,8 @@ func main() {
 	v1.Get("/stats", handleGetStats)
 	v1.Get("/system/health", handleSystemHealth)
 	v1.Get("/storage/usage", handleListStorageUsage)
+	v1.Get("/storage/config", handleGetStorageConfig)
+	v1.Put("/storage/config", handlePutStorageConfig)
 	v1.Get("/transfers", handleListTransfers)
 	v1.Get("/transfers/:id", handleGetTransfer)
 	v1.Post("/transfers/:id/revoke", handleRevokeTransfer)
@@ -837,6 +839,76 @@ func handleSystemHealth(c fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"services": results})
+}
+
+// ── Storage config ───────────────────────────────────────────────────────────
+
+// StorageConfig is the singleton storage policy row.
+type StorageConfig struct {
+	QuotaEnabled       bool   `json:"quota_enabled"`
+	QuotaBytesPerUser  int64  `json:"quota_bytes_per_user"`
+	MaxUploadSizeBytes int64  `json:"max_upload_size_bytes"`
+	UpdatedAt          string `json:"updated_at"`
+	UpdatedBy          string `json:"updated_by"`
+}
+
+// GET /api/v1/admin/storage/config
+func handleGetStorageConfig(c fiber.Ctx) error {
+	var sc StorageConfig
+	var updatedAt time.Time
+	err := db.QueryRow(c.Context(), `
+		SELECT quota_enabled, quota_bytes_per_user, max_upload_size_bytes, updated_at, updated_by
+		FROM storage.storage_settings WHERE id = 1`,
+	).Scan(&sc.QuotaEnabled, &sc.QuotaBytesPerUser, &sc.MaxUploadSizeBytes, &updatedAt, &sc.UpdatedBy)
+	if err != nil {
+		return apperrors.Internal("get storage config", err)
+	}
+	sc.UpdatedAt = updatedAt.Format(time.RFC3339)
+	return c.JSON(sc)
+}
+
+// PUT /api/v1/admin/storage/config
+// Body: {quota_enabled, quota_bytes_per_user, max_upload_size_bytes}
+func handlePutStorageConfig(c fiber.Ctx) error {
+	var body struct {
+		QuotaEnabled       *bool  `json:"quota_enabled"`
+		QuotaBytesPerUser  *int64 `json:"quota_bytes_per_user"`
+		MaxUploadSizeBytes *int64 `json:"max_upload_size_bytes"`
+	}
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return apperrors.BadRequest("invalid JSON body")
+	}
+
+	// Validate
+	if body.QuotaBytesPerUser != nil && *body.QuotaBytesPerUser < 0 {
+		return apperrors.BadRequest("quota_bytes_per_user must be >= 0")
+	}
+	if body.MaxUploadSizeBytes != nil && *body.MaxUploadSizeBytes < 0 {
+		return apperrors.BadRequest("max_upload_size_bytes must be >= 0")
+	}
+
+	callerID, _ := c.Locals("userID").(string)
+	callerEmail := callerID // fallback to UUID if email lookup fails
+	if callerID != "" {
+		_ = db.QueryRow(c.Context(), "SELECT email FROM auth.users WHERE id = $1", callerID).Scan(&callerEmail)
+	}
+
+	_, err := db.Exec(c.Context(), `
+		UPDATE storage.storage_settings SET
+		    quota_enabled        = COALESCE($1, quota_enabled),
+		    quota_bytes_per_user = COALESCE($2, quota_bytes_per_user),
+		    max_upload_size_bytes = COALESCE($3, max_upload_size_bytes),
+		    updated_at          = now(),
+		    updated_by          = $4
+		WHERE id = 1`,
+		body.QuotaEnabled, body.QuotaBytesPerUser, body.MaxUploadSizeBytes, callerEmail,
+	)
+	if err != nil {
+		return apperrors.Internal("update storage config", err)
+	}
+
+	// Return updated config
+	return handleGetStorageConfig(c)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

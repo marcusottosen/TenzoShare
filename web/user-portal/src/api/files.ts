@@ -19,6 +19,8 @@ export interface StorageUsage {
   user_id: string;
   file_count: number;
   total_bytes: number;
+  quota_enabled: boolean;
+  quota_bytes_per_user: number;
 }
 
 export async function getMyUsage(): Promise<StorageUsage> {
@@ -79,7 +81,7 @@ export async function uploadFile(
       } else {
         try {
           const err = JSON.parse(xhr.responseText);
-          reject(new Error(err.message ?? `HTTP ${xhr.status}`));
+          reject(new Error(err.error?.message ?? err.message ?? `HTTP ${xhr.status}`));
         } catch {
           reject(new Error(`HTTP ${xhr.status}`));
         }

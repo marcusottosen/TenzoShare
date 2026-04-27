@@ -192,7 +192,11 @@ function MySharesTab() {
           </thead>
           <tbody>
             {sorted.map((t) => (
-              <tr key={t.id}>
+              <tr
+                key={t.id}
+                onDoubleClick={() => navigate(`/transfers/${t.id}`)}
+                style={{ cursor: 'pointer' }}
+              >
                 <td style={{ maxWidth: 260 }}>
                   <div style={{ fontWeight: 500, fontSize: 13, color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.name}</div>
                   {t.description && <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.description}</div>}

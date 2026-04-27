@@ -5,9 +5,12 @@ import {
   uploadFile,
   deleteFile,
   presignFile,
+  getMyUsage,
   type FileRecord,
   type UploadProgress,
+  type StorageUsage,
 } from '../api/files';
+import { getToken } from '../api/client';
 import { listTransfers, type Transfer } from '../api/transfers';
 import { pendingFileStore } from '../stores/pendingFileStore';
 
@@ -81,6 +84,114 @@ function IconTrash() {
     </svg>
   );
 }
+function IconEye() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+    </svg>
+  );
+}
+
+function isPreviewable(contentType: string): boolean {
+  return (
+    contentType.startsWith('image/') ||
+    contentType.startsWith('audio/') ||
+    contentType === 'application/pdf' ||
+    contentType.startsWith('text/') ||
+    contentType === 'application/json'
+  );
+}
+
+function FilePreviewModal({ file, onClose }: { file: FileRecord; onClose: () => void }) {
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [textContent, setTextContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    let objectUrl: string | null = null;
+    (async () => {
+      try {
+        const token = getToken();
+        const resp = await fetch(`/api/v1/files/${file.id}/download?inline=1`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (!resp.ok) throw new Error(`Server returned ${resp.status}`);
+        if (file.content_type.startsWith('text/') || file.content_type === 'application/json') {
+          setTextContent(await resp.text());
+        } else {
+          const blob = await resp.blob();
+          objectUrl = URL.createObjectURL(blob);
+          setPreviewUrl(objectUrl);
+        }
+      } catch (e: any) {
+        setErr(e.message);
+      } finally {
+        setLoading(false);
+      }
+    })();
+    return () => { if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [file.id, file.content_type]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  const { icon } = fileTypeInfo(file.content_type);
+
+  return (
+    <div className="preview-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="preview-modal">
+        {/* Header */}
+        <div className="preview-modal-header">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: 1 }}>
+            <span style={{ fontSize: 18, flexShrink: 0 }}>{icon}</span>
+            <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.filename}</span>
+            <span style={{ fontSize: 12, color: 'var(--color-text-muted)', flexShrink: 0 }}>{fmtBytes(file.size_bytes)}</span>
+          </div>
+          <button className="preview-close-btn" onClick={onClose} title="Close (Esc)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="preview-modal-body">
+          {loading && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '40vh', gap: 12, color: 'var(--color-text-muted)' }}>
+              <IconEye />
+              <span className="text-sm">Loading preview…</span>
+            </div>
+          )}
+          {err && <div style={{ padding: 24 }}><div className="alert alert-error">{err}</div></div>}
+          {!loading && !err && (
+            <div className="preview-content">
+              {file.content_type.startsWith('image/') && previewUrl && (
+                <img src={previewUrl} alt={file.filename} style={{ maxWidth: '100%', maxHeight: '72vh', objectFit: 'contain', borderRadius: 4 }} />
+              )}
+              {file.content_type.startsWith('audio/') && previewUrl && (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, width: '100%' }}>
+                  <span style={{ fontSize: 48 }}>🎵</span>
+                  <audio controls src={previewUrl} style={{ width: '100%', maxWidth: 480 }} />
+                </div>
+              )}
+              {file.content_type === 'application/pdf' && previewUrl && (
+                <iframe src={previewUrl} title={file.filename} style={{ width: '100%', height: '72vh', border: 'none', borderRadius: 4 }} />
+              )}
+              {(file.content_type.startsWith('text/') || file.content_type === 'application/json') && textContent !== null && (
+                <pre className="preview-text">{textContent}</pre>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 type FileSortKey = 'name' | 'size' | 'modified';
 function SortArrow({ col, sortKey, sortDir }: { col: FileSortKey; sortKey: FileSortKey; sortDir: 'asc' | 'desc' }) {
   if (col !== sortKey) return <span className="sort-arrow" style={{ opacity: 0.3 }}>{'↕'}</span>;
@@ -120,18 +231,17 @@ function IconDownloads() {
   );
 }
 
-// Mock storage — replace with real data when the API supports it
-const MOCK_STORAGE = { usedGB: 74.2, totalGB: 128 };
-
 export default function FilesPage() {
   const navigate = useNavigate();
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
+  const [storageUsage, setStorageUsage] = useState<StorageUsage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState<UploadProgress | null>(null);
   const [search, setSearch] = useState('');
+  const [previewTarget, setPreviewTarget] = useState<FileRecord | null>(null);
   const [sortKey, setSortKey] = useState<FileSortKey>('modified');
   const [sortDir, setSortDir] = useState<'asc'|'desc'>('desc');
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -145,9 +255,10 @@ export default function FilesPage() {
     setLoading(true);
     setError('');
     try {
-      const [fr, tr] = await Promise.all([listFiles(), listTransfers()]);
+      const [fr, tr, usage] = await Promise.all([listFiles(), listTransfers(), getMyUsage()]);
       setFiles(fr.files ?? []);
       setTransfers(tr.transfers ?? []);
+      setStorageUsage(usage);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -194,7 +305,10 @@ export default function FilesPage() {
   }
 
   const pct = progress ? Math.round((progress.loaded / progress.total) * 100) : 0;
-  const storagePct = Math.round((MOCK_STORAGE.usedGB / MOCK_STORAGE.totalGB) * 100);
+  const usedBytes = storageUsage?.total_bytes ?? 0;
+  const quotaEnabled = storageUsage?.quota_enabled ?? false;
+  const quotaBytes = storageUsage?.quota_bytes_per_user ?? 0;
+  const storagePct = quotaEnabled && quotaBytes > 0 ? Math.min(100, Math.round((usedBytes / quotaBytes) * 100)) : 0;
   const filtered = files.filter((f) => f.filename.toLowerCase().includes(search.toLowerCase()));
   const sorted = [...filtered].sort((a, b) => {
     let cmp = 0;
@@ -244,19 +358,38 @@ export default function FilesPage() {
             </div>
             <span style={{ color: 'var(--color-text-muted)' }}><IconStorage /></span>
           </div>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 10 }}>
-            <span style={{ fontSize: 28, fontWeight: 700, color: 'var(--color-text-primary)', letterSpacing: '-0.03em' }}>
-              {MOCK_STORAGE.usedGB} GB
-            </span>
-            <span style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>/ {MOCK_STORAGE.totalGB} GB</span>
-          </div>
-          <div style={{ background: 'var(--color-border)', borderRadius: 4, height: 6, marginBottom: 8, overflow: 'hidden' }}>
-            <div style={{ width: `${storagePct}%`, height: '100%', background: 'var(--color-secondary)', borderRadius: 4 }} />
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span className="enc-badge"><IconLock /> Encrypted Storage</span>
-            <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{storagePct}% utilized</span>
-          </div>
+          {storageUsage === null ? (
+            <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--color-text-primary)', letterSpacing: '-0.03em', marginBottom: 10 }}>—</div>
+          ) : quotaEnabled && quotaBytes > 0 ? (
+            <>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 10 }}>
+                <span style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-text-primary)', letterSpacing: '-0.02em' }}>
+                  {fmtBytes(usedBytes)}
+                </span>
+                <span style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>/ {fmtBytes(quotaBytes)}</span>
+              </div>
+              <div style={{ background: 'var(--color-border)', borderRadius: 4, height: 6, marginBottom: 8, overflow: 'hidden' }}>
+                <div style={{ width: `${storagePct}%`, height: '100%', background: storagePct >= 90 ? '#EF4444' : storagePct >= 70 ? '#F59E0B' : 'var(--color-secondary)', borderRadius: 4, transition: 'width 0.4s ease' }} />
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span className="enc-badge"><IconLock /> Encrypted Storage</span>
+                <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{storagePct}% utilized</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 10 }}>
+                <span style={{ fontSize: 28, fontWeight: 700, color: 'var(--color-text-primary)', letterSpacing: '-0.03em' }}>
+                  {fmtBytes(usedBytes)}
+                </span>
+                <span style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>unlimited</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span className="enc-badge"><IconLock /> Encrypted Storage</span>
+                <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>No quota</span>
+              </div>
+            </>
+          )}
         </div>
 
         {/* Active Shares */}
@@ -324,7 +457,7 @@ export default function FilesPage() {
           <>
             {/* Table header */}
             <div style={{
-              display: 'grid', gridTemplateColumns: '2.5fr 100px 130px 140px 90px',
+              display: 'grid', gridTemplateColumns: '2.5fr 100px 130px 140px 120px',
               padding: '8px 20px', borderBottom: '1px solid var(--color-border)',
               fontSize: 11, fontWeight: 600, color: 'var(--color-text-muted)',
               textTransform: 'uppercase', letterSpacing: '0.06em',
@@ -348,7 +481,7 @@ export default function FilesPage() {
               sorted.map((f) => {
                 const { icon, color } = fileTypeInfo(f.content_type);
                 return (
-                  <div key={f.id} className="files-row">
+                  <div key={f.id} className="files-row" onDoubleClick={() => isPreviewable(f.content_type) ? setPreviewTarget(f) : undefined}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
                       <div style={{
                         width: 36, height: 36, borderRadius: 8, flexShrink: 0,
@@ -369,6 +502,11 @@ export default function FilesPage() {
                     <span className="aes-badge"><IconLock /> AES-256</span>
                     <span style={{ fontSize: 12, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }} title={new Date(f.created_at).toLocaleString()}>{timeAgo(f.created_at)}</span>
                     <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                      {isPreviewable(f.content_type) && (
+                        <button className="files-icon-btn" title="Preview" onClick={() => setPreviewTarget(f)}>
+                          <IconEye />
+                        </button>
+                      )}
                       <button className="files-icon-btn" title="Share" onClick={() => {
                         pendingFileStore.set([{ id: f.id, filename: f.filename, size_bytes: f.size_bytes }]);
                         navigate('/transfers/new');
@@ -394,6 +532,11 @@ export default function FilesPage() {
           </>
         )}
       </div>
+
+      {/* ── File Preview Modal ─────────────────────────────── */}
+      {previewTarget && (
+        <FilePreviewModal file={previewTarget} onClose={() => setPreviewTarget(null)} />
+      )}
 
       {/* ── Zero-Knowledge Sharing banner ─────────────────── */}
       <div className="zk-banner">

@@ -211,14 +211,47 @@ export default function DashboardPage() {
               </div>
               <span style={{ color: 'var(--color-text-muted)' }}><IconHDD /></span>
             </div>
-            <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--color-text-primary)', letterSpacing: '-0.03em', marginBottom: 10 }}>
-              {storageUsage === null ? '—' : fmtBytes(usedBytes)}
-            </div>
-            <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
-              {storageUsage === null
-                ? 'Loading…'
-                : `${storageUsage.file_count} file${storageUsage.file_count !== 1 ? 's' : ''} stored`}
-            </div>
+            {storageUsage === null ? (
+              <>
+                <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--color-text-primary)', letterSpacing: '-0.03em', marginBottom: 10 }}>—</div>
+                <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Loading…</div>
+              </>
+            ) : storageUsage.quota_enabled && storageUsage.quota_bytes_per_user > 0 ? (
+              /* Quota mode: show progress bar */
+              <>
+                <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--color-text-primary)', letterSpacing: '-0.02em', marginBottom: 4 }}>
+                  {fmtBytes(usedBytes)}
+                  <span style={{ fontSize: 13, fontWeight: 400, color: 'var(--color-text-muted)', marginLeft: 4 }}>
+                    of {fmtBytes(storageUsage.quota_bytes_per_user)}
+                  </span>
+                </div>
+                {/* Progress bar */}
+                {(() => {
+                  const pct = Math.min(100, Math.round((usedBytes / storageUsage.quota_bytes_per_user) * 100));
+                  const barColor = pct >= 90 ? '#EF4444' : pct >= 70 ? '#F59E0B' : 'var(--color-primary)';
+                  return (
+                    <div style={{ marginBottom: 6 }}>
+                      <div style={{ height: 6, background: 'var(--color-border)', borderRadius: 99, overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${pct}%`, background: barColor, borderRadius: 99, transition: 'width 0.4s ease' }} />
+                      </div>
+                    </div>
+                  );
+                })()}
+                <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+                  {storageUsage.file_count} file{storageUsage.file_count !== 1 ? 's' : ''} &middot; {Math.min(100, Math.round((usedBytes / storageUsage.quota_bytes_per_user) * 100))}% used
+                </div>
+              </>
+            ) : (
+              /* Unmetered mode */
+              <>
+                <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--color-text-primary)', letterSpacing: '-0.03em', marginBottom: 10 }}>
+                  {fmtBytes(usedBytes)}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+                  {storageUsage.file_count} file{storageUsage.file_count !== 1 ? 's' : ''} stored &middot; Unlimited
+                </div>
+              </>
+            )}
           </div>
 
           {/* Security Score */}

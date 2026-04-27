@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router';
 import { getTransfer, revokeTransfer, type Transfer } from '../api/transfers';
-import { presignFile } from '../api/files';
+import { getFile, presignFile, type FileRecord } from '../api/files';
+import { getToken } from '../api/client';
 
 /**
  * Build the public recipient link for a transfer slug.
@@ -36,6 +37,111 @@ function execCopy(text: string, onSuccess: () => void) {
   try { if (document.execCommand('copy')) onSuccess(); }
   finally { document.body.removeChild(ta); }
 }
+
+function fileTypeInfo(ct: string): { icon: string; color: string } {
+  if (ct === 'application/pdf')                                           return { icon: '📄', color: '#3B82F6' };
+  if (ct.startsWith('image/'))                                            return { icon: '🖼', color: '#8B5CF6' };
+  if (ct.startsWith('audio/'))                                            return { icon: '🎵', color: '#F59E0B' };
+  if (ct.includes('zip') || ct.includes('compressed'))                    return { icon: '📦', color: '#F97316' };
+  if (ct.includes('spreadsheet') || ct.includes('excel') || ct.includes('csv')) return { icon: '📊', color: '#10B981' };
+  if (ct.includes('word') || ct.includes('document'))                    return { icon: '📝', color: '#3B82F6' };
+  if (ct.startsWith('text/'))                                             return { icon: '📃', color: '#64748B' };
+  return { icon: '📎', color: '#64748B' };
+}
+
+function FileCard({ fileId }: { fileId: string }) {
+  const [file, setFile] = useState<FileRecord | null>(null);
+  const [thumbUrl, setThumbUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    getFile(fileId).then((f) => {
+      setFile(f);
+      if (f.content_type.startsWith('image/')) {
+        const token = getToken();
+        fetch(`/api/v1/files/${f.id}/download?inline=1`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        })
+          .then((r) => r.blob())
+          .then((b) => setThumbUrl(URL.createObjectURL(b)))
+          .catch(() => null);
+      }
+    }).catch(() => null);
+    return () => { if (thumbUrl) URL.revokeObjectURL(thumbUrl); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fileId]);
+
+  async function handleDownload() {
+    try {
+      const { url } = await presignFile(fileId);
+      window.open(url, '_blank');
+    } catch (err: any) {
+      alert(err.message);
+    }
+  }
+
+  const { icon, color } = file ? fileTypeInfo(file.content_type) : { icon: '📎', color: '#64748B' };
+
+  return (
+    <div style={{
+      border: '1px solid var(--color-border)',
+      borderRadius: 10,
+      overflow: 'hidden',
+      background: 'var(--color-bg)',
+      display: 'flex',
+      flexDirection: 'column',
+      transition: 'box-shadow 0.15s',
+    }}>
+      {/* Thumbnail / Icon area */}
+      <div style={{
+        height: 120,
+        background: thumbUrl ? 'var(--color-border)' : color + '14',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        overflow: 'hidden',
+        flexShrink: 0,
+      }}>
+        {thumbUrl ? (
+          <img src={thumbUrl} alt={file?.filename} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+        ) : (
+          <span style={{ fontSize: 40 }}>{file ? icon : '…'}</span>
+        )}
+      </div>
+
+      {/* File info */}
+      <div style={{ padding: '10px 12px', flex: 1 }}>
+        {file ? (
+          <>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 4 }} title={file.filename}>
+              {file.filename}
+            </div>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{fmtBytes(file.size_bytes)}</span>
+              <span style={{ fontSize: 11, color: 'var(--color-text-muted)', opacity: 0.5 }}>·</span>
+              <span style={{ fontSize: 11, color: 'var(--color-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 120 }}>{file.content_type}</span>
+            </div>
+          </>
+        ) : (
+          <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Loading…</div>
+        )}
+      </div>
+
+      {/* Download button */}
+      <div style={{ padding: '0 12px 12px' }}>
+        <button
+          className="btn btn-secondary btn-sm"
+          style={{ width: '100%' }}
+          onClick={handleDownload}
+          disabled={!file}
+        >
+          Download
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
 
 function fmt(date: string) {
   return new Date(date).toLocaleString();
@@ -85,15 +191,6 @@ export default function TransferDetailPage() {
       alert(err.message);
     } finally {
       setRevoking(false);
-    }
-  }
-
-  async function handleDownload(fileId: string) {
-    try {
-      const { url } = await presignFile(fileId);
-      window.open(url, '_blank');
-    } catch (err: any) {
-      alert(err.message);
     }
   }
 
@@ -199,18 +296,12 @@ export default function TransferDetailPage() {
 
       {transfer.file_ids && transfer.file_ids.length > 0 && (
         <div className="card">
-          <div className="card-title">Files ({transfer.file_ids.length})</div>
-          <div>
+          <div className="card-header">
+            <h2 className="card-title">Files ({transfer.file_ids.length})</h2>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 12 }}>
             {transfer.file_ids.map((fid) => (
-              <div key={fid} className="row" style={{ marginBottom: 6, alignItems: 'center' }}>
-                <span className="text-sm" style={{ flex: 1, fontFamily: 'monospace' }}>{fid}</span>
-                <button
-                  className="btn btn-secondary btn-sm"
-                  onClick={() => handleDownload(fid)}
-                >
-                  Download
-                </button>
-              </div>
+              <FileCard key={fid} fileId={fid} />
             ))}
           </div>
         </div>

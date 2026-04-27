@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -14,6 +15,11 @@ import (
 
 type FileRepository struct {
 	db *pgxpool.Pool
+
+	// Cached storage config (refreshed every 30 seconds to avoid per-upload DB query)
+	cfgMu      sync.RWMutex
+	cachedCfg  *domain.StorageConfig
+	cfgFetchAt time.Time
 }
 
 func NewFileRepository(db *pgxpool.Pool) *FileRepository {
@@ -109,4 +115,39 @@ func (r *FileRepository) GetUsageByOwner(ctx context.Context, ownerID string) (*
 		return nil, apperrors.Internal("get storage usage", err)
 	}
 	return u, nil
+}
+
+// GetStorageConfig returns the singleton storage policy.
+// Results are cached for 30 seconds to avoid a DB hit on every upload.
+func (r *FileRepository) GetStorageConfig(ctx context.Context) (*domain.StorageConfig, error) {
+	const cacheTTL = 30 * time.Second
+
+	r.cfgMu.RLock()
+	if r.cachedCfg != nil && time.Since(r.cfgFetchAt) < cacheTTL {
+		cfg := *r.cachedCfg
+		r.cfgMu.RUnlock()
+		return &cfg, nil
+	}
+	r.cfgMu.RUnlock()
+
+	r.cfgMu.Lock()
+	defer r.cfgMu.Unlock()
+	// Double-check after acquiring write lock
+	if r.cachedCfg != nil && time.Since(r.cfgFetchAt) < cacheTTL {
+		cfg := *r.cachedCfg
+		return &cfg, nil
+	}
+
+	var cfg domain.StorageConfig
+	err := r.db.QueryRow(ctx, `
+		SELECT quota_enabled, quota_bytes_per_user, max_upload_size_bytes
+		FROM storage.storage_settings WHERE id = 1`,
+	).Scan(&cfg.QuotaEnabled, &cfg.QuotaBytesPerUser, &cfg.MaxUploadSizeBytes)
+	if err != nil {
+		return nil, apperrors.Internal("get storage config", err)
+	}
+
+	r.cachedCfg = &cfg
+	r.cfgFetchAt = time.Now()
+	return &cfg, nil
 }

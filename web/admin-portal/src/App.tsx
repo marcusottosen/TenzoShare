@@ -9,6 +9,7 @@ import AuditPage from './pages/AuditPage';
 import UsersPage from './pages/UsersPage';
 import TransfersPage from './pages/TransfersPage';
 import ApiKeysPage from './pages/ApiKeysPage';
+import StorageSettingsPage from './pages/StorageSettingsPage';
 
 export default function App() {
   return (
@@ -24,6 +25,7 @@ export default function App() {
               <Route path="/transfers" element={<TransfersPage />} />
               <Route path="/apikeys" element={<ApiKeysPage />} />
               <Route path="/audit" element={<AuditPage />} />
+              <Route path="/storage" element={<StorageSettingsPage />} />
             </Route>
           </Route>
 

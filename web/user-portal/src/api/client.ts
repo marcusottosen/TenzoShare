@@ -82,8 +82,11 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
 
   if (res.status === 204) return undefined as T;
 
-  const body = await res.json().catch(() => ({ message: `HTTP ${res.status}` }));
-  if (!res.ok) throw new ApiError(res.status, body.message ?? `HTTP ${res.status}`);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = body?.error?.message ?? body?.message ?? `HTTP ${res.status}`;
+    throw new ApiError(res.status, msg);
+  }
 
   return body as T;
 }

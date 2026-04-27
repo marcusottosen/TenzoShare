@@ -183,3 +183,26 @@ export async function listStorageUsage(params: {
   if (params.sort_dir) qs.set('sort_dir', params.sort_dir);
   return request<StorageUsageListResponse>(`/admin/storage/usage?${qs.toString()}`);
 }
+
+export interface StorageConfig {
+  quota_enabled: boolean;
+  quota_bytes_per_user: number;
+  max_upload_size_bytes: number;
+  updated_at: string;
+  updated_by: string;
+}
+
+export async function getStorageConfig(): Promise<StorageConfig> {
+  return request<StorageConfig>('/admin/storage/config');
+}
+
+export async function updateStorageConfig(body: {
+  quota_enabled?: boolean;
+  quota_bytes_per_user?: number;
+  max_upload_size_bytes?: number;
+}): Promise<StorageConfig> {
+  return request<StorageConfig>('/admin/storage/config', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+}

@@ -57,6 +57,30 @@ func (h *Handler) Upload(c fiber.Ctx) error {
 		return apperrors.BadRequest("missing file field")
 	}
 
+	// ── Enforce storage policy (quota + max upload size) ─────────────────────
+	cfg, cfgErr := h.repo.GetStorageConfig(c.Context())
+	if cfgErr == nil {
+		// Per-file size cap
+		if cfg.MaxUploadSizeBytes > 0 && fileHeader.Size > cfg.MaxUploadSizeBytes {
+			return apperrors.BadRequest(fmt.Sprintf(
+				"file exceeds maximum upload size of %s",
+				fmtBytes(cfg.MaxUploadSizeBytes),
+			))
+		}
+		// Per-user quota
+		if cfg.QuotaEnabled && cfg.QuotaBytesPerUser > 0 {
+			usage, uErr := h.repo.GetUsageByOwner(c.Context(), ownerID)
+			if uErr == nil && usage.TotalBytes+fileHeader.Size > cfg.QuotaBytesPerUser {
+				return apperrors.BadRequest(fmt.Sprintf(
+					"storage quota exceeded: %s used of %s",
+					fmtBytes(usage.TotalBytes),
+					fmtBytes(cfg.QuotaBytesPerUser),
+				))
+			}
+		}
+	}
+	// ─────────────────────────────────────────────────────────────────────────
+
 	f, err := fileHeader.Open()
 	if err != nil {
 		return apperrors.Internal("open uploaded file", err)
@@ -312,7 +336,11 @@ func (h *Handler) Download(c fiber.Ctx) error {
 		plaintext = raw
 	}
 
-	c.Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, file.Filename))
+	disposition := "attachment"
+	if c.Query("inline") == "1" {
+		disposition = "inline"
+	}
+	c.Set("Content-Disposition", fmt.Sprintf(`%s; filename=%q`, disposition, file.Filename))
 	c.Set("Content-Type", file.ContentType)
 	return c.Send(plaintext)
 }
@@ -329,7 +357,8 @@ func fileResponse(f *domain.File) fiber.Map {
 	}
 }
 
-// GetMyUsage returns storage consumption for the authenticated user.
+// GetMyUsage returns storage consumption for the authenticated user,
+// including the applicable quota settings so the client can render a progress bar.
 // GET /api/v1/files/usage
 func (h *Handler) GetMyUsage(c fiber.Ctx) error {
 	ownerID, _ := c.Locals("userID").(string)
@@ -342,10 +371,21 @@ func (h *Handler) GetMyUsage(c fiber.Ctx) error {
 		return err
 	}
 
+	// Include quota settings so the UI can show a progress bar.
+	cfg, cfgErr := h.repo.GetStorageConfig(c.Context())
+	quotaEnabled := false
+	var quotaBytes int64
+	if cfgErr == nil {
+		quotaEnabled = cfg.QuotaEnabled
+		quotaBytes = cfg.QuotaBytesPerUser
+	}
+
 	return c.JSON(fiber.Map{
-		"user_id":     usage.UserID,
-		"file_count":  usage.FileCount,
-		"total_bytes": usage.TotalBytes,
+		"user_id":              usage.UserID,
+		"file_count":           usage.FileCount,
+		"total_bytes":          usage.TotalBytes,
+		"quota_enabled":        quotaEnabled,
+		"quota_bytes_per_user": quotaBytes,
 	})
 }
 
@@ -407,4 +447,19 @@ func decryptAESGCM(ciphertext, key, _ []byte) ([]byte, error) {
 	}
 	iv, ct := ciphertext[:nonceSize], ciphertext[nonceSize:]
 	return gcm.Open(nil, iv, ct, nil)
+}
+
+// fmtBytes formats a byte count as a human-readable string (B/KB/MB/GB).
+func fmtBytes(b int64) string {
+	const k = 1024
+	switch {
+	case b < k:
+		return fmt.Sprintf("%d B", b)
+	case b < k*k:
+		return fmt.Sprintf("%.1f KB", float64(b)/k)
+	case b < k*k*k:
+		return fmt.Sprintf("%.1f MB", float64(b)/(k*k))
+	default:
+		return fmt.Sprintf("%.2f GB", float64(b)/(k*k*k))
+	}
 }

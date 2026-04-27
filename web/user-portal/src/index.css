@@ -922,7 +922,7 @@ tbody tr:hover td { background: var(--color-page-bg); }
 /* ─── FilesPage ──────────────────────────────────────────────── */
 .files-row {
   display: grid;
-  grid-template-columns: 2.5fr 100px 130px 140px 90px;
+  grid-template-columns: 2.5fr 100px 130px 140px 120px;
   align-items: center;
   padding: 10px 20px;
   border-bottom: 1px solid var(--color-border);
@@ -1071,4 +1071,86 @@ tbody tr:hover td { background: var(--color-page-bg); }
   margin-left: 4px;
   font-size: 10px;
   color: var(--color-secondary);
+}
+
+/* ── File Preview Modal ──────────────────────────────────── */
+.preview-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+.preview-modal {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 920px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+.preview-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+  gap: 12px;
+  min-width: 0;
+}
+.preview-modal-body {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+.preview-content {
+  padding: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+}
+.preview-close-btn {
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.preview-close-btn:hover {
+  background: var(--color-nav-active);
+  color: var(--color-text-primary);
+  border-color: var(--color-text-muted);
+}
+.preview-text {
+  margin: 0;
+  padding: 20px;
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--color-bg);
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-y: auto;
 }
