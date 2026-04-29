@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
-import { listTransfers, revokeTransfer, type Transfer } from '../api/transfers';
+import { listTransfers, type Transfer } from '../api/transfers';
+import { listFileRequests, type FileRequest } from '../api/requests';
 import { getMyUsage, type StorageUsage } from '../api/files';
 import { useAuth } from '../stores/auth';
 import { pendingUploadStore } from '../stores/pendingUpload';
@@ -78,21 +79,6 @@ function IconCheck() {
     </svg>
   );
 }
-function IconDoc() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-      <polyline points="14 2 14 8 20 8"/>
-    </svg>
-  );
-}
-function IconDots() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/>
-    </svg>
-  );
-}
 function IconHDD() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -102,32 +88,54 @@ function IconHDD() {
   );
 }
 
-// ─── Activity badge ──────────────────────────────────────────────
-function ActivityBadge({ type }: { type: string }) {
-  if (type === 'secure') return <span className="act-badge act-badge-secure">SECURE</span>;
-  if (type === 'shared') return <span className="act-badge act-badge-shared">SHARED</span>;
-  return <span className="act-badge act-badge-modified">MODIFIED</span>;
+// ─── Activity helpers ────────────────────────────────────────────
+function transferStatus(t: Transfer): 'active' | 'revoked' | 'exhausted' | 'expired' {
+  if (t.is_revoked) return 'revoked';
+  if (t.status === 'exhausted' || (t.max_downloads > 0 && t.download_count >= t.max_downloads)) return 'exhausted';
+  if (t.expires_at && new Date(t.expires_at) < new Date()) return 'expired';
+  return 'active';
 }
 
-// ─── Build activity items from real transfers ────────────────────
-function buildActivity(transfers: Transfer[]) {
-  const items = transfers.slice(0, 5).map((t) => ({
-    id: t.id,
-    name: t.name || t.slug,
-    sub: t.recipient_email ? `Shared with ${t.recipient_email}` : 'Created by you',
-    time: timeAgo(t.created_at),
-    type: t.is_revoked ? 'modified' : 'shared',
-  }));
-  // Pad with mock if needed
-  if (items.length === 0) {
-    return [
-      { id: 'm1', name: 'Q4_Performance_Review.pdf', sub: 'Uploaded by you • 2.4 MB', time: '12 mins ago', type: 'secure' },
-      { id: 'm2', name: 'Project_Alpha_Assets.zip', sub: 'Shared with Engineering Team', time: '2 hours ago', type: 'shared' },
-      { id: 'm3', name: 'Meeting_Minutes_v2.docx', sub: 'Renamed from Meeting_Minutes.docx', time: 'Yesterday', type: 'modified' },
-    ];
-  }
-  return items;
+const STATUS_META: Record<string, { label: string; dotColor: string; iconBg: string; iconColor: string }> = {
+  active:   { label: 'Active',    dotColor: '#22C55E', iconBg: '#F0FDF4', iconColor: '#16A34A' },
+  revoked:  { label: 'Revoked',   dotColor: '#EF4444', iconBg: '#FEF2F2', iconColor: '#DC2626' },
+  exhausted:{ label: 'Exhausted', dotColor: '#F59E0B', iconBg: '#FFFBEB', iconColor: '#D97706' },
+  expired:  { label: 'Expired',   dotColor: '#94A3B8', iconBg: '#F8FAFC', iconColor: '#64748B' },
+};
+
+function IconArrowRight() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+    </svg>
+  );
 }
+function IconCopy() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+    </svg>
+  );
+}
+function IconShare2() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+      <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+    </svg>
+  );
+}
+function IconInbox() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/>
+      <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
+    </svg>
+  );
+}
+
+type ActivityItem = { kind: 'transfer'; data: Transfer } | { kind: 'request'; data: FileRequest };
 
 // ─── Component ──────────────────────────────────────────────────
 export default function DashboardPage() {
@@ -135,6 +143,7 @@ export default function DashboardPage() {
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
+  const [requests, setRequests] = useState<FileRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [storageUsage, setStorageUsage] = useState<StorageUsage | null>(null);
 
@@ -146,11 +155,58 @@ export default function DashboardPage() {
     getMyUsage()
       .then(setStorageUsage)
       .catch(() => {});
+    listFileRequests()
+      .then((res) => setRequests(res.requests ?? []))
+      .catch(() => {});
   }, []);
+
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const firstName = getFirstName(user?.email);
   const usedBytes = storageUsage?.total_bytes ?? 0;
-  const activity = buildActivity(transfers);
+  const recentActivity: ActivityItem[] = [
+    ...transfers.map(t => ({ kind: 'transfer' as const, data: t })),
+    ...requests.map(r => ({ kind: 'request' as const, data: r })),
+  ].sort((a, b) => new Date(b.data.created_at).getTime() - new Date(a.data.created_at).getTime()).slice(0, 6);
+
+  function handleCopyLink(t: Transfer, e: React.MouseEvent) {
+    e.stopPropagation();
+    const base = (import.meta.env.VITE_DOWNLOAD_UI_URL as string | undefined)?.replace(/\/$/, '') ??
+      `${window.location.protocol}//${window.location.hostname}:3003`;
+    const url = `${base}/t/${t.slug}`;
+    const copy = (text: string) => {
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+      } else { fallbackCopy(text); }
+    };
+    const fallbackCopy = (text: string) => {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.cssText = 'position:fixed;opacity:0';
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      try { document.execCommand('copy'); } finally { document.body.removeChild(ta); }
+    };
+    copy(url);
+    setCopiedId(t.id);
+    setTimeout(() => setCopiedId(null), 2000);
+  }
+
+  function handleCopyRequestLink(r: FileRequest, e: React.MouseEvent) {
+    e.stopPropagation();
+    const base = (import.meta.env.VITE_REQUEST_UI_URL as string | undefined)?.replace(/\/$/, '') ??
+      `${window.location.protocol}//${window.location.hostname}:3004`;
+    const url = `${base}/r/${r.slug}`;
+    const fallbackCopy = (text: string) => {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.cssText = 'position:fixed;opacity:0';
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      try { document.execCommand('copy'); } finally { document.body.removeChild(ta); }
+    };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(url).catch(() => fallbackCopy(url));
+    } else { fallbackCopy(url); }
+    setCopiedId(r.id);
+    setTimeout(() => setCopiedId(null), 2000);
+  }
 
   function handleFilesPicked(e: React.ChangeEvent<HTMLInputElement>) {
     const picked = Array.from(e.target.files ?? []);
@@ -279,41 +335,138 @@ export default function DashboardPage() {
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="card-header">
           <h2 className="card-title">Recent Activity</h2>
-          <Link to="/" className="text-link text-sm">View All Logs</Link>
+          <Link to="/shares" className="text-link text-sm" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            View all <IconArrowRight />
+          </Link>
         </div>
 
         {loading ? (
           <div className="empty-state" style={{ padding: '20px 0' }}>Loading…</div>
+        ) : recentActivity.length === 0 ? (
+          <div style={{ padding: '24px 0', textAlign: 'center' }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>📭</div>
+            <div style={{ fontSize: 13, color: 'var(--color-text-muted)', marginBottom: 12 }}>No recent activity</div>
+            <button className="btn btn-primary btn-sm" onClick={() => navigate('/transfers/new')}>+ New Transfer</button>
+          </div>
         ) : (
           <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-            {activity.map((a, i) => (
-              <li key={a.id} style={{
-                display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0',
-                borderBottom: i < activity.length - 1 ? '1px solid var(--color-border)' : 'none',
-              }}>
-                <div style={{
-                  width: 36, height: 36, borderRadius: 8, flexShrink: 0,
-                  background: 'var(--color-nav-active)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  color: 'var(--color-text-muted)',
-                }}>
-                  <IconDoc />
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {a.name}
+            {recentActivity.map((item, i) => {
+              const isTransfer = item.kind === 'transfer';
+              const t = isTransfer ? (item.data as Transfer) : null;
+              const r = !isTransfer ? (item.data as FileRequest) : null;
+              const statusKey = isTransfer && t ? transferStatus(t) : (r?.is_active && !r?.is_expired) ? 'active' : 'expired';
+              const meta = STATUS_META[statusKey];
+              const isActive = statusKey === 'active';
+              const id = isTransfer ? t!.id : r!.id;
+              const isCopied = copiedId === id;
+              const countDisplay = isTransfer && t && t.download_count > 0
+                ? `↓ ${t.download_count}`
+                : !isTransfer && (r?.submission_count ?? 0) > 0
+                ? `↑ ${r!.submission_count}`
+                : '';
+              const createdAt = isTransfer ? t!.created_at : r!.created_at;
+              return (
+                <li
+                  key={id}
+                  className="act-row"
+                  onClick={() => isTransfer && t ? navigate(`/transfers/${t.id}`) : navigate('/shares?tab=requests')}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 12, padding: '11px 8px',
+                    borderBottom: i < recentActivity.length - 1 ? '1px solid var(--color-border)' : 'none',
+                    borderRadius: 8,
+                    cursor: 'pointer',
+                    transition: 'background 0.12s',
+                    margin: '0 -8px',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--color-nav-active)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  {/* Status dot + icon */}
+                  <div style={{
+                    width: 36, height: 36, borderRadius: 8, flexShrink: 0,
+                    background: meta.iconBg,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    color: meta.iconColor,
+                    position: 'relative',
+                  }}>
+                    {isTransfer ? <IconShare2 /> : <IconInbox />}
+                    <span style={{
+                      position: 'absolute', top: -2, right: -2,
+                      width: 9, height: 9, borderRadius: '50%',
+                      background: meta.dotColor,
+                      border: '2px solid var(--color-surface)',
+                    }} />
                   </div>
-                  <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 1 }}>{a.sub}</div>
-                </div>
-                <div style={{ fontSize: 12, color: 'var(--color-text-muted)', whiteSpace: 'nowrap', flexShrink: 0, marginRight: 8 }}>{a.time}</div>
-                <ActivityBadge type={a.type} />
-                <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-muted)', padding: '4px', borderRadius: 4, flexShrink: 0 }}
-                  onClick={() => navigate(a.id.startsWith('m') ? '/shares' : `/transfers/${a.id}`)}
-                  title="View details">
-                  <IconDots />
-                </button>
-              </li>
-            ))}
+
+                  {/* Name + meta */}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {isTransfer ? (t!.name || t!.slug) : r!.name}
+                      {!isTransfer && (r!.submission_count ?? 0) > 0 && (
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, letterSpacing: '0.04em',
+                          padding: '1px 6px', borderRadius: 99,
+                          background: '#ECFDF5', color: '#059669',
+                          border: '1px solid #6EE7B7',
+                          whiteSpace: 'nowrap', flexShrink: 0,
+                        }}>
+                          {r!.submission_count} FILE{r!.submission_count !== 1 ? 'S' : ''} RECEIVED
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 1, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                      {isTransfer ? (
+                        <>
+                          {t!.recipient_email ? <span>→ {t!.recipient_email}</span> : <span>Public link</span>}
+                          {t!.file_count != null && <><span style={{ opacity: 0.4 }}>·</span><span>{t!.file_count} file{t!.file_count !== 1 ? 's' : ''}</span></>}
+                          {t!.total_size_bytes != null && <><span style={{ opacity: 0.4 }}>·</span><span>{fmtBytes(t!.total_size_bytes)}</span></>}
+                        </>
+                      ) : (
+                        <>
+                          <span>File request</span>
+                          {(r!.submission_count ?? 0) === 0 && <><span style={{ opacity: 0.4 }}>·</span><span>No submissions yet</span></>}
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Right: fixed columns — count | time | badge | copy */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                    <div style={{ width: 40, textAlign: 'right', fontSize: 11, color: 'var(--color-text-muted)', fontVariantNumeric: 'tabular-nums' }}>
+                      {countDisplay}
+                    </div>
+                    <div style={{ width: 72, textAlign: 'right', fontSize: 11, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }}>
+                      {timeAgo(createdAt)}
+                    </div>
+                    <div style={{ width: 76, display: 'flex', justifyContent: 'flex-end' }}>
+                      <span style={{
+                        fontSize: 10, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase',
+                        padding: '2px 7px', borderRadius: 99,
+                        background: meta.iconBg, color: meta.iconColor,
+                        border: `1px solid ${meta.dotColor}30`,
+                        whiteSpace: 'nowrap',
+                      }}>
+                        {meta.label}
+                      </span>
+                    </div>
+                    <div style={{ width: 30, display: 'flex', justifyContent: 'center' }}>
+                      {isActive && (
+                        <button
+                          className="act-copy-btn"
+                          title={isCopied ? 'Copied!' : 'Copy link'}
+                          onClick={(e) => {
+                            if (isTransfer && t) handleCopyLink(t, e);
+                            else if (r) handleCopyRequestLink(r, e);
+                          }}
+                        >
+                          {isCopied ? '✓' : <IconCopy />}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>

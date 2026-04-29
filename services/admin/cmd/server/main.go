@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	stdlog "log"
 	"net/http"
 	"os"
@@ -75,6 +76,39 @@ type ServiceHealthItem struct {
 	LatencyMs int64  `json:"latency_ms"`
 }
 
+// ── Storage Insights structs ──────────────────────────────────────────────────
+
+type ContentTypeStat struct {
+	ContentType string `json:"content_type"`
+	Count       int64  `json:"count"`
+	SizeBytes   int64  `json:"size_bytes"`
+}
+
+type PurgeReasonStat struct {
+	Reason     string `json:"reason"`
+	Count      int64  `json:"count"`
+	FreedBytes int64  `json:"freed_bytes"`
+}
+
+type PurgeDayStat struct {
+	Day        string `json:"day"`
+	Count      int64  `json:"count"`
+	FreedBytes int64  `json:"freed_bytes"`
+}
+
+type StorageInsights struct {
+	TotalFiles           int64             `json:"total_files"`
+	TotalStorageBytes    int64             `json:"total_storage_bytes"`
+	DeletedFiles         int64             `json:"deleted_files"`
+	PurgedFiles          int64             `json:"purged_files"`
+	FreedBytes           int64             `json:"freed_bytes"`
+	UniqueOwners         int64             `json:"unique_owners"`
+	ContentTypeBreakdown []ContentTypeStat `json:"content_type_breakdown"`
+	PurgeReasonBreakdown []PurgeReasonStat `json:"purge_reason_breakdown"`
+	PurgePerDay          []PurgeDayStat    `json:"purge_per_day"`
+	StoragePerDay        []StorageDayStat  `json:"storage_per_day"`
+}
+
 // ── Global DB pool and config ─────────────────────────────────────────────────
 
 var db *pgxpool.Pool
@@ -140,14 +174,38 @@ func main() {
 	v1.Get("/storage/usage", handleListStorageUsage)
 	v1.Get("/storage/config", handleGetStorageConfig)
 	v1.Put("/storage/config", handlePutStorageConfig)
+	v1.Get("/storage/files", handleListStorageFiles)
+	v1.Delete("/storage/files/:id", handleAdminDeleteFile)
+	v1.Post("/storage/purge", handleTriggerPurge)
+	v1.Get("/storage/purge-log", handleListPurgeLog)
+	v1.Get("/storage/insights", handleStorageInsights)
 	v1.Get("/transfers", handleListTransfers)
 	v1.Get("/transfers/:id", handleGetTransfer)
 	v1.Post("/transfers/:id/revoke", handleRevokeTransfer)
+	v1.Get("/audit/config", handleGetAuditConfig)
+	v1.Put("/audit/config", handlePutAuditConfig)
+	v1.Post("/audit/purge", handleTriggerAuditPurge)
+	v1.Get("/audit/stats", handleGetAuditStats)
 
 	go func() {
 		log.Info("admin service starting", zap.String("port", cfg.Server.Port))
 		if err := app.Listen(":" + cfg.Server.Port); err != nil {
 			log.Error("server error", zap.Error(err))
+		}
+	}()
+
+	// Background audit log purge — runs once at startup then daily.
+	go func() {
+		runAuditPurge(log)
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				runAuditPurge(log)
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 
@@ -845,11 +903,14 @@ func handleSystemHealth(c fiber.Ctx) error {
 
 // StorageConfig is the singleton storage policy row.
 type StorageConfig struct {
-	QuotaEnabled       bool   `json:"quota_enabled"`
-	QuotaBytesPerUser  int64  `json:"quota_bytes_per_user"`
-	MaxUploadSizeBytes int64  `json:"max_upload_size_bytes"`
-	UpdatedAt          string `json:"updated_at"`
-	UpdatedBy          string `json:"updated_by"`
+	QuotaEnabled        bool   `json:"quota_enabled"`
+	QuotaBytesPerUser   int64  `json:"quota_bytes_per_user"`
+	MaxUploadSizeBytes  int64  `json:"max_upload_size_bytes"`
+	RetentionEnabled    bool   `json:"retention_enabled"`
+	RetentionDays       int    `json:"retention_days"`
+	OrphanRetentionDays int    `json:"orphan_retention_days"`
+	UpdatedAt           string `json:"updated_at"`
+	UpdatedBy           string `json:"updated_by"`
 }
 
 // GET /api/v1/admin/storage/config
@@ -857,9 +918,13 @@ func handleGetStorageConfig(c fiber.Ctx) error {
 	var sc StorageConfig
 	var updatedAt time.Time
 	err := db.QueryRow(c.Context(), `
-		SELECT quota_enabled, quota_bytes_per_user, max_upload_size_bytes, updated_at, updated_by
+		SELECT quota_enabled, quota_bytes_per_user, max_upload_size_bytes,
+		       retention_enabled, retention_days, orphan_retention_days,
+		       updated_at, updated_by
 		FROM storage.storage_settings WHERE id = 1`,
-	).Scan(&sc.QuotaEnabled, &sc.QuotaBytesPerUser, &sc.MaxUploadSizeBytes, &updatedAt, &sc.UpdatedBy)
+	).Scan(&sc.QuotaEnabled, &sc.QuotaBytesPerUser, &sc.MaxUploadSizeBytes,
+		&sc.RetentionEnabled, &sc.RetentionDays, &sc.OrphanRetentionDays,
+		&updatedAt, &sc.UpdatedBy)
 	if err != nil {
 		return apperrors.Internal("get storage config", err)
 	}
@@ -867,51 +932,659 @@ func handleGetStorageConfig(c fiber.Ctx) error {
 	return c.JSON(sc)
 }
 
-// PUT /api/v1/admin/storage/config
-// Body: {quota_enabled, quota_bytes_per_user, max_upload_size_bytes}
+// PUT /api/v1/admin/storage/config — PATCH-style: only fields present in body are updated
 func handlePutStorageConfig(c fiber.Ctx) error {
 	var body struct {
-		QuotaEnabled       *bool  `json:"quota_enabled"`
-		QuotaBytesPerUser  *int64 `json:"quota_bytes_per_user"`
-		MaxUploadSizeBytes *int64 `json:"max_upload_size_bytes"`
+		QuotaEnabled        *bool  `json:"quota_enabled"`
+		QuotaBytesPerUser   *int64 `json:"quota_bytes_per_user"`
+		MaxUploadSizeBytes  *int64 `json:"max_upload_size_bytes"`
+		RetentionEnabled    *bool  `json:"retention_enabled"`
+		RetentionDays       *int   `json:"retention_days"`
+		OrphanRetentionDays *int   `json:"orphan_retention_days"`
 	}
 	if err := json.Unmarshal(c.Body(), &body); err != nil {
 		return apperrors.BadRequest("invalid JSON body")
 	}
 
-	// Validate
 	if body.QuotaBytesPerUser != nil && *body.QuotaBytesPerUser < 0 {
 		return apperrors.BadRequest("quota_bytes_per_user must be >= 0")
 	}
 	if body.MaxUploadSizeBytes != nil && *body.MaxUploadSizeBytes < 0 {
 		return apperrors.BadRequest("max_upload_size_bytes must be >= 0")
 	}
+	if body.RetentionDays != nil && *body.RetentionDays < 1 {
+		return apperrors.BadRequest("retention_days must be >= 1")
+	}
+	if body.OrphanRetentionDays != nil && *body.OrphanRetentionDays < 1 {
+		return apperrors.BadRequest("orphan_retention_days must be >= 1")
+	}
 
 	callerID, _ := c.Locals("userID").(string)
-	callerEmail := callerID // fallback to UUID if email lookup fails
+	callerEmail := callerID
 	if callerID != "" {
 		_ = db.QueryRow(c.Context(), "SELECT email FROM auth.users WHERE id = $1", callerID).Scan(&callerEmail)
 	}
 
 	_, err := db.Exec(c.Context(), `
 		UPDATE storage.storage_settings SET
-		    quota_enabled        = COALESCE($1, quota_enabled),
-		    quota_bytes_per_user = COALESCE($2, quota_bytes_per_user),
-		    max_upload_size_bytes = COALESCE($3, max_upload_size_bytes),
-		    updated_at          = now(),
-		    updated_by          = $4
+		    quota_enabled          = COALESCE($1, quota_enabled),
+		    quota_bytes_per_user   = COALESCE($2, quota_bytes_per_user),
+		    max_upload_size_bytes  = COALESCE($3, max_upload_size_bytes),
+		    retention_enabled      = COALESCE($4, retention_enabled),
+		    retention_days         = COALESCE($5, retention_days),
+		    orphan_retention_days  = COALESCE($6, orphan_retention_days),
+		    updated_at             = now(),
+		    updated_by             = $7
 		WHERE id = 1`,
-		body.QuotaEnabled, body.QuotaBytesPerUser, body.MaxUploadSizeBytes, callerEmail,
+		body.QuotaEnabled, body.QuotaBytesPerUser, body.MaxUploadSizeBytes,
+		body.RetentionEnabled, body.RetentionDays, body.OrphanRetentionDays,
+		callerEmail,
 	)
 	if err != nil {
 		return apperrors.Internal("update storage config", err)
 	}
-
-	// Return updated config
 	return handleGetStorageConfig(c)
 }
 
+// ── Storage file management ───────────────────────────────────────────────────
+
+// AdminFileRow represents a file record with share/retention context.
+type AdminFileRow struct {
+	ID             string  `json:"id"`
+	OwnerID        string  `json:"owner_id"`
+	OwnerEmail     string  `json:"owner_email"`
+	Filename       string  `json:"filename"`
+	ContentType    string  `json:"content_type"`
+	SizeBytes      int64   `json:"size_bytes"`
+	CreatedAt      string  `json:"created_at"`
+	ShareCount     int     `json:"share_count"`
+	ActiveShares   int     `json:"active_shares"`
+	LastShareExpAt *string `json:"last_share_expires_at"`
+	EligiblePurge  bool    `json:"eligible_purge"`
+}
+
+// GET /api/v1/admin/storage/files?limit=50&offset=0&sort_by=size_bytes|created_at&sort_dir=asc|desc&filter=all|orphan|eligible
+func handleListStorageFiles(c fiber.Ctx) error {
+	limit := 50
+	offset := 0
+	if v := c.Query("limit"); v != "" {
+		if n, _ := strconv.Atoi(v); n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	if v := c.Query("offset"); v != "" {
+		if n, _ := strconv.Atoi(v); n >= 0 {
+			offset = n
+		}
+	}
+
+	sortCols := map[string]string{
+		"size_bytes": "f.size_bytes",
+		"created_at": "f.created_at",
+		"filename":   "f.filename",
+		"owner":      "u.email",
+		"shares":     "coalesce(fs.share_count,0)",
+	}
+	sortCol := "f.created_at"
+	if v, ok := sortCols[c.Query("sort_by")]; ok {
+		sortCol = v
+	}
+	sortDir := "DESC"
+	if c.Query("sort_dir") == "asc" {
+		sortDir = "ASC"
+	}
+
+	filter := c.Query("filter") // "all" | "orphan" | "eligible"
+
+	// Fetch retention settings to determine eligibility
+	var retEnabled bool
+	var retDays, orphDays int
+	_ = db.QueryRow(c.Context(),
+		`SELECT retention_enabled, retention_days, orphan_retention_days FROM storage.storage_settings WHERE id = 1`,
+	).Scan(&retEnabled, &retDays, &orphDays)
+	if retDays <= 0 {
+		retDays = 30
+	}
+	if orphDays <= 0 {
+		orphDays = 90
+	}
+
+	whereClause := "WHERE f.deleted_at IS NULL"
+	switch filter {
+	case "orphan":
+		whereClause += " AND coalesce(fs.share_count,0) = 0"
+	case "eligible":
+		whereClause += fmt.Sprintf(` AND (
+			(coalesce(fs.share_count,0) > 0 AND coalesce(fs.active_shares,0) = 0
+			 AND coalesce(fs.last_exp, now() - interval '1 second') < now() - interval '%d days')
+			OR (coalesce(fs.share_count,0) = 0 AND f.created_at < now() - interval '%d days')
+		)`, retDays, orphDays)
+	}
+
+	query := fmt.Sprintf(`
+		WITH file_shares AS (
+		    SELECT tf.file_id,
+		           count(*) AS share_count,
+		           count(*) FILTER (WHERE NOT t.is_revoked AND (t.expires_at IS NULL OR t.expires_at > now())) AS active_shares,
+		           max(t.expires_at) AS last_exp
+		    FROM transfer.transfer_files tf
+		    JOIN transfer.transfers t ON t.id = tf.transfer_id
+		    GROUP BY tf.file_id
+		)
+		SELECT f.id, f.owner_id, coalesce(u.email,''), f.filename, f.content_type, f.size_bytes, f.created_at,
+		       coalesce(fs.share_count,0), coalesce(fs.active_shares,0), fs.last_exp,
+		       -- eligible_purge: no active shares AND last expiry > retDays OR orphan > orphDays
+		       CASE
+		           WHEN coalesce(fs.share_count,0) > 0
+		                AND coalesce(fs.active_shares,0) = 0
+		                AND coalesce(fs.last_exp, now() - interval '1 second') < now() - interval '%d days'
+		                THEN true
+		           WHEN coalesce(fs.share_count,0) = 0
+		                AND f.created_at < now() - interval '%d days'
+		                THEN true
+		           ELSE false
+		       END AS eligible_purge
+		FROM storage.files f
+		LEFT JOIN auth.users u ON u.id = f.owner_id::uuid
+		LEFT JOIN file_shares fs ON fs.file_id::uuid = f.id
+		%s
+		ORDER BY %s %s
+		LIMIT %d OFFSET %d
+	`, retDays, orphDays, whereClause, sortCol, sortDir, limit, offset)
+
+	rows, err := db.Query(c.Context(), query)
+	if err != nil {
+		return apperrors.Internal("list storage files", err)
+	}
+	defer rows.Close()
+
+	var files []AdminFileRow
+	for rows.Next() {
+		var row AdminFileRow
+		var createdAt time.Time
+		var lastExp *time.Time
+		if err := rows.Scan(
+			&row.ID, &row.OwnerID, &row.OwnerEmail, &row.Filename, &row.ContentType, &row.SizeBytes,
+			&createdAt, &row.ShareCount, &row.ActiveShares, &lastExp, &row.EligiblePurge,
+		); err != nil {
+			return apperrors.Internal("scan storage file row", err)
+		}
+		row.CreatedAt = createdAt.Format(time.RFC3339)
+		if lastExp != nil {
+			s := lastExp.Format(time.RFC3339)
+			row.LastShareExpAt = &s
+		}
+		files = append(files, row)
+	}
+	if err := rows.Err(); err != nil {
+		return apperrors.Internal("iterate storage files", err)
+	}
+
+	// Total count for pagination
+	countQuery := fmt.Sprintf(`
+		WITH file_shares AS (
+		    SELECT tf.file_id,
+		           count(*) AS share_count,
+		           count(*) FILTER (WHERE NOT t.is_revoked AND (t.expires_at IS NULL OR t.expires_at > now())) AS active_shares,
+		           max(t.expires_at) AS last_exp
+		    FROM transfer.transfer_files tf
+		    JOIN transfer.transfers t ON t.id = tf.transfer_id
+		    GROUP BY tf.file_id
+		)
+		SELECT count(*) FROM storage.files f
+		LEFT JOIN file_shares fs ON fs.file_id::uuid = f.id
+		%s
+	`, whereClause)
+	var total int
+	_ = db.QueryRow(c.Context(), countQuery).Scan(&total)
+
+	return c.JSON(fiber.Map{"files": files, "total": total, "limit": limit, "offset": offset})
+}
+
+// DELETE /api/v1/admin/storage/files/:id — admin force-delete a file
+func handleAdminDeleteFile(c fiber.Ctx) error {
+	id := c.Params("id")
+
+	// Get file metadata before deleting (for the purge log)
+	var objectKey, ownerID, filename string
+	var sizeBytes int64
+	err := db.QueryRow(c.Context(),
+		`SELECT object_key, owner_id, filename, size_bytes FROM storage.files WHERE id = $1 AND deleted_at IS NULL`, id,
+	).Scan(&objectKey, &ownerID, &filename, &sizeBytes)
+	if err != nil {
+		return apperrors.NotFound("file not found")
+	}
+
+	callerID, _ := c.Locals("userID").(string)
+	callerEmail := callerID
+	if callerID != "" {
+		_ = db.QueryRow(c.Context(), "SELECT email FROM auth.users WHERE id = $1", callerID).Scan(&callerEmail)
+	}
+
+	// Soft-delete the DB record
+	_, err = db.Exec(c.Context(), `UPDATE storage.files SET deleted_at = now() WHERE id = $1`, id)
+	if err != nil {
+		return apperrors.Internal("delete file record", err)
+	}
+
+	// Log to purge audit table
+	_, _ = db.Exec(c.Context(),
+		`INSERT INTO storage.file_purge_log (file_id, owner_id, filename, size_bytes, reason, purged_by)
+		 VALUES ($1, $2, $3, $4, 'admin_purge', $5)`,
+		id, ownerID, filename, sizeBytes, callerEmail,
+	)
+
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+// maxFilesPerPurge is the hard safety cap on the number of files a single manual
+// purge request can delete. Prevents accidental mass-deletion from a bad query.
+const maxFilesPerPurge = 500
+
+// POST /api/v1/admin/storage/purge — trigger retention purge immediately
+func handleTriggerPurge(c fiber.Ctx) error {
+	var retDays, orphDays int
+	err := db.QueryRow(c.Context(),
+		`SELECT retention_days, orphan_retention_days FROM storage.storage_settings WHERE id = 1`,
+	).Scan(&retDays, &orphDays)
+	if err != nil {
+		return apperrors.Internal("get storage config", err)
+	}
+	if retDays <= 0 {
+		retDays = 30
+	}
+	if orphDays <= 0 {
+		orphDays = 90
+	}
+
+	callerID, _ := c.Locals("userID").(string)
+	callerEmail := callerID
+	if callerID != "" {
+		_ = db.QueryRow(c.Context(), "SELECT email FROM auth.users WHERE id = $1", callerID).Scan(&callerEmail)
+	}
+
+	// Find eligible files and soft-delete them (object deletion happens in storage service worker)
+	rows, err := db.Query(c.Context(), fmt.Sprintf(`
+		WITH shared_files AS (
+		    SELECT DISTINCT tf.file_id FROM transfer.transfer_files tf
+		),
+		last_share_expiry AS (
+		    SELECT tf.file_id,
+		           bool_and(t.is_revoked OR (t.expires_at IS NOT NULL AND t.expires_at < now())) AS all_done,
+		           max(COALESCE(t.expires_at, now() - interval '1 second')) AS latest_expiry
+		    FROM transfer.transfer_files tf
+		    JOIN transfer.transfers t ON t.id = tf.transfer_id
+		    GROUP BY tf.file_id
+		)
+		SELECT f.id, f.owner_id, f.filename, f.size_bytes, 'retention_expired' AS reason
+		FROM storage.files f
+		JOIN last_share_expiry lse ON lse.file_id::uuid = f.id
+		WHERE f.deleted_at IS NULL AND lse.all_done = true
+		  AND lse.latest_expiry < now() - interval '%d days'
+
+		UNION ALL
+
+		SELECT f.id, f.owner_id, f.filename, f.size_bytes, 'orphan_expired' AS reason
+		FROM storage.files f
+		WHERE f.deleted_at IS NULL
+		  AND f.id NOT IN (SELECT file_id FROM shared_files)
+		  AND f.created_at < now() - interval '%d days'
+	`, retDays, orphDays))
+	if err != nil {
+		return apperrors.Internal("find eligible files", err)
+	}
+	defer rows.Close()
+
+	type purgeCandidate struct {
+		id, ownerID, filename, reason string
+		sizeBytes                     int64
+	}
+	var candidates []purgeCandidate
+	for rows.Next() {
+		var p purgeCandidate
+		if err := rows.Scan(&p.id, &p.ownerID, &p.filename, &p.sizeBytes, &p.reason); err != nil {
+			continue
+		}
+		candidates = append(candidates, p)
+	}
+
+	// Safety cap: never delete more than maxFilesPerPurge files in a single request.
+	capped := false
+	if len(candidates) > maxFilesPerPurge {
+		capped = true
+		candidates = candidates[:maxFilesPerPurge]
+	}
+
+	deleted := 0
+	var freedBytes int64
+	for _, p := range candidates {
+		tag, err := db.Exec(c.Context(), `UPDATE storage.files SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL`, p.id)
+		if err != nil || tag.RowsAffected() == 0 {
+			continue
+		}
+		_, _ = db.Exec(c.Context(),
+			`INSERT INTO storage.file_purge_log (file_id, owner_id, filename, size_bytes, reason, purged_by)
+                         VALUES ($1, $2, $3, $4, $5, $6)`,
+			p.id, p.ownerID, p.filename, p.sizeBytes, p.reason, callerEmail,
+		)
+		deleted++
+		freedBytes += p.sizeBytes
+	}
+
+	return c.JSON(fiber.Map{
+		"deleted":     deleted,
+		"freed_bytes": freedBytes,
+		"capped":      capped,
+		"cap":         maxFilesPerPurge,
+	})
+}
+
+// GET /api/v1/admin/storage/insights
+// Returns aggregated storage statistics for the insights dashboard.
+func handleStorageInsights(c fiber.Ctx) error {
+	var s StorageInsights
+
+	// Scalar totals
+	_ = db.QueryRow(c.Context(), `
+		SELECT
+			count(*) FILTER (WHERE deleted_at IS NULL),
+			coalesce(sum(size_bytes) FILTER (WHERE deleted_at IS NULL), 0),
+			count(*) FILTER (WHERE deleted_at IS NOT NULL),
+			count(DISTINCT owner_id) FILTER (WHERE deleted_at IS NULL)
+		FROM storage.files`,
+	).Scan(&s.TotalFiles, &s.TotalStorageBytes, &s.DeletedFiles, &s.UniqueOwners)
+
+	_ = db.QueryRow(c.Context(), `
+		SELECT count(*), coalesce(sum(size_bytes), 0)
+		FROM storage.file_purge_log`,
+	).Scan(&s.PurgedFiles, &s.FreedBytes)
+
+	// Content-type breakdown (top 12 by size)
+	s.ContentTypeBreakdown = make([]ContentTypeStat, 0)
+	if rows, err := db.Query(c.Context(), `
+		SELECT content_type, count(*), coalesce(sum(size_bytes), 0)
+		FROM storage.files
+		WHERE deleted_at IS NULL
+		GROUP BY content_type
+		ORDER BY sum(size_bytes) DESC
+		LIMIT 12`,
+	); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var ct ContentTypeStat
+			if err := rows.Scan(&ct.ContentType, &ct.Count, &ct.SizeBytes); err == nil {
+				s.ContentTypeBreakdown = append(s.ContentTypeBreakdown, ct)
+			}
+		}
+	}
+
+	// Purge reason breakdown
+	s.PurgeReasonBreakdown = make([]PurgeReasonStat, 0)
+	if rows, err := db.Query(c.Context(), `
+		SELECT reason, count(*), coalesce(sum(size_bytes), 0)
+		FROM storage.file_purge_log
+		GROUP BY reason
+		ORDER BY count(*) DESC`,
+	); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var pr PurgeReasonStat
+			if err := rows.Scan(&pr.Reason, &pr.Count, &pr.FreedBytes); err == nil {
+				s.PurgeReasonBreakdown = append(s.PurgeReasonBreakdown, pr)
+			}
+		}
+	}
+
+	// Purge activity per day — last 30 days
+	s.PurgePerDay = make([]PurgeDayStat, 0)
+	if rows, err := db.Query(c.Context(), `
+		SELECT to_char(date_trunc('day', purged_at), 'Mon DD') as day,
+		       count(*), coalesce(sum(size_bytes), 0)
+		FROM storage.file_purge_log
+		WHERE purged_at >= now() - interval '30 days'
+		GROUP BY date_trunc('day', purged_at), day
+		ORDER BY date_trunc('day', purged_at)`,
+	); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var pd PurgeDayStat
+			if err := rows.Scan(&pd.Day, &pd.Count, &pd.FreedBytes); err == nil {
+				s.PurgePerDay = append(s.PurgePerDay, pd)
+			}
+		}
+	}
+
+	// Storage added per day — last 30 days
+	s.StoragePerDay = make([]StorageDayStat, 0)
+	if rows, err := db.Query(c.Context(), `
+		SELECT to_char(date_trunc('day', created_at), 'Mon DD') as day,
+		       coalesce(sum(size_bytes), 0)
+		FROM storage.files
+		WHERE created_at >= now() - interval '30 days'
+		GROUP BY date_trunc('day', created_at), day
+		ORDER BY date_trunc('day', created_at)`,
+	); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var sd StorageDayStat
+			if err := rows.Scan(&sd.Day, &sd.Bytes); err == nil {
+				s.StoragePerDay = append(s.StoragePerDay, sd)
+			}
+		}
+	}
+
+	return c.JSON(s)
+}
+
+// GET /api/v1/admin/storage/purge-log?limit=50&offset=0
+func handleListPurgeLog(c fiber.Ctx) error {
+	limit := 50
+	offset := 0
+	if v := c.Query("limit"); v != "" {
+		if n, _ := strconv.Atoi(v); n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	if v := c.Query("offset"); v != "" {
+		if n, _ := strconv.Atoi(v); n >= 0 {
+			offset = n
+		}
+	}
+
+	rows, err := db.Query(c.Context(), `
+		SELECT pl.file_id, pl.owner_id, coalesce(u.email, pl.owner_id::text), pl.filename, pl.size_bytes, pl.reason, pl.purged_by, pl.purged_at
+		FROM storage.file_purge_log pl
+		LEFT JOIN auth.users u ON u.id = pl.owner_id
+		ORDER BY pl.purged_at DESC
+		LIMIT $1 OFFSET $2
+	`, limit, offset)
+	if err != nil {
+		return apperrors.Internal("list purge log", err)
+	}
+	defer rows.Close()
+
+	type logRow struct {
+		FileID    string `json:"file_id"`
+		OwnerID   string `json:"owner_id"`
+		Email     string `json:"email"`
+		Filename  string `json:"filename"`
+		SizeBytes int64  `json:"size_bytes"`
+		Reason    string `json:"reason"`
+		PurgedBy  string `json:"purged_by"`
+		PurgedAt  string `json:"purged_at"`
+	}
+	var entries []logRow
+	for rows.Next() {
+		var e logRow
+		var purgedAt time.Time
+		if err := rows.Scan(&e.FileID, &e.OwnerID, &e.Email, &e.Filename, &e.SizeBytes, &e.Reason, &e.PurgedBy, &purgedAt); err != nil {
+			return apperrors.Internal("scan purge log row", err)
+		}
+		e.PurgedAt = purgedAt.Format(time.RFC3339)
+		entries = append(entries, e)
+	}
+
+	var total int
+	_ = db.QueryRow(c.Context(), `SELECT count(*) FROM storage.file_purge_log`).Scan(&total)
+
+	return c.JSON(fiber.Map{"entries": entries, "total": total, "limit": limit, "offset": offset})
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// ── Audit config ─────────────────────────────────────────────────────────────
+
+type AuditConfig struct {
+	RetentionEnabled bool   `json:"retention_enabled"`
+	RetentionDays    int    `json:"retention_days"`
+	UpdatedAt        string `json:"updated_at"`
+	UpdatedBy        string `json:"updated_by"`
+}
+
+// GET /api/v1/admin/audit/config
+func handleGetAuditConfig(c fiber.Ctx) error {
+	var ac AuditConfig
+	var updatedAt time.Time
+	err := db.QueryRow(c.Context(), `
+		SELECT retention_enabled, retention_days, updated_at, updated_by
+		FROM audit.audit_settings WHERE id = 1`,
+	).Scan(&ac.RetentionEnabled, &ac.RetentionDays, &updatedAt, &ac.UpdatedBy)
+	if err != nil {
+		return apperrors.Internal("get audit config", err)
+	}
+	ac.UpdatedAt = updatedAt.Format(time.RFC3339)
+	return c.JSON(ac)
+}
+
+// PUT /api/v1/admin/audit/config
+func handlePutAuditConfig(c fiber.Ctx) error {
+	var body struct {
+		RetentionEnabled *bool `json:"retention_enabled"`
+		RetentionDays    *int  `json:"retention_days"`
+	}
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return apperrors.BadRequest("invalid JSON body")
+	}
+	if body.RetentionDays != nil && *body.RetentionDays < 1 {
+		return apperrors.BadRequest("retention_days must be >= 1")
+	}
+
+	callerID, _ := c.Locals("userID").(string)
+	callerEmail := callerID
+	if callerID != "" {
+		_ = db.QueryRow(c.Context(), "SELECT email FROM auth.users WHERE id = $1", callerID).Scan(&callerEmail)
+	}
+
+	_, err := db.Exec(c.Context(), `
+		UPDATE audit.audit_settings SET
+		    retention_enabled = COALESCE($1, retention_enabled),
+		    retention_days    = COALESCE($2, retention_days),
+		    updated_at        = now(),
+		    updated_by        = $3
+		WHERE id = 1`,
+		body.RetentionEnabled, body.RetentionDays, callerEmail,
+	)
+	if err != nil {
+		return apperrors.Internal("update audit config", err)
+	}
+	return handleGetAuditConfig(c)
+}
+
+// GET /api/v1/admin/audit/stats
+func handleGetAuditStats(c fiber.Ctx) error {
+	var total int64
+	var oldest, newest *time.Time
+	_ = db.QueryRow(c.Context(), `
+		SELECT count(*), min(created_at), max(created_at)
+		FROM audit.audit_logs`,
+	).Scan(&total, &oldest, &newest)
+
+	type sourceCount struct {
+		Source string `json:"source"`
+		Count  int64  `json:"count"`
+	}
+	sources := make([]sourceCount, 0)
+	if rows, err := db.Query(c.Context(), `
+		SELECT source, count(*) FROM audit.audit_logs
+		GROUP BY source ORDER BY count(*) DESC`,
+	); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var sc sourceCount
+			if err := rows.Scan(&sc.Source, &sc.Count); err == nil {
+				sources = append(sources, sc)
+			}
+		}
+	}
+
+	oldestStr := ""
+	if oldest != nil {
+		oldestStr = oldest.Format(time.RFC3339)
+	}
+	newestStr := ""
+	if newest != nil {
+		newestStr = newest.Format(time.RFC3339)
+	}
+
+	return c.JSON(fiber.Map{
+		"total_entries": total,
+		"oldest_entry":  oldestStr,
+		"newest_entry":  newestStr,
+		"by_source":     sources,
+	})
+}
+
+// POST /api/v1/admin/audit/purge — manually trigger audit log purge
+func handleTriggerAuditPurge(c fiber.Ctx) error {
+	var retDays int
+	var enabled bool
+	err := db.QueryRow(c.Context(),
+		`SELECT retention_enabled, retention_days FROM audit.audit_settings WHERE id = 1`,
+	).Scan(&enabled, &retDays)
+	if err != nil {
+		return apperrors.Internal("get audit config", err)
+	}
+	if !enabled {
+		return c.JSON(fiber.Map{"deleted": 0, "message": "retention is disabled"})
+	}
+	if retDays < 1 {
+		retDays = 365
+	}
+	tag, err := db.Exec(c.Context(),
+		`DELETE FROM audit.audit_logs WHERE created_at < now() - ($1 || ' days')::interval`,
+		retDays,
+	)
+	if err != nil {
+		return apperrors.Internal("purge audit logs", err)
+	}
+	return c.JSON(fiber.Map{"deleted": tag.RowsAffected(), "retention_days": retDays})
+}
+
+// runAuditPurge is called from the background goroutine — best-effort, never panics.
+func runAuditPurge(log *zap.Logger) {
+	if db == nil {
+		return
+	}
+	var enabled bool
+	var retDays int
+	err := db.QueryRow(context.Background(),
+		`SELECT retention_enabled, retention_days FROM audit.audit_settings WHERE id = 1`,
+	).Scan(&enabled, &retDays)
+	if err != nil || !enabled || retDays < 1 {
+		return
+	}
+	tag, err := db.Exec(context.Background(),
+		`DELETE FROM audit.audit_logs WHERE created_at < now() - ($1 || ' days')::interval`,
+		retDays,
+	)
+	if err != nil {
+		log.Warn("audit purge failed", zap.Error(err))
+		return
+	}
+	if tag.RowsAffected() > 0 {
+		log.Info("audit purge complete", zap.Int64("deleted", tag.RowsAffected()), zap.Int("retention_days", retDays))
+	}
+}
 
 func itoa(n int) string { return strconv.Itoa(n) }
 

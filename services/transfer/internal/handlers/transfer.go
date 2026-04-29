@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +22,10 @@ import (
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jwtkeys"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 )
+
+// errFileDeleted is returned by fetchPresignURL when the storage service reports
+// that the requested file no longer exists (soft-deleted by admin or retention worker).
+var errFileDeleted = errors.New("file no longer available")
 
 type Handler struct {
 	svc           *service.TransferService
@@ -177,6 +182,20 @@ func (h *Handler) Access(c fiber.Ctx) error {
 	if result.FileDownloadCounts != nil {
 		resp["file_download_counts"] = result.FileDownloadCounts
 	}
+	if result.FileInfos != nil {
+		type fileInfoJSON struct {
+			ID           string `json:"id"`
+			Filename     string `json:"filename"`
+			ContentType  string `json:"content_type"`
+			SizeBytes    int64  `json:"size_bytes"`
+			DeleteReason string `json:"delete_reason"` // empty = available; see repository.FileInfo
+		}
+		infos := make([]fileInfoJSON, len(result.FileInfos))
+		for i, f := range result.FileInfos {
+			infos[i] = fileInfoJSON{ID: f.ID, Filename: f.Filename, ContentType: f.ContentType, SizeBytes: f.SizeBytes, DeleteReason: f.DeleteReason}
+		}
+		resp["files"] = infos
+	}
 
 	return c.JSON(fiber.Map{
 		"transfer": resp,
@@ -251,6 +270,9 @@ func (h *Handler) DownloadURL(c fiber.Ctx) error {
 	// Proxy the presign request to the Storage service.
 	presignURL, err := h.fetchPresignURL(c.Context(), fileID, svcToken)
 	if err != nil {
+		if errors.Is(err, errFileDeleted) {
+			return apperrors.NotFound("this file has been deleted and is no longer available for download")
+		}
 		return apperrors.Internal("get presigned url from storage service", err)
 	}
 
@@ -332,6 +354,10 @@ func (h *Handler) fetchPresignURL(ctx context.Context, fileID, token string) (st
 	defer resp.Body.Close() //nolint:errcheck
 
 	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		// File was deleted (storage service returns 404 for soft-deleted files).
+		return "", errFileDeleted
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("storage service returned %d: %s", resp.StatusCode, string(body))
 	}

@@ -200,6 +200,57 @@ func (r *TransferRepository) GetFileIDs(ctx context.Context, transferID string) 
 	return ids, rows.Err()
 }
 
+// FileInfo holds per-file metadata for display on the download page.
+// DeleteReason is empty for available files; non-empty values are:
+//   "owner_deleted"      – the file owner deleted their own file
+//   "admin_purge"        – an administrator force-deleted the file
+//   "retention_expired"  – auto-purged by the retention policy
+//   "orphan_expired"     – auto-purged as an orphaned file
+type FileInfo struct {
+	ID           string
+	Filename     string
+	ContentType  string
+	SizeBytes    int64
+	DeleteReason string // empty = available
+}
+
+// GetFileInfos returns filename/size/type metadata for every file in a transfer,
+// including deleted files (so the UI can show them as unavailable with an appropriate reason).
+func (r *TransferRepository) GetFileInfos(ctx context.Context, transferID string) ([]*FileInfo, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT sf.id, sf.filename, sf.content_type, sf.size_bytes,
+		       CASE
+		           WHEN sf.deleted_at IS NULL THEN ''
+		           ELSE COALESCE(pl.reason, 'owner_deleted')
+		       END AS delete_reason
+		FROM transfer.transfer_files tf
+		JOIN storage.files sf ON sf.id::text = tf.file_id::text
+		LEFT JOIN LATERAL (
+		    SELECT reason
+		    FROM storage.file_purge_log
+		    WHERE file_id = sf.id
+		    ORDER BY purged_at DESC
+		    LIMIT 1
+		) pl ON sf.deleted_at IS NOT NULL
+		WHERE tf.transfer_id = $1
+		ORDER BY sf.filename
+	`, transferID)
+	if err != nil {
+		return nil, apperrors.Internal("get file infos", err)
+	}
+	defer rows.Close()
+
+	var infos []*FileInfo
+	for rows.Next() {
+		var f FileInfo
+		if err := rows.Scan(&f.ID, &f.Filename, &f.ContentType, &f.SizeBytes, &f.DeleteReason); err != nil {
+			return nil, apperrors.Internal("scan file info", err)
+		}
+		infos = append(infos, &f)
+	}
+	return infos, rows.Err()
+}
+
 // AttemptFileDownload atomically checks and increments the per-file download counter.
 // Returns (true, nil) if the download is allowed (counter was incremented).
 // Returns (false, nil) if the per-file limit has already been reached.

@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router';
 import { getTransfer, revokeTransfer, type Transfer } from '../api/transfers';
 import { getFile, presignFile, type FileRecord } from '../api/files';
 import { getToken } from '../api/client';
+import { isPreviewable, IconEye, FilePreviewModal } from '../components/FilePreviewModal';
 
 /**
  * Build the public recipient link for a transfer slug.
@@ -51,7 +52,9 @@ function fileTypeInfo(ct: string): { icon: string; color: string } {
 
 function FileCard({ fileId }: { fileId: string }) {
   const [file, setFile] = useState<FileRecord | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
   const [thumbUrl, setThumbUrl] = useState<string | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   useEffect(() => {
     getFile(fileId).then((f) => {
@@ -65,7 +68,15 @@ function FileCard({ fileId }: { fileId: string }) {
           .then((b) => setThumbUrl(URL.createObjectURL(b)))
           .catch(() => null);
       }
-    }).catch(() => null);
+    }).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : '';
+      // 404 = file was deleted; show a clear message instead of "Loading..."
+      if (msg.toLowerCase().includes('not found') || msg.includes('404')) {
+        setFileError('deleted');
+      } else {
+        setFileError('unavailable');
+      }
+    });
     return () => { if (thumbUrl) URL.revokeObjectURL(thumbUrl); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fileId]);
@@ -75,69 +86,128 @@ function FileCard({ fileId }: { fileId: string }) {
       const { url } = await presignFile(fileId);
       window.open(url, '_blank');
     } catch (err: any) {
-      alert(err.message);
+      const msg: string = err?.message ?? 'Download failed.';
+      if (msg.toLowerCase().includes('no longer available') || msg.toLowerCase().includes('not found') || msg.toLowerCase().includes('deleted')) {
+        alert('This file has been deleted by an administrator and is no longer available for download.');
+      } else {
+        alert(msg);
+      }
     }
   }
 
+  // File was deleted — show a clear placeholder card
+  if (fileError) {
+    return (
+      <div style={{
+        border: '1px solid var(--color-border)',
+        borderRadius: 10,
+        overflow: 'hidden',
+        background: 'var(--color-bg)',
+        display: 'flex',
+        flexDirection: 'column',
+        opacity: 0.7,
+      }}>
+        <div style={{ height: 120, background: '#f3f4f6', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <span style={{ fontSize: 36 }}>🗑</span>
+        </div>
+        <div style={{ padding: '10px 12px' }}>
+          <div style={{ fontSize: 12, color: '#6b7280', fontStyle: 'italic' }}>
+            {fileError === 'deleted' ? 'File removed by administrator' : 'File unavailable'}
+          </div>
+          <div style={{ fontSize: 11, color: '#9ca3af', fontFamily: 'monospace', marginTop: 4 }}>
+            {fileId.substring(0, 8)}…
+          </div>
+        </div>
+        <div style={{ padding: '0 12px 12px' }}>
+          <button className="btn btn-secondary btn-sm" style={{ width: '100%' }} disabled>
+            Unavailable
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   const { icon, color } = file ? fileTypeInfo(file.content_type) : { icon: '📎', color: '#64748B' };
+  const canPreview = file ? isPreviewable(file.content_type) : false;
 
   return (
-    <div style={{
-      border: '1px solid var(--color-border)',
-      borderRadius: 10,
-      overflow: 'hidden',
-      background: 'var(--color-bg)',
-      display: 'flex',
-      flexDirection: 'column',
-      transition: 'box-shadow 0.15s',
-    }}>
-      {/* Thumbnail / Icon area */}
-      <div style={{
-        height: 120,
-        background: thumbUrl ? 'var(--color-border)' : color + '14',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        overflow: 'hidden',
-        flexShrink: 0,
-      }}>
-        {thumbUrl ? (
-          <img src={thumbUrl} alt={file?.filename} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-        ) : (
-          <span style={{ fontSize: 40 }}>{file ? icon : '…'}</span>
-        )}
-      </div>
+    <>
+      {previewOpen && file && (
+        <FilePreviewModal file={file} onClose={() => setPreviewOpen(false)} />
+      )}
+      <div
+        style={{
+          border: '1px solid var(--color-border)',
+          borderRadius: 10,
+          overflow: 'hidden',
+          background: 'var(--color-bg)',
+          display: 'flex',
+          flexDirection: 'column',
+          transition: 'box-shadow 0.15s',
+          cursor: canPreview ? 'pointer' : 'default',
+        }}
+        onDoubleClick={() => { if (canPreview && file) setPreviewOpen(true); }}
+        title={canPreview ? 'Double-click to preview' : undefined}
+      >
+        {/* Thumbnail / Icon area */}
+        <div style={{
+          height: 120,
+          background: thumbUrl ? 'var(--color-border)' : color + '14',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          overflow: 'hidden',
+          flexShrink: 0,
+          position: 'relative',
+        }}>
+          {thumbUrl ? (
+            <img src={thumbUrl} alt={file?.filename} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          ) : (
+            <span style={{ fontSize: 40 }}>{file ? icon : '…'}</span>
+          )}
+          {canPreview && (
+            <button
+              className="files-icon-btn"
+              title="Preview"
+              onClick={(e) => { e.stopPropagation(); if (file) setPreviewOpen(true); }}
+              style={{ position: 'absolute', top: 6, right: 6, background: 'rgba(255,255,255,0.85)', borderRadius: 6 }}
+            >
+              <IconEye />
+            </button>
+          )}
+        </div>
 
-      {/* File info */}
-      <div style={{ padding: '10px 12px', flex: 1 }}>
-        {file ? (
-          <>
-            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 4 }} title={file.filename}>
-              {file.filename}
-            </div>
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{fmtBytes(file.size_bytes)}</span>
-              <span style={{ fontSize: 11, color: 'var(--color-text-muted)', opacity: 0.5 }}>·</span>
-              <span style={{ fontSize: 11, color: 'var(--color-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 120 }}>{file.content_type}</span>
-            </div>
-          </>
-        ) : (
-          <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Loading…</div>
-        )}
-      </div>
+        {/* File info */}
+        <div style={{ padding: '10px 12px', flex: 1 }}>
+          {file ? (
+            <>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 4 }} title={file.filename}>
+                {file.filename}
+              </div>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{fmtBytes(file.size_bytes)}</span>
+                <span style={{ fontSize: 11, color: 'var(--color-text-muted)', opacity: 0.5 }}>·</span>
+                <span style={{ fontSize: 11, color: 'var(--color-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 120 }}>{file.content_type}</span>
+              </div>
+            </>
+          ) : (
+            <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Loading…</div>
+          )}
+        </div>
 
-      {/* Download button */}
-      <div style={{ padding: '0 12px 12px' }}>
-        <button
-          className="btn btn-secondary btn-sm"
-          style={{ width: '100%' }}
-          onClick={handleDownload}
-          disabled={!file}
-        >
-          Download
-        </button>
+        {/* Download button */}
+        <div style={{ padding: '0 12px 12px' }}>
+          <button
+            className="btn btn-secondary btn-sm"
+            style={{ width: '100%' }}
+            onClick={handleDownload}
+            disabled={!file}
+          >
+            Download
+          </button>
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 

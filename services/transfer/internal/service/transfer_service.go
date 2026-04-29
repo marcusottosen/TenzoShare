@@ -26,6 +26,7 @@ type transferRepository interface {
 	GetByID(ctx context.Context, id string) (*domain.Transfer, error)
 	ListByOwner(ctx context.Context, ownerID string, limit, offset int) ([]*domain.Transfer, error)
 	GetFileIDs(ctx context.Context, transferID string) ([]string, error)
+	GetFileInfos(ctx context.Context, transferID string) ([]*repository.FileInfo, error)
 	AttemptFileDownload(ctx context.Context, transferID, fileID string, maxDownloads int) (bool, error)
 	GetFileDownloadCounts(ctx context.Context, transferID string) (map[string]int, error)
 	IncrementDownloads(ctx context.Context, id string) error
@@ -179,7 +180,8 @@ type AccessParams struct {
 type AccessResult struct {
 	Transfer           *domain.Transfer
 	FileIDs            []string
-	FileDownloadCounts map[string]int // populated by Validate; nil for AttemptFileDownload
+	FileInfos          []*repository.FileInfo // populated by Validate; nil for AttemptFileDownload
+	FileDownloadCounts map[string]int         // populated by Validate; nil for AttemptFileDownload
 }
 
 // AttemptFileDownloadParams carries the parameters for the per-file download endpoint.
@@ -292,6 +294,11 @@ func (s *TransferService) Validate(ctx context.Context, p AccessParams) (*Access
 		return nil, err
 	}
 
+	fileInfos, err := s.repo.GetFileInfos(ctx, t.ID)
+	if err != nil {
+		return nil, err
+	}
+
 	// Fetch per-file download counts so the download UI can show per-file status.
 	var fileCounts map[string]int
 	if t.MaxDownloads > 0 {
@@ -301,7 +308,7 @@ func (s *TransferService) Validate(ctx context.Context, p AccessParams) (*Access
 		}
 	}
 
-	return &AccessResult{Transfer: t, FileIDs: fileIDs, FileDownloadCounts: fileCounts}, nil
+	return &AccessResult{Transfer: t, FileIDs: fileIDs, FileInfos: fileInfos, FileDownloadCounts: fileCounts}, nil
 }
 
 func (s *TransferService) Revoke(ctx context.Context, id, ownerID string) error {

@@ -188,6 +188,9 @@ export interface StorageConfig {
   quota_enabled: boolean;
   quota_bytes_per_user: number;
   max_upload_size_bytes: number;
+  retention_enabled: boolean;
+  retention_days: number;
+  orphan_retention_days: number;
   updated_at: string;
   updated_by: string;
 }
@@ -200,9 +203,168 @@ export async function updateStorageConfig(body: {
   quota_enabled?: boolean;
   quota_bytes_per_user?: number;
   max_upload_size_bytes?: number;
+  retention_enabled?: boolean;
+  retention_days?: number;
+  orphan_retention_days?: number;
 }): Promise<StorageConfig> {
   return request<StorageConfig>('/admin/storage/config', {
     method: 'PUT',
     body: JSON.stringify(body),
   });
+}
+
+export interface AdminFileRow {
+  id: string;
+  owner_id: string;
+  owner_email: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  created_at: string;
+  share_count: number;
+  active_shares: number;
+  last_share_expires_at: string | null;
+  eligible_purge: boolean;
+}
+
+export interface AdminFilesResponse {
+  files: AdminFileRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export async function listStorageFiles(params: {
+  limit?: number;
+  offset?: number;
+  sort_by?: string;
+  sort_dir?: string;
+  filter?: 'all' | 'orphan' | 'eligible';
+} = {}): Promise<AdminFilesResponse> {
+  const qs = new URLSearchParams();
+  if (params.limit) qs.set('limit', String(params.limit));
+  if (params.offset) qs.set('offset', String(params.offset));
+  if (params.sort_by) qs.set('sort_by', params.sort_by);
+  if (params.sort_dir) qs.set('sort_dir', params.sort_dir);
+  if (params.filter) qs.set('filter', params.filter);
+  return request<AdminFilesResponse>(`/admin/storage/files?${qs.toString()}`);
+}
+
+export async function adminDeleteFile(id: string): Promise<void> {
+  await request<void>(`/admin/storage/files/${id}`, { method: 'DELETE' });
+}
+
+export interface PurgeResult {
+  deleted: number;
+  freed_bytes: number;
+  capped?: boolean;
+  cap?: number;
+}
+
+export async function triggerPurge(): Promise<PurgeResult> {
+  return request<PurgeResult>('/admin/storage/purge', { method: 'POST' });
+}
+
+export interface PurgeLogEntry {
+  file_id: string;
+  owner_id: string;
+  email: string;
+  filename: string;
+  size_bytes: number;
+  reason: string;
+  purged_by: string;
+  purged_at: string;
+}
+
+export interface PurgeLogResponse {
+  entries: PurgeLogEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export async function getPurgeLog(params: { limit?: number; offset?: number } = {}): Promise<PurgeLogResponse> {
+  const qs = new URLSearchParams();
+  if (params.limit) qs.set('limit', String(params.limit));
+  if (params.offset) qs.set('offset', String(params.offset));
+  return request<PurgeLogResponse>(`/admin/storage/purge-log?${qs.toString()}`);
+}
+
+export interface ContentTypeStat {
+  content_type: string;
+  count: number;
+  size_bytes: number;
+}
+
+export interface PurgeReasonStat {
+  reason: string;
+  count: number;
+  freed_bytes: number;
+}
+
+export interface PurgeDayStat {
+  day: string;
+  count: number;
+  freed_bytes: number;
+}
+
+export interface StorageInsights {
+  total_files: number;
+  total_storage_bytes: number;
+  deleted_files: number;
+  purged_files: number;
+  freed_bytes: number;
+  unique_owners: number;
+  content_type_breakdown: ContentTypeStat[];
+  purge_reason_breakdown: PurgeReasonStat[];
+  purge_per_day: PurgeDayStat[];
+  storage_per_day: StorageDayStat[];
+}
+
+export async function getStorageInsights(): Promise<StorageInsights> {
+  return request<StorageInsights>('/admin/storage/insights');
+}
+
+// ── Audit log retention ───────────────────────────────────────────────────────
+
+export interface AuditConfig {
+  retention_enabled: boolean;
+  retention_days: number;
+  updated_at: string;
+  updated_by: string;
+}
+
+export interface AuditStats {
+  total_entries: number;
+  oldest_entry: string | null;
+  newest_entry: string | null;
+  by_source: { source: string; count: number }[];
+}
+
+export interface AuditPurgeResult {
+  deleted: number;
+  retention_days?: number;
+  message?: string;
+}
+
+export async function getAuditConfig(): Promise<AuditConfig> {
+  return request<AuditConfig>('/admin/audit/config');
+}
+
+export async function updateAuditConfig(body: {
+  retention_enabled?: boolean;
+  retention_days?: number;
+}): Promise<AuditConfig> {
+  return request<AuditConfig>('/admin/audit/config', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function getAuditStats(): Promise<AuditStats> {
+  return request<AuditStats>('/admin/audit/stats');
+}
+
+export async function triggerAuditPurge(): Promise<AuditPurgeResult> {
+  return request<AuditPurgeResult>('/admin/audit/purge', { method: 'POST' });
 }

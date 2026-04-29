@@ -97,7 +97,8 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 20px 20px 16px;
+  padding: 0 20px;
+  height: var(--navbar-height);
   border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
 }
@@ -874,6 +875,7 @@ tbody tr:hover td { background: var(--color-page-bg); }
 
 /* ─── Activity badges ────────────────────────────────────────── */
 .act-badge {
+
   display: inline-flex;
   align-items: center;
   font-size: 10px;
@@ -888,6 +890,28 @@ tbody tr:hover td { background: var(--color-page-bg); }
 .act-badge-secure  { color: var(--color-success-green); background: var(--color-success-pale);      border-color: var(--color-success-border); }
 .act-badge-shared  { color: var(--color-secondary);     background: var(--color-accent-teal-bg);    border-color: var(--color-accent-teal-border); }
 .act-badge-modified { color: var(--color-text-muted);  background: var(--color-neutral);            border-color: #CBD5E1; }
+
+/* ─── Activity row copy button ───────────────────────────────── */
+.act-copy-btn {
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 4px 7px;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  min-width: 26px;
+}
+.act-copy-btn:hover {
+  background: var(--color-nav-active);
+  color: var(--color-text-primary);
+  border-color: var(--color-border-card);
+}
 
 /* ─── Sharing tips ───────────────────────────────────────────── */
 .tip-item {
@@ -922,7 +946,7 @@ tbody tr:hover td { background: var(--color-page-bg); }
 /* ─── FilesPage ──────────────────────────────────────────────── */
 .files-row {
   display: grid;
-  grid-template-columns: 2.5fr 100px 130px 140px 120px;
+  grid-template-columns: 2fr 90px 130px 130px 140px 120px;
   align-items: center;
   padding: 10px 20px;
   border-bottom: 1px solid var(--color-border);

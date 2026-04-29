@@ -11,6 +11,7 @@ import {
   type StorageUsage,
 } from '../api/files';
 import { getToken } from '../api/client';
+import { isPreviewable, IconEye, FilePreviewModal } from '../components/FilePreviewModal';
 import { listTransfers, type Transfer } from '../api/transfers';
 import { pendingFileStore } from '../stores/pendingFileStore';
 
@@ -84,113 +85,6 @@ function IconTrash() {
     </svg>
   );
 }
-function IconEye() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
-    </svg>
-  );
-}
-
-function isPreviewable(contentType: string): boolean {
-  return (
-    contentType.startsWith('image/') ||
-    contentType.startsWith('audio/') ||
-    contentType === 'application/pdf' ||
-    contentType.startsWith('text/') ||
-    contentType === 'application/json'
-  );
-}
-
-function FilePreviewModal({ file, onClose }: { file: FileRecord; onClose: () => void }) {
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [textContent, setTextContent] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState('');
-
-  useEffect(() => {
-    let objectUrl: string | null = null;
-    (async () => {
-      try {
-        const token = getToken();
-        const resp = await fetch(`/api/v1/files/${file.id}/download?inline=1`, {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        });
-        if (!resp.ok) throw new Error(`Server returned ${resp.status}`);
-        if (file.content_type.startsWith('text/') || file.content_type === 'application/json') {
-          setTextContent(await resp.text());
-        } else {
-          const blob = await resp.blob();
-          objectUrl = URL.createObjectURL(blob);
-          setPreviewUrl(objectUrl);
-        }
-      } catch (e: any) {
-        setErr(e.message);
-      } finally {
-        setLoading(false);
-      }
-    })();
-    return () => { if (objectUrl) URL.revokeObjectURL(objectUrl); };
-  }, [file.id, file.content_type]);
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [onClose]);
-
-  const { icon } = fileTypeInfo(file.content_type);
-
-  return (
-    <div className="preview-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="preview-modal">
-        {/* Header */}
-        <div className="preview-modal-header">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: 1 }}>
-            <span style={{ fontSize: 18, flexShrink: 0 }}>{icon}</span>
-            <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.filename}</span>
-            <span style={{ fontSize: 12, color: 'var(--color-text-muted)', flexShrink: 0 }}>{fmtBytes(file.size_bytes)}</span>
-          </div>
-          <button className="preview-close-btn" onClick={onClose} title="Close (Esc)">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-            </svg>
-          </button>
-        </div>
-
-        {/* Body */}
-        <div className="preview-modal-body">
-          {loading && (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '40vh', gap: 12, color: 'var(--color-text-muted)' }}>
-              <IconEye />
-              <span className="text-sm">Loading preview…</span>
-            </div>
-          )}
-          {err && <div style={{ padding: 24 }}><div className="alert alert-error">{err}</div></div>}
-          {!loading && !err && (
-            <div className="preview-content">
-              {file.content_type.startsWith('image/') && previewUrl && (
-                <img src={previewUrl} alt={file.filename} style={{ maxWidth: '100%', maxHeight: '72vh', objectFit: 'contain', borderRadius: 4 }} />
-              )}
-              {file.content_type.startsWith('audio/') && previewUrl && (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, width: '100%' }}>
-                  <span style={{ fontSize: 48 }}>🎵</span>
-                  <audio controls src={previewUrl} style={{ width: '100%', maxWidth: 480 }} />
-                </div>
-              )}
-              {file.content_type === 'application/pdf' && previewUrl && (
-                <iframe src={previewUrl} title={file.filename} style={{ width: '100%', height: '72vh', border: 'none', borderRadius: 4 }} />
-              )}
-              {(file.content_type.startsWith('text/') || file.content_type === 'application/json') && textContent !== null && (
-                <pre className="preview-text">{textContent}</pre>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 type FileSortKey = 'name' | 'size' | 'modified';
 function SortArrow({ col, sortKey, sortDir }: { col: FileSortKey; sortKey: FileSortKey; sortDir: 'asc' | 'desc' }) {
@@ -228,6 +122,48 @@ function IconDownloads() {
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
       <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
     </svg>
+  );
+}
+
+// ── Retention badge shown in the "Retention" column of the file table ─────────
+function RetentionBadge({ file }: { file: FileRecord }) {
+  const { auto_delete_at, active_shares, share_count } = file;
+
+  if (!auto_delete_at) {
+    // No retention risk — either retention is disabled or file has an active share
+    if ((active_shares ?? 0) > 0) {
+      return (
+        <span title={`Protected by ${active_shares} active share${active_shares !== 1 ? 's' : ''}`}
+          style={{ fontSize: 11, color: '#22c55e', display: 'inline-flex', alignItems: 'center', gap: 3, whiteSpace: 'nowrap' }}>
+          ✓ Protected
+        </span>
+      );
+    }
+    return <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>—</span>;
+  }
+
+  const deleteDate = new Date(auto_delete_at);
+  const now = new Date();
+  const daysLeft = Math.ceil((deleteDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+  const isPast = daysLeft <= 0;
+  const isSoon = daysLeft <= 7;
+  const isWarning = daysLeft <= 30;
+
+  let color = 'var(--color-text-muted)';
+  let label = `Expires ${deleteDate.toLocaleDateString()}`;
+  if (isPast) { color = '#ef4444'; label = 'Eligible for deletion'; }
+  else if (isSoon) { color = '#ef4444'; label = `Deletes in ${daysLeft}d`; }
+  else if (isWarning) { color = '#f59e0b'; label = `Deletes in ${daysLeft}d`; }
+  else { label = `Deletes ${deleteDate.toLocaleDateString()}`; }
+
+  const tooltip = (share_count ?? 0) === 0
+    ? `Orphan file — no shares. Will be deleted ${deleteDate.toLocaleDateString()}.`
+    : `All shares expired. Will be deleted ${deleteDate.toLocaleDateString()}.`;
+
+  return (
+    <span title={tooltip} style={{ fontSize: 11, color, whiteSpace: 'nowrap', fontWeight: isSoon ? 600 : 400 }}>
+      {isPast ? '⚠ ' : ''}{label}
+    </span>
   );
 }
 
@@ -457,7 +393,7 @@ export default function FilesPage() {
           <>
             {/* Table header */}
             <div style={{
-              display: 'grid', gridTemplateColumns: '2.5fr 100px 130px 140px 120px',
+              display: 'grid', gridTemplateColumns: '2fr 90px 130px 130px 140px 120px',
               padding: '8px 20px', borderBottom: '1px solid var(--color-border)',
               fontSize: 11, fontWeight: 600, color: 'var(--color-text-muted)',
               textTransform: 'uppercase', letterSpacing: '0.06em',
@@ -469,6 +405,7 @@ export default function FilesPage() {
                 Size <SortArrow col="size" sortKey={sortKey} sortDir={sortDir} />
               </span>
               <span>Security</span>
+              <span>Retention</span>
               <span className="sort-th" onClick={() => toggleSort('modified')} style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
                 Uploaded <SortArrow col="modified" sortKey={sortKey} sortDir={sortDir} />
               </span>
@@ -500,6 +437,7 @@ export default function FilesPage() {
                     </div>
                     <span style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>{fmtBytes(f.size_bytes)}</span>
                     <span className="aes-badge"><IconLock /> AES-256</span>
+                    <RetentionBadge file={f} />
                     <span style={{ fontSize: 12, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }} title={new Date(f.created_at).toLocaleString()}>{timeAgo(f.created_at)}</span>
                     <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
                       {isPreviewable(f.content_type) && (

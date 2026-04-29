@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router';
+import { useNavigate, useSearchParams } from 'react-router';
 import { listTransfers, revokeTransfer, type Transfer } from '../api/transfers';
+import { presignFile } from '../api/files';
 import {
   listFileRequests,
   deactivateFileRequest,
@@ -60,6 +61,9 @@ function IconShare() {
 function IconInbox() {
   return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>;
 }
+function IconDownload() {
+  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>;
+}
 
 // ── Badges ────────────────────────────────────────────────────────────────────
 function TransferBadge({ t }: { t: Transfer }) {
@@ -75,23 +79,63 @@ function RequestBadge({ r }: { r: FileRequest }) {
 }
 
 // ── SubmissionList ────────────────────────────────────────────────────────────
-function SubmissionList({ subs }: { subs: Submission[] }) {
-  if (subs.length === 0) return <p style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>No files submitted yet.</p>;
+function SubmissionList({ subs, onDownload }: { subs: Submission[]; onDownload: (fileId: string, filename: string) => void }) {
+  if (subs.length === 0) return <p style={{ color: 'var(--color-text-muted)', fontSize: 13, padding: '8px 0' }}>No files submitted yet.</p>;
   return (
-    <div className="table-wrap" style={{ marginTop: 10 }}>
-      <table>
-        <thead><tr><th>Filename</th><th>Size</th><th>From</th><th>Submitted</th></tr></thead>
-        <tbody>
-          {subs.map((s) => (
-            <tr key={s.id}>
-              <td>{s.filename}</td>
-              <td>{fmtBytes(s.size_bytes)}</td>
-              <td>{s.submitter_name || <span style={{ color: 'var(--color-text-muted)' }}>—</span>}</td>
-              <td>{fmt(s.submitted_at)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {subs.map((s) => (
+        <div key={s.id} style={{
+          display: 'flex', alignItems: 'flex-start', gap: 12,
+          padding: '12px 14px', borderRadius: 8,
+          background: 'var(--color-nav-active)',
+          border: '1px solid var(--color-border)',
+        }}>
+          {/* File icon */}
+          <div style={{
+            width: 36, height: 36, borderRadius: 8, flexShrink: 0,
+            background: '#EFF6FF', color: '#3B82F6',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+            </svg>
+          </div>
+
+          {/* Main info */}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 2 }}>
+              {s.filename}
+            </div>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12, color: 'var(--color-text-muted)' }}>
+              <span>{fmtBytes(s.size_bytes)}</span>
+              {s.submitter_name && <><span style={{ opacity: 0.4 }}>·</span><span>From: <strong style={{ color: 'var(--color-text-primary)', fontWeight: 500 }}>{s.submitter_name}</strong></span></>}
+              <span style={{ opacity: 0.4 }}>·</span>
+              <span>{fmt(s.submitted_at)}</span>
+            </div>
+            {s.message && (
+              <div style={{
+                marginTop: 6, padding: '6px 10px', borderRadius: 6,
+                background: 'var(--color-surface)', border: '1px solid var(--color-border)',
+                fontSize: 12, color: 'var(--color-text-primary)', lineHeight: 1.5,
+                fontStyle: 'italic',
+              }}>
+                "{s.message}"
+              </div>
+            )}
+          </div>
+
+          {/* Download */}
+          <button
+            className="btn btn-primary btn-sm"
+            title="Download file"
+            onClick={() => onDownload(s.file_id, s.filename)}
+            style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 5, alignSelf: 'center' }}
+          >
+            <IconDownload /> Download
+          </button>
+        </div>
+      ))}
     </div>
   );
 }
@@ -250,6 +294,7 @@ function FileRequestsTab() {
   const [loadingSubs, setLoadingSubs] = useState(false);
   const [deactivating, setDeactivating] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -280,6 +325,26 @@ function FileRequestsTab() {
 
   function handleCopy(slug: string) {
     copyToClipboard(buildRequestUrl(slug), () => { setCopied(slug); setTimeout(() => setCopied(null), 2000); });
+  }
+
+  async function handleDownload(fileId: string, filename: string) {
+    if (downloading === fileId) return;
+    setDownloading(fileId);
+    try {
+      const { url } = await presignFile(fileId);
+      // Force download via anchor
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (err: unknown) {
+      alert((err as Error).message ?? 'Download failed');
+    } finally {
+      setDownloading(null);
+    }
   }
 
   return (
@@ -346,7 +411,7 @@ function FileRequestsTab() {
               </div>
               {isExpanded && (
                 <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--color-border)' }}>
-                  {loadingSubs ? <p style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>Loading…</p> : <SubmissionList subs={expandedSubs ?? []} />}
+                  {loadingSubs ? <p style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>Loading…</p> : <SubmissionList subs={expandedSubs ?? []} onDownload={handleDownload} />}
                 </div>
               )}
             </div>
@@ -362,7 +427,10 @@ type Tab = 'shares' | 'requests';
 
 export default function SharesPage() {
   const navigate = useNavigate();
-  const [tab, setTab] = useState<Tab>('shares');
+  const [searchParams] = useSearchParams();
+  const [tab, setTab] = useState<Tab>(
+    searchParams.get('tab') === 'requests' ? 'requests' : 'shares'
+  );
 
   return (
     <div className="page">

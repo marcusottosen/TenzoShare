@@ -7,6 +7,12 @@ export interface FileRecord {
   content_type: string;
   size_bytes: number;
   created_at: string;
+  // Share / retention info (populated by the storage service when retention is configured)
+  share_count?: number;
+  active_shares?: number;
+  last_share_expires_at?: string | null;
+  /** ISO date after which this file becomes eligible for automatic deletion. Null = protected. */
+  auto_delete_at?: string | null;
 }
 
 export interface FileListResponse {

@@ -79,14 +79,25 @@ function IconStorage() {
     </svg>
   );
 }
+function IconClock() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10"/>
+      <polyline points="12 6 12 12 16 14"/>
+    </svg>
+  );
+}
 
 const PAGE_TITLES: Record<string, string> = {
   '/': 'System Overview',
   '/users': 'User Management',
   '/transfers': 'Transfers',
   '/audit': 'Audit Logs',
+  '/audit/settings': 'Log Retention',
   '/apikeys': 'API Keys',
   '/storage': 'Storage Settings',
+  '/storage/files': 'Storage Files',
+  '/storage/insights': 'Storage Insights',
 };
 
 function getInitials(email?: string): string {
@@ -156,10 +167,19 @@ export default function Layout() {
           <NavLink to="/audit" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             <IconAudit /> Audit Logs
           </NavLink>
+          <NavLink to="/audit/settings" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            <IconClock /> Log Retention
+          </NavLink>
 
           <div className="sidebar-section-label">Configuration</div>
           <NavLink to="/storage" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             <IconStorage /> Storage Settings
+          </NavLink>
+          <NavLink to="/storage/files" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'} style={{ paddingLeft: 28 }}>
+            <IconStorage /> File Management
+          </NavLink>
+          <NavLink to="/storage/insights" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'} style={{ paddingLeft: 28 }}>
+            <IconStorage /> Storage Insights
           </NavLink>
         </div>
 
