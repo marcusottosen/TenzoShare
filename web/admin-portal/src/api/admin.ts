@@ -191,6 +191,8 @@ export interface StorageConfig {
   retention_enabled: boolean;
   retention_days: number;
   orphan_retention_days: number;
+  /** When true, plain-HTTP uploads are accepted (dev/test only). */
+  test_mode: boolean;
   updated_at: string;
   updated_by: string;
 }
@@ -206,6 +208,7 @@ export async function updateStorageConfig(body: {
   retention_enabled?: boolean;
   retention_days?: number;
   orphan_retention_days?: number;
+  test_mode?: boolean;
 }): Promise<StorageConfig> {
   return request<StorageConfig>('/admin/storage/config', {
     method: 'PUT',

@@ -369,7 +369,7 @@ export default function UsersPage() {
                 <tr key={u.id}>
                   <td>
                     <div style={{ fontWeight: 500 }}>{u.email}</div>
-                    <div className="text-sm mono" style={{ color: '#aaa' }}>{u.id.slice(0, 8)}…</div>
+                    <div className="text-sm mono" style={{ color: '#aaa' }}>{u.id}</div>
                   </td>
                   <td>
                     {editing === u.id ? (

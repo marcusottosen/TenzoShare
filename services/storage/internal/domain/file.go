@@ -30,6 +30,9 @@ type StorageConfig struct {
 	RetentionEnabled     bool
 	RetentionDays        int // days after last share expires before file is deleted
 	OrphanRetentionDays  int // days for files that were never shared
+	// TestMode disables the HTTPS-only requirement for uploads.
+	// Should only be enabled in development / test environments.
+	TestMode             bool
 }
 
 // FileWithShareInfo extends File with live share/retention context for the user portal.

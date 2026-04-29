@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -70,15 +71,16 @@ func main() {
 		BasePath:                "/api/v1/uploads/",
 		StoreComposer:           composer,
 		RespectForwardedHeaders: true,
+		NotifyCompleteUploads:   true, // must be true for CompleteUploads channel to fire
+		NotifyCreatedUploads:    true,
+		NotifyTerminatedUploads: true,
 	})
 	if err != nil {
 		log.Fatal("failed to create tusd handler", zap.Error(err))
 	}
 
-	// ── Wire upload-completion events to NATS ──────────────────────────────────
-	if js != nil {
-		go publishCompletions(ctx, tusHandler, js, log)
-	}
+	// ── Drain all tusd event channels (must run even when NATS is unavailable) ─
+	go watchTUSEvents(ctx, tusHandler, js, log)
 
 	// Wrap tusd net/http handler → fasthttp → fiber.Handler
 	rawFasthttpHandler := fasthttpadaptor.NewFastHTTPHandler(tusHandler)
@@ -113,6 +115,9 @@ func main() {
 		return c.JSON(fiber.Map{"status": "ok", "service": "upload"})
 	})
 
+	// Log and audit any failed upload requests (auth rejections, 4xx/5xx from tusd).
+	app.Use("/api/v1/uploads", uploadAuditLogger(log, js))
+
 	// All tusd methods (POST, PATCH, HEAD, OPTIONS, DELETE) under /api/v1/uploads
 	tusRoutes := app.Group("/api/v1/uploads", middleware.JWTAuth(pubKey))
 	tusRoutes.All("/", tusHandlerFiber)
@@ -132,32 +137,146 @@ func main() {
 	}
 }
 
-// publishCompletions drains the tusd CompleteUploads channel and publishes each
-// completed upload as an UPLOADS.completed event to NATS JetStream.
-func publishCompletions(ctx context.Context, h *handler.Handler, js *jetstream.Client, log *zap.Logger) {
+// watchTUSEvents drains all tusd event channels. It MUST always run (even when
+// NATS is unavailable) because the channels are unbuffered — leaving them
+// unread would cause tusd to block on every event.
+func watchTUSEvents(ctx context.Context, h *handler.Handler, js *jetstream.Client, log *zap.Logger) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
+
+		case event, ok := <-h.CreatedUploads:
+			if !ok {
+				return
+			}
+			info := event.Upload
+			log.Info("upload initiated",
+				zap.String("upload_id", info.ID),
+				zap.String("owner_id", info.MetaData["owner_id"]),
+				zap.String("filename", info.MetaData["filename"]),
+				zap.Int64("size", info.Size),
+			)
+			if js != nil {
+				_ = js.Publish(ctx, "AUDIT.upload", map[string]any{
+					"action":    "upload.initiated",
+					"user_id":   info.MetaData["owner_id"],
+					"subject":   info.ID,
+					"success":   true,
+					"timestamp": time.Now(),
+					"payload": map[string]any{
+						"filename":  info.MetaData["filename"],
+						"size":      info.Size,
+						"upload_id": info.ID,
+					},
+				})
+			}
+
 		case event, ok := <-h.CompleteUploads:
 			if !ok {
 				return
 			}
 			info := event.Upload
-			payload := map[string]any{
-				"upload_id":    info.ID,
-				"size":         info.Size,
-				"filename":     info.MetaData["filename"],
-				"filetype":     info.MetaData["filetype"],
-				"owner_id":     info.MetaData["owner_id"],
-				"storage_type": "s3",
+			log.Info("upload completed",
+				zap.String("upload_id", info.ID),
+				zap.String("owner_id", info.MetaData["owner_id"]),
+				zap.String("filename", info.MetaData["filename"]),
+				zap.Int64("size", info.Size),
+			)
+			if js != nil {
+				payload := map[string]any{
+					"upload_id":    info.ID,
+					"size":         info.Size,
+					"filename":     info.MetaData["filename"],
+					"filetype":     info.MetaData["filetype"],
+					"owner_id":     info.MetaData["owner_id"],
+					"storage_type": "s3",
+				}
+				if err := js.Publish(ctx, "UPLOADS.completed", payload); err != nil {
+					log.Warn("failed to publish UPLOADS.completed", zap.String("upload_id", info.ID), zap.Error(err))
+				}
+				_ = js.Publish(ctx, "AUDIT.upload", map[string]any{
+					"action":    "upload.completed",
+					"user_id":   info.MetaData["owner_id"],
+					"subject":   info.ID,
+					"success":   true,
+					"timestamp": time.Now(),
+					"payload": map[string]any{
+						"filename":  info.MetaData["filename"],
+						"filetype":  info.MetaData["filetype"],
+						"size":      info.Size,
+						"upload_id": info.ID,
+					},
+				})
 			}
-			if err := js.Publish(ctx, "UPLOADS.completed", payload); err != nil {
-				log.Warn("failed to publish UPLOADS.completed", zap.String("upload_id", info.ID), zap.Error(err))
-			} else {
-				log.Info("published UPLOADS.completed", zap.String("upload_id", info.ID))
+
+		case event, ok := <-h.TerminatedUploads:
+			if !ok {
+				return
+			}
+			info := event.Upload
+			log.Warn("upload terminated",
+				zap.String("upload_id", info.ID),
+				zap.String("owner_id", info.MetaData["owner_id"]),
+				zap.String("filename", info.MetaData["filename"]),
+				zap.Int64("offset", info.Offset),
+				zap.Int64("size", info.Size),
+			)
+			if js != nil {
+				_ = js.Publish(ctx, "AUDIT.upload", map[string]any{
+					"action":    "upload.terminated",
+					"user_id":   info.MetaData["owner_id"],
+					"subject":   info.ID,
+					"success":   false,
+					"timestamp": time.Now(),
+					"payload": map[string]any{
+						"filename":  info.MetaData["filename"],
+						"size":      info.Size,
+						"offset":    info.Offset,
+						"upload_id": info.ID,
+					},
+				})
 			}
 		}
+	}
+}
+
+// uploadAuditLogger returns a Fiber middleware that logs and audits any
+// non-2xx response on the /api/v1/uploads routes, capturing auth rejections,
+// size-limit errors, and any error tusd writes to the HTTP response.
+func uploadAuditLogger(log *zap.Logger, js *jetstream.Client) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		err := c.Next()
+		status := c.Response().StatusCode()
+		if err != nil || status >= 400 {
+			uploadID := c.Params("id")
+			userID, _ := c.Locals("userID").(string)
+			log.Warn("upload request failed",
+				zap.String("method", c.Method()),
+				zap.String("path", c.Path()),
+				zap.Int("status", status),
+				zap.String("upload_id", uploadID),
+				zap.String("user_id", userID),
+				zap.String("ip", c.IP()),
+				zap.NamedError("reason", err),
+			)
+			if js != nil {
+				ev := map[string]any{
+					"action":    "upload.failed",
+					"user_id":   userID,
+					"subject":   uploadID,
+					"success":   false,
+					"timestamp": time.Now(),
+					"payload": map[string]any{
+						"status":    status,
+						"method":    c.Method(),
+						"client_ip": c.IP(),
+					},
+				}
+				go func() { _ = js.Publish(context.Background(), "AUDIT.upload", ev) }()
+			}
+		}
+		return err
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	"github.com/tenzoshare/tenzoshare/shared/pkg/crypto"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/database"
 	apperrors "github.com/tenzoshare/tenzoshare/shared/pkg/errors"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jwtkeys"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/logger"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
@@ -109,10 +110,11 @@ type StorageInsights struct {
 	StoragePerDay        []StorageDayStat  `json:"storage_per_day"`
 }
 
-// ── Global DB pool and config ─────────────────────────────────────────────────
+// ── Global DB pool, config and NATS ─────────────────────────────────────────
 
 var db *pgxpool.Pool
 var cfg *config.Config
+var js *jetstream.Client
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
@@ -138,6 +140,19 @@ func main() {
 		log.Fatal("failed to connect to database", zap.Error(err))
 	}
 	defer db.Close()
+
+	// NATS JetStream — optional; admin service publishes audit events but never blocks on it.
+	if cfg.NATS.URL != "" {
+		js, err = jetstream.New(cfg.NATS.URL)
+		if err != nil {
+			log.Warn("failed to connect to NATS — admin audit events will not be published", zap.Error(err))
+		} else {
+			if err2 := js.EnsureStreams(ctx); err2 != nil {
+				log.Warn("failed to ensure NATS streams", zap.Error(err2))
+			}
+			log.Info("admin: connected to NATS JetStream")
+		}
+	}
 
 	app := fiber.New(fiber.Config{
 		AppName:      "tenzoshare-admin",
@@ -374,6 +389,7 @@ func handleCreateUser(c fiber.Ctx) error {
 		return apperrors.Internal("create user", err)
 	}
 
+	publishAdminAudit(c, "admin.user_created", u.ID, map[string]any{"target_email": body.Email, "role": body.Role})
 	return c.Status(fiber.StatusCreated).JSON(u)
 }
 
@@ -394,12 +410,14 @@ func handleUpdateUser(c fiber.Ctx) error {
 		return apperrors.BadRequest("role must be 'admin' or 'user'")
 	}
 
+	payload := map[string]any{"target_user_id": id}
 	if body.Role != nil {
 		if _, err := db.Exec(c.Context(),
 			"UPDATE auth.users SET role = $1, updated_at = now() WHERE id = $2",
 			*body.Role, id); err != nil {
 			return apperrors.Internal("update user role", err)
 		}
+		payload["role"] = *body.Role
 	}
 	if body.IsActive != nil {
 		if _, err := db.Exec(c.Context(),
@@ -407,8 +425,10 @@ func handleUpdateUser(c fiber.Ctx) error {
 			*body.IsActive, id); err != nil {
 			return apperrors.Internal("update user active", err)
 		}
+		payload["is_active"] = *body.IsActive
 	}
 
+	publishAdminAudit(c, "admin.user_updated", id, payload)
 	return c.JSON(fiber.Map{"ok": true})
 }
 
@@ -429,6 +449,7 @@ func handleDeleteUser(c fiber.Ctx) error {
 	if tag.RowsAffected() == 0 {
 		return apperrors.NotFound("user not found")
 	}
+	publishAdminAudit(c, "admin.user_deleted", id, nil)
 	return c.JSON(fiber.Map{"ok": true})
 }
 
@@ -444,6 +465,7 @@ func handleUnlockUser(c fiber.Ctx) error {
 	if tag.RowsAffected() == 0 {
 		return apperrors.NotFound("user not found")
 	}
+	publishAdminAudit(c, "admin.user_unlocked", id, nil)
 	return c.JSON(fiber.Map{"ok": true})
 }
 
@@ -459,6 +481,7 @@ func handleVerifyEmail(c fiber.Ctx) error {
 	if tag.RowsAffected() == 0 {
 		return apperrors.NotFound("user not found")
 	}
+	publishAdminAudit(c, "admin.user_email_verified", id, nil)
 	return c.JSON(fiber.Map{"ok": true})
 }
 
@@ -775,6 +798,7 @@ func handleRevokeTransfer(c fiber.Ctx) error {
 	if tag.RowsAffected() == 0 {
 		return apperrors.NotFound("transfer not found")
 	}
+	publishAdminAudit(c, "admin.transfer_revoked", id, nil)
 	return c.JSON(fiber.Map{"ok": true})
 }
 
@@ -909,6 +933,9 @@ type StorageConfig struct {
 	RetentionEnabled    bool   `json:"retention_enabled"`
 	RetentionDays       int    `json:"retention_days"`
 	OrphanRetentionDays int    `json:"orphan_retention_days"`
+	// TestMode disables the HTTPS-only requirement for uploads.
+	// Must only be enabled in development / test environments.
+	TestMode            bool   `json:"test_mode"`
 	UpdatedAt           string `json:"updated_at"`
 	UpdatedBy           string `json:"updated_by"`
 }
@@ -920,11 +947,11 @@ func handleGetStorageConfig(c fiber.Ctx) error {
 	err := db.QueryRow(c.Context(), `
 		SELECT quota_enabled, quota_bytes_per_user, max_upload_size_bytes,
 		       retention_enabled, retention_days, orphan_retention_days,
-		       updated_at, updated_by
+		       test_mode, updated_at, updated_by
 		FROM storage.storage_settings WHERE id = 1`,
 	).Scan(&sc.QuotaEnabled, &sc.QuotaBytesPerUser, &sc.MaxUploadSizeBytes,
 		&sc.RetentionEnabled, &sc.RetentionDays, &sc.OrphanRetentionDays,
-		&updatedAt, &sc.UpdatedBy)
+		&sc.TestMode, &updatedAt, &sc.UpdatedBy)
 	if err != nil {
 		return apperrors.Internal("get storage config", err)
 	}
@@ -941,6 +968,7 @@ func handlePutStorageConfig(c fiber.Ctx) error {
 		RetentionEnabled    *bool  `json:"retention_enabled"`
 		RetentionDays       *int   `json:"retention_days"`
 		OrphanRetentionDays *int   `json:"orphan_retention_days"`
+		TestMode            *bool  `json:"test_mode"`
 	}
 	if err := json.Unmarshal(c.Body(), &body); err != nil {
 		return apperrors.BadRequest("invalid JSON body")
@@ -973,16 +1001,18 @@ func handlePutStorageConfig(c fiber.Ctx) error {
 		    retention_enabled      = COALESCE($4, retention_enabled),
 		    retention_days         = COALESCE($5, retention_days),
 		    orphan_retention_days  = COALESCE($6, orphan_retention_days),
+		    test_mode              = COALESCE($7, test_mode),
 		    updated_at             = now(),
-		    updated_by             = $7
+		    updated_by             = $8
 		WHERE id = 1`,
 		body.QuotaEnabled, body.QuotaBytesPerUser, body.MaxUploadSizeBytes,
 		body.RetentionEnabled, body.RetentionDays, body.OrphanRetentionDays,
-		callerEmail,
+		body.TestMode, callerEmail,
 	)
 	if err != nil {
 		return apperrors.Internal("update storage config", err)
 	}
+	publishAdminAudit(c, "admin.storage_config_updated", "storage_settings", nil)
 	return handleGetStorageConfig(c)
 }
 
@@ -1174,6 +1204,7 @@ func handleAdminDeleteFile(c fiber.Ctx) error {
 		id, ownerID, filename, sizeBytes, callerEmail,
 	)
 
+	publishAdminAudit(c, "admin.file_deleted", id, map[string]any{"filename": filename, "size_bytes": sizeBytes})
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
@@ -1271,6 +1302,7 @@ func handleTriggerPurge(c fiber.Ctx) error {
 		freedBytes += p.sizeBytes
 	}
 
+	publishAdminAudit(c, "admin.storage_purge", "storage_files", map[string]any{"deleted": deleted, "freed_bytes": freedBytes})
 	return c.JSON(fiber.Map{
 		"deleted":     deleted,
 		"freed_bytes": freedBytes,
@@ -1432,6 +1464,61 @@ func handleListPurgeLog(c fiber.Ctx) error {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// adminClientIP extracts the real client IP from proxy headers, falling back to the raw connection IP.
+func adminClientIP(c fiber.Ctx) string {
+	if ip := c.Get("X-Real-IP"); ip != "" {
+		return strings.TrimSpace(ip)
+	}
+	if xff := c.Get("X-Forwarded-For"); xff != "" {
+		if idx := strings.IndexByte(xff, ','); idx != -1 {
+			return strings.TrimSpace(xff[:idx])
+		}
+		return strings.TrimSpace(xff)
+	}
+	return c.IP()
+}
+
+// adminCallerEmail resolves the calling admin's email from the JWT claims or falls back to the user ID.
+func adminCallerEmail(c fiber.Ctx) string {
+	callerID, _ := c.Locals("userID").(string)
+	if callerID == "" {
+		return "system"
+	}
+	var email string
+	if err := db.QueryRow(c.Context(), "SELECT email FROM auth.users WHERE id = $1", callerID).Scan(&email); err == nil && email != "" {
+		return email
+	}
+	return callerID
+}
+
+// publishAdminAudit fires an AUDIT.admin event asynchronously; never blocks the request.
+func publishAdminAudit(c fiber.Ctx, action, subject string, payload map[string]any) {
+	if js == nil {
+		return
+	}
+	actor := adminCallerEmail(c)
+	ip := adminClientIP(c)
+	ev := map[string]any{
+		"action":    action,
+		"user_id":   c.Locals("userID"),
+		"email":     actor,
+		"client_ip": ip,
+		"subject":   subject,
+		"success":   true,
+		"timestamp": time.Now(),
+	}
+	for k, v := range payload {
+		ev[k] = v
+	}
+	ctx := c.Context()
+	go func() {
+		if err := js.Publish(ctx, "AUDIT.admin", ev); err != nil {
+			// Best-effort — don't pollute error logs for minor audit failures
+			_ = err
+		}
+	}()
+}
+
 // ── Audit config ─────────────────────────────────────────────────────────────
 
 type AuditConfig struct {
@@ -1487,6 +1574,7 @@ func handlePutAuditConfig(c fiber.Ctx) error {
 	if err != nil {
 		return apperrors.Internal("update audit config", err)
 	}
+	publishAdminAudit(c, "admin.audit_config_updated", "audit_settings", nil)
 	return handleGetAuditConfig(c)
 }
 
@@ -1551,12 +1639,13 @@ func handleTriggerAuditPurge(c fiber.Ctx) error {
 		retDays = 365
 	}
 	tag, err := db.Exec(c.Context(),
-		`DELETE FROM audit.audit_logs WHERE created_at < now() - ($1 || ' days')::interval`,
+		`DELETE FROM audit.audit_logs WHERE created_at < now() - make_interval(days => $1)`,
 		retDays,
 	)
 	if err != nil {
 		return apperrors.Internal("purge audit logs", err)
 	}
+	publishAdminAudit(c, "admin.audit_purge", "audit_logs", map[string]any{"deleted": tag.RowsAffected(), "retention_days": retDays})
 	return c.JSON(fiber.Map{"deleted": tag.RowsAffected(), "retention_days": retDays})
 }
 
@@ -1574,7 +1663,7 @@ func runAuditPurge(log *zap.Logger) {
 		return
 	}
 	tag, err := db.Exec(context.Background(),
-		`DELETE FROM audit.audit_logs WHERE created_at < now() - ($1 || ' days')::interval`,
+		`DELETE FROM audit.audit_logs WHERE created_at < now() - make_interval(days => $1)`,
 		retDays,
 	)
 	if err != nil {

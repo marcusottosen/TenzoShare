@@ -207,6 +207,26 @@ export default function FilesPage() {
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // Pre-validate against storage policy before sending the file to the server.
+    // This gives instant feedback instead of waiting for the full upload to complete.
+    if (storageUsage) {
+      const maxSize = storageUsage.max_upload_size_bytes ?? 0;
+      if (maxSize > 0 && file.size > maxSize) {
+        setError(`File too large: ${fmtBytes(file.size)} exceeds the ${fmtBytes(maxSize)} limit.`);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+        return;
+      }
+      if (storageUsage.quota_enabled && storageUsage.quota_bytes_per_user > 0) {
+        const remaining = storageUsage.quota_bytes_per_user - storageUsage.total_bytes;
+        if (file.size > remaining) {
+          setError(`Storage quota would be exceeded: ${fmtBytes(remaining)} remaining of ${fmtBytes(storageUsage.quota_bytes_per_user)}.`);
+          if (fileInputRef.current) fileInputRef.current.value = '';
+          return;
+        }
+      }
+    }
+
     setUploading(true);
     setProgress(null);
     try {

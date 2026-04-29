@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -9,7 +10,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net/http"
+	"path"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -60,22 +65,55 @@ func (h *Handler) Upload(c fiber.Ctx) error {
 	// ── Enforce storage policy (quota + max upload size) ─────────────────────
 	cfg, cfgErr := h.repo.GetStorageConfig(c.Context())
 	if cfgErr == nil {
+		// In production mode (test_mode disabled), reject uploads that arrive
+		// over plain HTTP. TLS may be terminated at the reverse proxy, so we
+		// check X-Forwarded-Proto in addition to the raw connection state.
+		if !cfg.TestMode {
+			isHTTPS := c.Secure() || strings.EqualFold(c.Get("X-Forwarded-Proto"), "https")
+			if !isHTTPS {
+				h.log.Warn("upload rejected: plain HTTP connection in production mode",
+					zap.String("owner_id", ownerID),
+					zap.String("filename", fileHeader.Filename),
+				)
+				h.publishAuditFail(c.Context(), "storage.upload_rejected", ownerID, "http_not_allowed",
+					map[string]any{"filename": fileHeader.Filename, "size": fileHeader.Size})
+				return fiber.NewError(fiber.StatusForbidden,
+					"uploads require a secure HTTPS connection — plain HTTP is not permitted. "+
+						"If you are a system administrator, enable Test Mode in Storage Settings to allow HTTP uploads.")
+			}
+		}
+
 		// Per-file size cap
 		if cfg.MaxUploadSizeBytes > 0 && fileHeader.Size > cfg.MaxUploadSizeBytes {
-			return apperrors.BadRequest(fmt.Sprintf(
-				"file exceeds maximum upload size of %s",
-				fmtBytes(cfg.MaxUploadSizeBytes),
-			))
+			msg := fmt.Sprintf("file exceeds maximum upload size of %s", fmtBytes(cfg.MaxUploadSizeBytes))
+			h.log.Warn("upload rejected: file too large",
+				zap.String("owner_id", ownerID),
+				zap.String("filename", fileHeader.Filename),
+				zap.Int64("size", fileHeader.Size),
+				zap.Int64("limit", cfg.MaxUploadSizeBytes),
+			)
+			h.publishAuditFail(c.Context(), "storage.upload_rejected", ownerID, "file_too_large",
+				map[string]any{"filename": fileHeader.Filename, "size": fileHeader.Size, "limit": cfg.MaxUploadSizeBytes})
+			return apperrors.BadRequest(msg)
 		}
 		// Per-user quota
 		if cfg.QuotaEnabled && cfg.QuotaBytesPerUser > 0 {
 			usage, uErr := h.repo.GetUsageByOwner(c.Context(), ownerID)
 			if uErr == nil && usage.TotalBytes+fileHeader.Size > cfg.QuotaBytesPerUser {
-				return apperrors.BadRequest(fmt.Sprintf(
-					"storage quota exceeded: %s used of %s",
+				msg := fmt.Sprintf("storage quota exceeded: %s used of %s",
 					fmtBytes(usage.TotalBytes),
 					fmtBytes(cfg.QuotaBytesPerUser),
-				))
+				)
+				h.log.Warn("upload rejected: quota exceeded",
+					zap.String("owner_id", ownerID),
+					zap.String("filename", fileHeader.Filename),
+					zap.Int64("size", fileHeader.Size),
+					zap.Int64("used", usage.TotalBytes),
+					zap.Int64("quota", cfg.QuotaBytesPerUser),
+				)
+				h.publishAuditFail(c.Context(), "storage.upload_rejected", ownerID, "quota_exceeded",
+					map[string]any{"filename": fileHeader.Filename, "size": fileHeader.Size, "used": usage.TotalBytes, "quota": cfg.QuotaBytesPerUser})
+				return apperrors.BadRequest(msg)
 			}
 		}
 	}
@@ -87,14 +125,26 @@ func (h *Handler) Upload(c fiber.Ctx) error {
 	}
 	defer f.Close() //nolint:errcheck
 
-	objectKey := fmt.Sprintf("uploads/%s/%s/%s", ownerID, uuid.New().String(), fileHeader.Filename)
-	contentType := fileHeader.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
+	// Sanitize the filename to prevent path traversal and strip control characters.
+	filename := sanitizeFilename(fileHeader.Filename)
+	objectKey := fmt.Sprintf("uploads/%s/%s/%s", ownerID, uuid.New().String(), filename)
 
-	// Stream the file to MinIO without loading it fully into memory.
-	// For encrypted uploads, chunked streaming AES-256-GCM is used.
+	// Sniff the real content type from the first 512 bytes.
+	// Browsers frequently send "application/octet-stream" for types they don't recognise,
+	// which would cause incorrect icons and broken inline previews on download.
+	sniffBuf := make([]byte, 512)
+	sniffN, _ := io.ReadFull(f, sniffBuf)
+	sniffBuf = sniffBuf[:sniffN]
+	browserType := fileHeader.Header.Get("Content-Type")
+	contentType := browserType
+	if contentType == "" || contentType == "application/octet-stream" {
+		contentType = http.DetectContentType(sniffBuf)
+	}
+	// Reconstruct the full stream: re-prepend the already-read bytes.
+	fullReader := io.MultiReader(bytes.NewReader(sniffBuf), f)
+
+	// Stream to MinIO without loading the file fully into memory.
+	// Encrypted uploads use chunked streaming AES-256-GCM.
 	var uploadReader io.Reader
 	var uploadSize int64
 	var encIV []byte
@@ -104,22 +154,41 @@ func (h *Handler) Upload(c fiber.Ctx) error {
 		if _, err := io.ReadFull(rand.Reader, baseIV); err != nil {
 			return apperrors.Internal("generate encryption IV", err)
 		}
-		uploadReader = newStreamEncryptor(f, h.encryptionKey, baseIV)
+		enc, encErr := newStreamEncryptor(fullReader, h.encryptionKey, baseIV)
+		if encErr != nil {
+			return apperrors.Internal("init encryption", encErr)
+		}
+		uploadReader = enc
 		uploadSize = chunkedCiphertextSize(fileHeader.Size)
-		encIV = makeChunkedIV(baseIV) // 20-byte marker stored in DB; 8-byte magic + 12-byte base IV
+		encIV = makeChunkedIV(baseIV)
 	} else {
-		// Unencrypted (or zero-length): stream the temp file directly to MinIO.
-		uploadReader = f
+		// Unencrypted (or zero-length): stream directly to MinIO.
+		uploadReader = fullReader
 		uploadSize = fileHeader.Size
 	}
 
 	if err := h.backend.Upload(c.Context(), objectKey, uploadReader, uploadSize, contentType); err != nil {
+		h.log.Error("upload to object store failed",
+			zap.String("owner_id", ownerID),
+			zap.String("filename", filename),
+			zap.Int64("size", fileHeader.Size),
+			zap.Error(err),
+		)
+		h.publishAuditFail(c.Context(), "storage.upload_failed", ownerID, "s3_error",
+			map[string]any{"filename": filename, "size": fileHeader.Size})
 		return apperrors.Internal("upload to object store", err)
 	}
 
-	record, err := h.repo.Create(c.Context(), ownerID, objectKey, fileHeader.Filename, contentType, fileHeader.Size, encIV)
+	record, err := h.repo.Create(c.Context(), ownerID, objectKey, filename, contentType, fileHeader.Size, encIV)
 	if err != nil {
 		_ = h.backend.Delete(c.Context(), objectKey) // best-effort cleanup
+		h.log.Error("failed to create file record",
+			zap.String("owner_id", ownerID),
+			zap.String("filename", filename),
+			zap.Error(err),
+		)
+		h.publishAuditFail(c.Context(), "storage.upload_failed", ownerID, "db_error",
+			map[string]any{"filename": filename, "size": fileHeader.Size})
 		return err
 	}
 
@@ -369,7 +438,10 @@ func (h *Handler) Download(c fiber.Ctx) error {
 	if file.IsEncrypted && len(file.EncryptionIV) > 0 && h.encryptionKey != nil {
 		if isChunkedEncryption(file.EncryptionIV) {
 			// New streaming chunked format — decrypt on the fly, no full-file buffering.
-			dec := newStreamDecryptor(rc, h.encryptionKey)
+			dec, decErr := newStreamDecryptor(rc, h.encryptionKey)
+			if decErr != nil {
+				return apperrors.Internal("init decryption", decErr)
+			}
 			return c.SendStream(dec, int(file.SizeBytes))
 		}
 		// Legacy single-GCM block (files created before this fix; always < 4 MiB).
@@ -414,21 +486,24 @@ func (h *Handler) GetMyUsage(c fiber.Ctx) error {
 		return err
 	}
 
-	// Include quota settings so the UI can show a progress bar.
+	// Include quota and upload-limit settings so the UI can show a progress bar
+	// and pre-validate file sizes client-side before sending them to the server.
 	cfg, cfgErr := h.repo.GetStorageConfig(c.Context())
 	quotaEnabled := false
-	var quotaBytes int64
+	var quotaBytes, maxUploadBytes int64
 	if cfgErr == nil {
 		quotaEnabled = cfg.QuotaEnabled
 		quotaBytes = cfg.QuotaBytesPerUser
+		maxUploadBytes = cfg.MaxUploadSizeBytes
 	}
 
 	return c.JSON(fiber.Map{
-		"user_id":              usage.UserID,
-		"file_count":           usage.FileCount,
-		"total_bytes":          usage.TotalBytes,
-		"quota_enabled":        quotaEnabled,
-		"quota_bytes_per_user": quotaBytes,
+		"user_id":               usage.UserID,
+		"file_count":            usage.FileCount,
+		"total_bytes":           usage.TotalBytes,
+		"quota_enabled":         quotaEnabled,
+		"quota_bytes_per_user":  quotaBytes,
+		"max_upload_size_bytes": maxUploadBytes,
 	})
 }
 
@@ -442,6 +517,28 @@ func (h *Handler) publishAudit(ctx context.Context, action, userID, fileID strin
 		"file_id":   fileID,
 		"success":   true,
 		"timestamp": time.Now(),
+	}
+	for k, v := range extra {
+		ev[k] = v
+	}
+	go func() {
+		if err := h.js.Publish(ctx, "AUDIT.storage", ev); err != nil {
+			h.log.Warn("failed to publish storage audit event", zap.String("action", action), zap.Error(err))
+		}
+	}()
+}
+
+// publishAuditFail publishes a failure audit event for storage operations.
+func (h *Handler) publishAuditFail(ctx context.Context, action, userID, reason string, extra map[string]any) {
+	if h.js == nil {
+		return
+	}
+	ev := map[string]any{
+		"action":    action,
+		"user_id":   userID,
+		"success":   false,
+		"timestamp": time.Now(),
+		"reason":    reason,
 	}
 	for k, v := range extra {
 		ev[k] = v
@@ -492,6 +589,39 @@ func decryptAESGCM(ciphertext, key, _ []byte) ([]byte, error) {
 	return gcm.Open(nil, iv, ct, nil)
 }
 
+// sanitizeFilename strips path-traversal components and unsafe characters from a
+// user-supplied filename so it is safe to use as an S3 object-key suffix and in
+// HTTP Content-Disposition headers.
+func sanitizeFilename(raw string) string {
+	// Normalise to forward slashes then take only the final component,
+	// eliminating "../", absolute paths, and Windows backslashes.
+	name := path.Base(filepath.ToSlash(raw))
+	// Strip ASCII control characters (null bytes, carriage returns, etc.).
+	name = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7F {
+			return -1
+		}
+		return r
+	}, name)
+	// Remove trailing dots and spaces (unsafe on some filesystems).
+	name = strings.TrimRight(name, ". ")
+	name = strings.TrimSpace(name)
+	// Enforce 255-byte maximum (common filesystem and S3 key-component limit).
+	for len(name) > 255 {
+		ext := filepath.Ext(name)
+		stem := name[:len(name)-len(ext)]
+		cutTo := max(1, 255-len(ext))
+		if len(stem) <= cutTo {
+			break
+		}
+		name = stem[:cutTo] + ext
+	}
+	if name == "" || name == "." || name == ".." {
+		name = "upload"
+	}
+	return name
+}
+
 // fmtBytes formats a byte count as a human-readable string (B/KB/MB/GB).
 func fmtBytes(b int64) string {
 	const k = 1024
@@ -518,7 +648,9 @@ func fmtBytes(b int64) string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // uploadChunkSize is the plaintext chunk size for streaming encryption.
-const uploadChunkSize = 64 * 1024 * 1024 // 64 MiB
+// 2 MiB balances RAM usage (≤2 MiB in-flight per upload/download) against
+// per-chunk overhead (32 bytes — negligible even for multi-GB files).
+const uploadChunkSize = 2 * 1024 * 1024 // 2 MiB
 
 // chunkMagic identifies the new streaming chunked encryption format.
 var chunkMagic = [8]byte{'T', 'Z', 'C', 'H', 'U', 'N', 'K', 0x01}
@@ -565,17 +697,27 @@ func chunkedCiphertextSize(plainSize int64) int64 {
 }
 
 // streamEncryptor wraps an io.Reader and encrypts each chunk on the fly.
+// The AES-GCM cipher is initialised once and reused across all chunks,
+// avoiding the expensive key-schedule setup on every chunk boundary.
 type streamEncryptor struct {
 	src      io.Reader
-	key      []byte
+	gcm      cipher.AEAD
 	baseIV   []byte
 	chunkIdx uint64
 	buf      []byte
 	eof      bool
 }
 
-func newStreamEncryptor(src io.Reader, key, baseIV []byte) *streamEncryptor {
-	return &streamEncryptor{src: src, key: key, baseIV: baseIV}
+func newStreamEncryptor(src io.Reader, key, baseIV []byte) (*streamEncryptor, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	return &streamEncryptor{src: src, gcm: gcm, baseIV: baseIV}, nil
 }
 
 func (e *streamEncryptor) fill() error {
@@ -597,16 +739,7 @@ func (e *streamEncryptor) fill() error {
 
 	iv := deriveChunkIV(e.baseIV, e.chunkIdx)
 	e.chunkIdx++
-
-	block, err := aes.NewCipher(e.key)
-	if err != nil {
-		return err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return err
-	}
-	ct := gcm.Seal(nil, iv, plain, nil) // len(ct) = len(plain) + 16
+	ct := e.gcm.Seal(nil, iv, plain, nil) // len(ct) = len(plain) + 16 (GCM auth tag)
 
 	var hdr [4]byte
 	binary.BigEndian.PutUint32(hdr[:], uint32(len(plain)))
@@ -631,15 +764,24 @@ func (e *streamEncryptor) Read(p []byte) (int, error) {
 }
 
 // streamDecryptor wraps an io.Reader and decrypts each chunk on the fly.
+// The AES-GCM cipher is initialised once and reused across all chunks.
 type streamDecryptor struct {
 	src io.Reader
-	key []byte
+	gcm cipher.AEAD
 	buf []byte
 	eof bool
 }
 
-func newStreamDecryptor(src io.Reader, key []byte) *streamDecryptor {
-	return &streamDecryptor{src: src, key: key}
+func newStreamDecryptor(src io.Reader, key []byte) (*streamDecryptor, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	return &streamDecryptor{src: src, gcm: gcm}, nil
 }
 
 func (d *streamDecryptor) fill() error {
@@ -666,15 +808,7 @@ func (d *streamDecryptor) fill() error {
 		return fmt.Errorf("read chunk ciphertext: %w", err)
 	}
 
-	block, err := aes.NewCipher(d.key)
-	if err != nil {
-		return err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return err
-	}
-	plain, err := gcm.Open(nil, iv, ct, nil)
+	plain, err := d.gcm.Open(nil, iv, ct, nil)
 	if err != nil {
 		return fmt.Errorf("decrypt chunk: %w", err)
 	}

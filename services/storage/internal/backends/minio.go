@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -36,11 +37,28 @@ func newS3Client(ctx context.Context, endpoint, region, accessKey, secretKey str
 		awsconfig.WithRegion(region),
 		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
 		awsconfig.WithEndpointResolverWithOptions(resolver),
+		// Disable proactive checksum calculation.
+		// AWS SDK v2 ≥ v1.32 defaults to RequestChecksumCalculationWhenSupported,
+		// which requires either a seekable reader (to pre-compute) or TLS (for
+		// trailing checksums sent after the body). MinIO is accessed over plain
+		// HTTP inside Docker and we pass unseekable streaming readers, so we
+		// must set WhenRequired so checksums are only added when the S3 API
+		// explicitly demands them (which PutObject does not).
+		awsconfig.WithRequestChecksumCalculation(aws.RequestChecksumCalculationWhenRequired),
+		awsconfig.WithResponseChecksumValidation(aws.ResponseChecksumValidationWhenRequired),
 	)
 	if err != nil {
 		return nil, err
 	}
-	return s3.NewFromConfig(awsCfg, func(o *s3.Options) { o.UsePathStyle = true }), nil
+	return s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		o.UsePathStyle = true
+		// PutObject over plain HTTP with a non-seekable streaming reader:
+		// the SDK's dynamic payload signer falls back to ComputePayloadSHA256
+		// which requires seeking the reader. Use UNSIGNED-PAYLOAD instead,
+		// which is what the SDK already does on HTTPS — this makes HTTP
+		// behaviour match and allows unbuffered streaming uploads.
+		o.APIOptions = append(o.APIOptions, v4.SwapComputePayloadSHA256ForUnsignedPayloadMiddleware)
+	}), nil
 }
 
 func NewMinIO(ctx context.Context, cfg *config.Config) (*MinIOBackend, error) {

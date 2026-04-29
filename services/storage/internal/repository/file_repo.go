@@ -187,10 +187,12 @@ func (r *FileRepository) GetStorageConfig(ctx context.Context) (*domain.StorageC
 	var cfg domain.StorageConfig
 	err := r.db.QueryRow(ctx, `
 		SELECT quota_enabled, quota_bytes_per_user, max_upload_size_bytes,
-		       retention_enabled, retention_days, orphan_retention_days
+		       retention_enabled, retention_days, orphan_retention_days,
+		       test_mode
 		FROM storage.storage_settings WHERE id = 1`,
 	).Scan(&cfg.QuotaEnabled, &cfg.QuotaBytesPerUser, &cfg.MaxUploadSizeBytes,
-		&cfg.RetentionEnabled, &cfg.RetentionDays, &cfg.OrphanRetentionDays)
+		&cfg.RetentionEnabled, &cfg.RetentionDays, &cfg.OrphanRetentionDays,
+		&cfg.TestMode)
 	if err != nil {
 		return nil, apperrors.Internal("get storage config", err)
 	}

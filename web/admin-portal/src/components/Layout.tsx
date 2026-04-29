@@ -167,7 +167,7 @@ export default function Layout() {
           <NavLink to="/audit" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             <IconAudit /> Audit Logs
           </NavLink>
-          <NavLink to="/audit/settings" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+          <NavLink to="/audit/settings" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'} style={{ paddingLeft: 28 }}>
             <IconClock /> Log Retention
           </NavLink>
 

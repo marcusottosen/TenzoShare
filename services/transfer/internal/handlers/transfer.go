@@ -90,6 +90,7 @@ func (h *Handler) Create(c fiber.Ctx) error {
 		Password:       req.Password,
 		MaxDownloads:   req.MaxDownloads,
 		ExpiresIn:      time.Duration(req.ExpiresInHours) * time.Hour,
+		ClientIP:       realClientIP(c),
 	})
 	if err != nil {
 		return err
@@ -256,6 +257,7 @@ func (h *Handler) DownloadURL(c fiber.Ctx) error {
 		Slug:     slug,
 		FileID:   fileID,
 		Password: password,
+		ClientIP: realClientIP(c),
 	})
 	if err != nil {
 		return err
