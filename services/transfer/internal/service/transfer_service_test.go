@@ -19,10 +19,11 @@ import (
 // ── stub repo ─────────────────────────────────────────────────────────────────
 
 type stubTransferRepo struct {
-	transfers map[string]*domain.Transfer // keyed by slug
-	byID      map[string]*domain.Transfer // keyed by id
-	fileIDs   map[string][]string         // transfer id → file ids
-	err       error
+	transfers    map[string]*domain.Transfer // keyed by slug
+	byID         map[string]*domain.Transfer // keyed by id
+	fileIDs      map[string][]string         // transfer id → file ids
+	fileDlCounts map[string]map[string]int   // transfer id → file id → count
+	err          error
 }
 
 func newStubTransferRepo() *stubTransferRepo {
@@ -52,7 +53,25 @@ func (r *stubTransferRepo) GetBySlug(_ context.Context, slug string) (*domain.Tr
 	if !ok {
 		return nil, apperrors.NotFound("transfer not found")
 	}
-	return t, nil
+	// Populate FileCount and IsExhausted from stored state, mirroring the real repo.
+	copy := *t
+	copy.FileCount = len(r.fileIDs[t.ID])
+	copy.IsExhausted = false
+	if t.MaxDownloads > 0 && len(r.fileIDs[t.ID]) > 0 {
+		allExhausted := true
+		for _, fid := range r.fileIDs[t.ID] {
+			cnt := 0
+			if r.fileDlCounts != nil && r.fileDlCounts[t.ID] != nil {
+				cnt = r.fileDlCounts[t.ID][fid]
+			}
+			if cnt < t.MaxDownloads {
+				allExhausted = false
+				break
+			}
+		}
+		copy.IsExhausted = allExhausted
+	}
+	return &copy, nil
 }
 
 func (r *stubTransferRepo) GetByID(_ context.Context, id string) (*domain.Transfer, error) {
@@ -63,7 +82,25 @@ func (r *stubTransferRepo) GetByID(_ context.Context, id string) (*domain.Transf
 	if !ok {
 		return nil, apperrors.NotFound("transfer not found")
 	}
-	return t, nil
+	// Populate FileCount and IsExhausted from stored state, mirroring the real repo.
+	copy := *t
+	copy.FileCount = len(r.fileIDs[t.ID])
+	copy.IsExhausted = false
+	if t.MaxDownloads > 0 && len(r.fileIDs[t.ID]) > 0 {
+		allExhausted := true
+		for _, fid := range r.fileIDs[t.ID] {
+			cnt := 0
+			if r.fileDlCounts != nil && r.fileDlCounts[t.ID] != nil {
+				cnt = r.fileDlCounts[t.ID][fid]
+			}
+			if cnt < t.MaxDownloads {
+				allExhausted = false
+				break
+			}
+		}
+		copy.IsExhausted = allExhausted
+	}
+	return &copy, nil
 }
 
 func (r *stubTransferRepo) ListByOwner(_ context.Context, ownerID string, _, _ int) ([]*domain.Transfer, error) {
@@ -91,6 +128,37 @@ func (r *stubTransferRepo) IncrementDownloads(_ context.Context, id string) erro
 		t.DownloadCount++
 	}
 	return r.err
+}
+
+func (r *stubTransferRepo) AttemptFileDownload(_ context.Context, transferID, fileID string, maxDownloads int) (bool, error) {
+	if r.err != nil {
+		return false, r.err
+	}
+	if r.fileDlCounts == nil {
+		r.fileDlCounts = make(map[string]map[string]int)
+	}
+	if r.fileDlCounts[transferID] == nil {
+		r.fileDlCounts[transferID] = make(map[string]int)
+	}
+	current := r.fileDlCounts[transferID][fileID]
+	if current >= maxDownloads {
+		return false, nil
+	}
+	r.fileDlCounts[transferID][fileID] = current + 1
+	return true, nil
+}
+
+func (r *stubTransferRepo) GetFileDownloadCounts(_ context.Context, transferID string) (map[string]int, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	result := make(map[string]int)
+	if r.fileDlCounts != nil {
+		for k, v := range r.fileDlCounts[transferID] {
+			result[k] = v
+		}
+	}
+	return result, nil
 }
 
 func (r *stubTransferRepo) Revoke(_ context.Context, id, ownerID string) error {
@@ -212,37 +280,37 @@ func TestCreate_ExpiresInTooLong_ReturnsValidation(t *testing.T) {
 	}
 }
 
-// ── Access ─────────────────────────────────────────────────────────────────────
+// ── AttemptFileDownload ───────────────────────────────────────────────────────
 
-func TestAccess_NoPassword_Success(t *testing.T) {
+func TestAttemptFileDownload_NoPassword_Success(t *testing.T) {
 	repo := newStubTransferRepo()
 	svc := newTestTransferService(repo)
-	tr := createTransferHelper(t, svc, "", 0, nil)
+	tr := createTransferHelper(t, svc, "", 0, []string{"f1"})
 
-	result, err := svc.Access(context.Background(), AccessParams{Slug: tr.Slug})
+	result, err := svc.AttemptFileDownload(context.Background(), AttemptFileDownloadParams{Slug: tr.Slug, FileID: "f1"})
 	if err != nil {
-		t.Fatalf("Access: %v", err)
+		t.Fatalf("AttemptFileDownload: %v", err)
 	}
 	if result.Transfer.Slug != tr.Slug {
 		t.Errorf("Slug = %q", result.Transfer.Slug)
 	}
 }
 
-func TestAccess_CorrectPassword_Success(t *testing.T) {
+func TestAttemptFileDownload_CorrectPassword_Success(t *testing.T) {
 	svc := newTestTransferService(newStubTransferRepo())
-	tr := createTransferHelper(t, svc, "secretpass", 0, nil)
+	tr := createTransferHelper(t, svc, "secretpass", 0, []string{"f1"})
 
-	_, err := svc.Access(context.Background(), AccessParams{Slug: tr.Slug, Password: "secretpass"})
+	_, err := svc.AttemptFileDownload(context.Background(), AttemptFileDownloadParams{Slug: tr.Slug, FileID: "f1", Password: "secretpass"})
 	if err != nil {
-		t.Fatalf("Access with correct password: %v", err)
+		t.Fatalf("AttemptFileDownload with correct password: %v", err)
 	}
 }
 
-func TestAccess_WrongPassword_ReturnsUnauthorized(t *testing.T) {
+func TestAttemptFileDownload_WrongPassword_ReturnsUnauthorized(t *testing.T) {
 	svc := newTestTransferService(newStubTransferRepo())
-	tr := createTransferHelper(t, svc, "secretpass", 0, nil)
+	tr := createTransferHelper(t, svc, "secretpass", 0, []string{"f1"})
 
-	_, err := svc.Access(context.Background(), AccessParams{Slug: tr.Slug, Password: "wrongpass"})
+	_, err := svc.AttemptFileDownload(context.Background(), AttemptFileDownloadParams{Slug: tr.Slug, FileID: "f1", Password: "wrongpass"})
 	if err == nil {
 		t.Fatal("expected error for wrong password")
 	}
@@ -252,11 +320,11 @@ func TestAccess_WrongPassword_ReturnsUnauthorized(t *testing.T) {
 	}
 }
 
-func TestAccess_MissingPassword_ReturnsUnauthorized(t *testing.T) {
+func TestAttemptFileDownload_MissingPassword_ReturnsUnauthorized(t *testing.T) {
 	svc := newTestTransferService(newStubTransferRepo())
-	tr := createTransferHelper(t, svc, "secretpass", 0, nil)
+	tr := createTransferHelper(t, svc, "secretpass", 0, []string{"f1"})
 
-	_, err := svc.Access(context.Background(), AccessParams{Slug: tr.Slug, Password: ""})
+	_, err := svc.AttemptFileDownload(context.Background(), AttemptFileDownloadParams{Slug: tr.Slug, FileID: "f1", Password: ""})
 	if err == nil {
 		t.Fatal("expected error when password is required but not provided")
 	}
@@ -266,15 +334,14 @@ func TestAccess_MissingPassword_ReturnsUnauthorized(t *testing.T) {
 	}
 }
 
-func TestAccess_RevokedTransfer_ReturnsForbidden(t *testing.T) {
+func TestAttemptFileDownload_RevokedTransfer_ReturnsForbidden(t *testing.T) {
 	repo := newStubTransferRepo()
 	svc := newTestTransferService(repo)
-	tr := createTransferHelper(t, svc, "", 0, nil)
+	tr := createTransferHelper(t, svc, "", 0, []string{"f1"})
 
-	// Revoke it
 	svc.Revoke(context.Background(), tr.ID, "owner-1") //nolint:errcheck
 
-	_, err := svc.Access(context.Background(), AccessParams{Slug: tr.Slug})
+	_, err := svc.AttemptFileDownload(context.Background(), AttemptFileDownloadParams{Slug: tr.Slug, FileID: "f1"})
 	if err == nil {
 		t.Fatal("expected error for revoked transfer")
 	}
@@ -284,11 +351,10 @@ func TestAccess_RevokedTransfer_ReturnsForbidden(t *testing.T) {
 	}
 }
 
-func TestAccess_ExpiredTransfer_ReturnsForbidden(t *testing.T) {
+func TestAttemptFileDownload_ExpiredTransfer_ReturnsForbidden(t *testing.T) {
 	repo := newStubTransferRepo()
 	svc := newTestTransferService(repo)
 
-	// Create with a past expiry directly in the repo
 	past := time.Now().Add(-1 * time.Hour)
 	tr := &domain.Transfer{
 		ID:        "transfer-expired",
@@ -300,7 +366,7 @@ func TestAccess_ExpiredTransfer_ReturnsForbidden(t *testing.T) {
 	repo.byID[tr.ID] = tr
 	repo.fileIDs[tr.ID] = []string{"f1"}
 
-	_, err := svc.Access(context.Background(), AccessParams{Slug: tr.Slug})
+	_, err := svc.AttemptFileDownload(context.Background(), AttemptFileDownloadParams{Slug: tr.Slug, FileID: "f1"})
 	if err == nil {
 		t.Fatal("expected error for expired transfer")
 	}
@@ -310,26 +376,48 @@ func TestAccess_ExpiredTransfer_ReturnsForbidden(t *testing.T) {
 	}
 }
 
-func TestAccess_DownloadLimitReached_ReturnsForbidden(t *testing.T) {
+func TestAttemptFileDownload_FileNotInTransfer_ReturnsNotFound(t *testing.T) {
+	repo := newStubTransferRepo()
+	svc := newTestTransferService(repo)
+	tr := createTransferHelper(t, svc, "", 0, []string{"f1", "f2"})
+
+	_, err := svc.AttemptFileDownload(context.Background(), AttemptFileDownloadParams{Slug: tr.Slug, FileID: "f-doesnotexist"})
+	if err == nil {
+		t.Fatal("expected not-found for file not in transfer")
+	}
+	var ae *apperrors.AppError
+	if !errors.As(err, &ae) || ae.Code != apperrors.CodeNotFound {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestAttemptFileDownload_PerFileLimit_BlocksAfterLimit(t *testing.T) {
+	// With max_downloads=1, the second attempt on the same file is blocked.
 	repo := newStubTransferRepo()
 	svc := newTestTransferService(repo)
 
 	future := time.Now().Add(time.Hour)
 	tr := &domain.Transfer{
-		ID:            "transfer-limited",
-		Slug:          "limited-slug",
-		OwnerID:       "owner-1",
-		MaxDownloads:  2,
-		DownloadCount: 2, // already at limit
-		ExpiresAt:     &future,
+		ID:           "tid",
+		Slug:         "limit-slug",
+		OwnerID:      "owner-1",
+		MaxDownloads: 1,
+		ExpiresAt:    &future,
 	}
 	repo.transfers[tr.Slug] = tr
 	repo.byID[tr.ID] = tr
-	repo.fileIDs[tr.ID] = []string{"f1"}
+	repo.fileIDs[tr.ID] = []string{"f1", "f2"}
 
-	_, err := svc.Access(context.Background(), AccessParams{Slug: tr.Slug})
+	// First attempt succeeds.
+	_, err := svc.AttemptFileDownload(context.Background(), AttemptFileDownloadParams{Slug: tr.Slug, FileID: "f1"})
+	if err != nil {
+		t.Fatalf("first download: %v", err)
+	}
+
+	// Second attempt on same file is forbidden.
+	_, err = svc.AttemptFileDownload(context.Background(), AttemptFileDownloadParams{Slug: tr.Slug, FileID: "f1"})
 	if err == nil {
-		t.Fatal("expected error for download limit reached")
+		t.Fatal("expected forbidden for second download of same file")
 	}
 	var ae *apperrors.AppError
 	if !errors.As(err, &ae) || ae.Code != apperrors.CodeForbidden {
@@ -337,9 +425,61 @@ func TestAccess_DownloadLimitReached_ReturnsForbidden(t *testing.T) {
 	}
 }
 
-func TestAccess_NonExistentSlug_ReturnsNotFound(t *testing.T) {
+func TestAttemptFileDownload_PerFileLimit_OtherFilesStillAllowed(t *testing.T) {
+	// Exhausting file f1 must NOT block file f2.
+	repo := newStubTransferRepo()
+	svc := newTestTransferService(repo)
+
+	future := time.Now().Add(time.Hour)
+	tr := &domain.Transfer{
+		ID:           "tid2",
+		Slug:         "limit-slug2",
+		OwnerID:      "owner-1",
+		MaxDownloads: 1,
+		ExpiresAt:    &future,
+	}
+	repo.transfers[tr.Slug] = tr
+	repo.byID[tr.ID] = tr
+	repo.fileIDs[tr.ID] = []string{"f1", "f2"}
+
+	// Exhaust f1.
+	svc.AttemptFileDownload(context.Background(), AttemptFileDownloadParams{Slug: tr.Slug, FileID: "f1"}) //nolint:errcheck
+
+	// f2 must still be accessible.
+	_, err := svc.AttemptFileDownload(context.Background(), AttemptFileDownloadParams{Slug: tr.Slug, FileID: "f2"})
+	if err != nil {
+		t.Errorf("f2 should still be allowed after f1 is exhausted, got: %v", err)
+	}
+}
+
+func TestAttemptFileDownload_UnlimitedTransfer_AlwaysAllowed(t *testing.T) {
+	// MaxDownloads=0 means unlimited; many downloads of the same file should succeed.
+	repo := newStubTransferRepo()
+	svc := newTestTransferService(repo)
+
+	future := time.Now().Add(time.Hour)
+	tr := &domain.Transfer{
+		ID:           "tid3",
+		Slug:         "unlimited-slug",
+		OwnerID:      "owner-1",
+		MaxDownloads: 0, // unlimited
+		ExpiresAt:    &future,
+	}
+	repo.transfers[tr.Slug] = tr
+	repo.byID[tr.ID] = tr
+	repo.fileIDs[tr.ID] = []string{"f1"}
+
+	for i := 0; i < 5; i++ {
+		_, err := svc.AttemptFileDownload(context.Background(), AttemptFileDownloadParams{Slug: tr.Slug, FileID: "f1"})
+		if err != nil {
+			t.Fatalf("attempt %d on unlimited transfer failed: %v", i+1, err)
+		}
+	}
+}
+
+func TestAttemptFileDownload_NonExistentSlug_ReturnsNotFound(t *testing.T) {
 	svc := newTestTransferService(newStubTransferRepo())
-	_, err := svc.Access(context.Background(), AccessParams{Slug: "doesnotexist"})
+	_, err := svc.AttemptFileDownload(context.Background(), AttemptFileDownloadParams{Slug: "doesnotexist", FileID: "f1"})
 	if err == nil {
 		t.Fatal("expected not-found error")
 	}

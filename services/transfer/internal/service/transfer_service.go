@@ -26,6 +26,9 @@ type transferRepository interface {
 	GetByID(ctx context.Context, id string) (*domain.Transfer, error)
 	ListByOwner(ctx context.Context, ownerID string, limit, offset int) ([]*domain.Transfer, error)
 	GetFileIDs(ctx context.Context, transferID string) ([]string, error)
+	GetFileInfos(ctx context.Context, transferID string) ([]*repository.FileInfo, error)
+	AttemptFileDownload(ctx context.Context, transferID, fileID string, maxDownloads int) (bool, error)
+	GetFileDownloadCounts(ctx context.Context, transferID string) (map[string]int, error)
 	IncrementDownloads(ctx context.Context, id string) error
 	Revoke(ctx context.Context, id, ownerID string) error
 }
@@ -45,6 +48,7 @@ func New(repo *repository.TransferRepository, cfg *config.Config, js *jetstream.
 // CreateParams carries creation inputs from the handler.
 type CreateParams struct {
 	OwnerID        string
+	SenderEmail    string // email of the creating user, stored for display to recipients
 	Name           string
 	Description    string
 	FileIDs        []string
@@ -83,6 +87,7 @@ func (s *TransferService) Create(ctx context.Context, p CreateParams) (*CreateRe
 
 	t := &domain.Transfer{
 		OwnerID:        p.OwnerID,
+		SenderEmail:    p.SenderEmail,
 		Name:           strings.TrimSpace(p.Name),
 		Description:    strings.TrimSpace(p.Description),
 		RecipientEmail: p.RecipientEmail,
@@ -165,19 +170,32 @@ func (s *TransferService) publishEmailNotification(ctx context.Context, t *domai
 	}()
 }
 
-// Access validates a transfer is reachable and (if protected) checks the password.
-// Returns the transfer and its file IDs on success.
+// AccessParams carries the slug and optional password for public transfer access.
 type AccessParams struct {
 	Slug     string
-	Password string // empty if no password provided by downloader
+	Password string // empty if no password provided
 }
 
+// AccessResult is returned by Validate (download page info) and AttemptFileDownload.
 type AccessResult struct {
-	Transfer *domain.Transfer
-	FileIDs  []string
+	Transfer           *domain.Transfer
+	FileIDs            []string
+	FileInfos          []*repository.FileInfo // populated by Validate; nil for AttemptFileDownload
+	FileDownloadCounts map[string]int         // populated by Validate; nil for AttemptFileDownload
 }
 
-func (s *TransferService) Access(ctx context.Context, p AccessParams) (*AccessResult, error) {
+// AttemptFileDownloadParams carries the parameters for the per-file download endpoint.
+type AttemptFileDownloadParams struct {
+	Slug     string
+	FileID   string
+	Password string
+}
+
+// AttemptFileDownload validates the transfer and atomically checks+increments the
+// per-file download counter. This is the authoritative access gate for the actual
+// file download endpoint. Per-file enforcement means downloading file A cannot
+// consume quota for file B.
+func (s *TransferService) AttemptFileDownload(ctx context.Context, p AttemptFileDownloadParams) (*AccessResult, error) {
 	t, err := s.repo.GetBySlug(ctx, p.Slug)
 	if err != nil {
 		return nil, err
@@ -188,9 +206,6 @@ func (s *TransferService) Access(ctx context.Context, p AccessParams) (*AccessRe
 	}
 	if t.ExpiresAt != nil && time.Now().After(*t.ExpiresAt) {
 		return nil, apperrors.Forbidden("this transfer has expired")
-	}
-	if t.MaxDownloads > 0 && t.DownloadCount >= t.MaxDownloads {
-		return nil, apperrors.Forbidden("download limit reached")
 	}
 
 	if t.PasswordHash != "" {
@@ -211,7 +226,31 @@ func (s *TransferService) Access(ctx context.Context, p AccessParams) (*AccessRe
 		return nil, err
 	}
 
-	// Bump counter in background to keep the response fast.
+	// Confirm the requested file belongs to this transfer.
+	found := false
+	for _, fid := range fileIDs {
+		if fid == p.FileID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, apperrors.NotFound("file not found in this transfer")
+	}
+
+	// Atomically check and increment the per-file download counter.
+	// Returns false (without error) when the file's individual limit is reached.
+	if t.MaxDownloads > 0 {
+		allowed, err := s.repo.AttemptFileDownload(ctx, t.ID, p.FileID, t.MaxDownloads)
+		if err != nil {
+			return nil, apperrors.Internal("check file download limit", err)
+		}
+		if !allowed {
+			return nil, apperrors.Forbidden("download limit reached for this file")
+		}
+	}
+
+	// Increment global counter for display purposes (non-blocking, best-effort).
 	go func() {
 		if err := s.repo.IncrementDownloads(context.Background(), t.ID); err != nil {
 			s.log.Warn("failed to increment download count", zap.String("transfer_id", t.ID), zap.Error(err))
@@ -221,9 +260,9 @@ func (s *TransferService) Access(ctx context.Context, p AccessParams) (*AccessRe
 	return &AccessResult{Transfer: t, FileIDs: fileIDs}, nil
 }
 
-// Validate checks a transfer is accessible (slug + password + state) without
-// modifying any state. Used by the file-download endpoint so the download counter
-// is not incremented a second time.
+// Validate checks a transfer is accessible (revoked/expired/password) without
+// modifying any state. Used by GET /t/:slug (download page) so the page always
+// loads — individual file exhaustion is shown via FileDownloadCounts.
 func (s *TransferService) Validate(ctx context.Context, p AccessParams) (*AccessResult, error) {
 	t, err := s.repo.GetBySlug(ctx, p.Slug)
 	if err != nil {
@@ -236,9 +275,6 @@ func (s *TransferService) Validate(ctx context.Context, p AccessParams) (*Access
 	if t.ExpiresAt != nil && time.Now().After(*t.ExpiresAt) {
 		return nil, apperrors.Forbidden("this transfer has expired")
 	}
-	if t.MaxDownloads > 0 && t.DownloadCount >= t.MaxDownloads {
-		return nil, apperrors.Forbidden("download limit reached")
-	}
 
 	if t.PasswordHash != "" {
 		if p.Password == "" {
@@ -258,7 +294,21 @@ func (s *TransferService) Validate(ctx context.Context, p AccessParams) (*Access
 		return nil, err
 	}
 
-	return &AccessResult{Transfer: t, FileIDs: fileIDs}, nil
+	fileInfos, err := s.repo.GetFileInfos(ctx, t.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch per-file download counts so the download UI can show per-file status.
+	var fileCounts map[string]int
+	if t.MaxDownloads > 0 {
+		fileCounts, _ = s.repo.GetFileDownloadCounts(ctx, t.ID)
+		if fileCounts == nil {
+			fileCounts = make(map[string]int)
+		}
+	}
+
+	return &AccessResult{Transfer: t, FileIDs: fileIDs, FileInfos: fileInfos, FileDownloadCounts: fileCounts}, nil
 }
 
 func (s *TransferService) Revoke(ctx context.Context, id, ownerID string) error {

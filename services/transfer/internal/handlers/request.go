@@ -187,17 +187,18 @@ func (h *Handler) UploadToRequest(c fiber.Ctx) error {
 
 func fileRequestResponse(r *domain.FileRequest) fiber.Map {
 	return fiber.Map{
-		"id":            r.ID,
-		"slug":          r.Slug,
-		"name":          r.Name,
-		"description":   r.Description,
-		"allowed_types": r.AllowedTypes,
-		"max_size_mb":   r.MaxSizeMB,
-		"max_files":     r.MaxFiles,
-		"expires_at":    r.ExpiresAt.Format(time.RFC3339),
-		"is_active":     r.IsActive,
-		"is_expired":    r.IsExpired(),
-		"created_at":    r.CreatedAt.Format(time.RFC3339),
+		"id":               r.ID,
+		"slug":             r.Slug,
+		"name":             r.Name,
+		"description":      r.Description,
+		"allowed_types":    r.AllowedTypes,
+		"max_size_mb":      r.MaxSizeMB,
+		"max_files":        r.MaxFiles,
+		"expires_at":       r.ExpiresAt.Format(time.RFC3339),
+		"is_active":        r.IsActive,
+		"is_expired":       r.IsExpired(),
+		"created_at":       r.CreatedAt.Format(time.RFC3339),
+		"submission_count": r.SubmissionCount,
 	}
 }
 

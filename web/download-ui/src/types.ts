@@ -10,6 +10,27 @@
  * No authentication token is required.
  */
 
+/** Per-file metadata returned by the public access endpoint. */
+export interface FileInfo {
+  /** UUID of the file. */
+  id: string;
+  /** Original filename as uploaded. */
+  filename: string;
+  /** MIME content type (e.g. "application/pdf", "image/png"). */
+  content_type: string;
+  /** File size in bytes. */
+  size_bytes: number;
+  /**
+   * Empty string when the file is available for download.
+   * Non-empty values indicate why the file was removed:
+   *   "owner_deleted"     – the file owner (sender) deleted the file
+   *   "admin_purge"       – an administrator force-deleted the file
+   *   "retention_expired" – auto-purged by the retention policy
+   *   "orphan_expired"    – auto-purged as an orphaned file
+   */
+  delete_reason: string;
+}
+
 /** A transfer as returned by the public access endpoint. */
 export interface TransferPublic {
   /** UUID of the transfer record. */
@@ -24,6 +45,10 @@ export interface TransferPublic {
   has_password: boolean;
   /** IDs of the files included in this transfer. */
   file_ids: string[];
+  /** Per-file metadata (filename, size, type, deleted status). Present when the server returns it. */
+  files?: FileInfo[];
+  /** Total size in bytes of all non-deleted files in this transfer. 0 when unknown. */
+  total_size_bytes: number;
   /** Max allowed total downloads across all files. 0 = unlimited. */
   max_downloads: number;
   /** Number of times this transfer has already been accessed. */
@@ -34,6 +59,8 @@ export interface TransferPublic {
   expires_at: string;
   /** Email of the intended recipient, if restricted to one address. */
   recipient_email?: string;
+  /** Email address of the sender (person who created the transfer). */
+  sender_email?: string;
   /** ISO-8601 creation timestamp. */
   created_at: string;
 }

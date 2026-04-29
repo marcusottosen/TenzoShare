@@ -1,11 +1,11 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -57,16 +57,35 @@ func (h *Handler) Upload(c fiber.Ctx) error {
 		return apperrors.BadRequest("missing file field")
 	}
 
+	// ── Enforce storage policy (quota + max upload size) ─────────────────────
+	cfg, cfgErr := h.repo.GetStorageConfig(c.Context())
+	if cfgErr == nil {
+		// Per-file size cap
+		if cfg.MaxUploadSizeBytes > 0 && fileHeader.Size > cfg.MaxUploadSizeBytes {
+			return apperrors.BadRequest(fmt.Sprintf(
+				"file exceeds maximum upload size of %s",
+				fmtBytes(cfg.MaxUploadSizeBytes),
+			))
+		}
+		// Per-user quota
+		if cfg.QuotaEnabled && cfg.QuotaBytesPerUser > 0 {
+			usage, uErr := h.repo.GetUsageByOwner(c.Context(), ownerID)
+			if uErr == nil && usage.TotalBytes+fileHeader.Size > cfg.QuotaBytesPerUser {
+				return apperrors.BadRequest(fmt.Sprintf(
+					"storage quota exceeded: %s used of %s",
+					fmtBytes(usage.TotalBytes),
+					fmtBytes(cfg.QuotaBytesPerUser),
+				))
+			}
+		}
+	}
+	// ─────────────────────────────────────────────────────────────────────────
+
 	f, err := fileHeader.Open()
 	if err != nil {
 		return apperrors.Internal("open uploaded file", err)
 	}
 	defer f.Close() //nolint:errcheck
-
-	plaintext, err := io.ReadAll(f)
-	if err != nil {
-		return apperrors.Internal("read uploaded file", err)
-	}
 
 	objectKey := fmt.Sprintf("uploads/%s/%s/%s", ownerID, uuid.New().String(), fileHeader.Filename)
 	contentType := fileHeader.Header.Get("Content-Type")
@@ -74,25 +93,31 @@ func (h *Handler) Upload(c fiber.Ctx) error {
 		contentType = "application/octet-stream"
 	}
 
-	var uploadData []byte
+	// Stream the file to MinIO without loading it fully into memory.
+	// For encrypted uploads, chunked streaming AES-256-GCM is used.
+	var uploadReader io.Reader
+	var uploadSize int64
 	var encIV []byte
 
-	if h.encryptionKey != nil {
-		ciphertext, iv, encErr := encryptAESGCM(plaintext, h.encryptionKey)
-		if encErr != nil {
-			return apperrors.Internal("encrypt file", encErr)
+	if h.encryptionKey != nil && fileHeader.Size > 0 {
+		baseIV := make([]byte, 12)
+		if _, err := io.ReadFull(rand.Reader, baseIV); err != nil {
+			return apperrors.Internal("generate encryption IV", err)
 		}
-		uploadData = ciphertext
-		encIV = iv
+		uploadReader = newStreamEncryptor(f, h.encryptionKey, baseIV)
+		uploadSize = chunkedCiphertextSize(fileHeader.Size)
+		encIV = makeChunkedIV(baseIV) // 20-byte marker stored in DB; 8-byte magic + 12-byte base IV
 	} else {
-		uploadData = plaintext
+		// Unencrypted (or zero-length): stream the temp file directly to MinIO.
+		uploadReader = f
+		uploadSize = fileHeader.Size
 	}
 
-	if err := h.backend.Upload(c.Context(), objectKey, bytes.NewReader(uploadData), int64(len(uploadData)), contentType); err != nil {
+	if err := h.backend.Upload(c.Context(), objectKey, uploadReader, uploadSize, contentType); err != nil {
 		return apperrors.Internal("upload to object store", err)
 	}
 
-	record, err := h.repo.Create(c.Context(), ownerID, objectKey, fileHeader.Filename, contentType, int64(len(plaintext)), encIV)
+	record, err := h.repo.Create(c.Context(), ownerID, objectKey, fileHeader.Filename, contentType, fileHeader.Size, encIV)
 	if err != nil {
 		_ = h.backend.Delete(c.Context(), objectKey) // best-effort cleanup
 		return err
@@ -123,7 +148,8 @@ func (h *Handler) GetFile(c fiber.Ctx) error {
 	return c.JSON(fileResponse(file))
 }
 
-// ListFiles returns all files owned by the authenticated user.
+// ListFiles returns all files owned by the authenticated user, including share
+// counts and the computed auto-delete date (when retention is enabled).
 func (h *Handler) ListFiles(c fiber.Ctx) error {
 	ownerID, _ := c.Locals("userID").(string)
 	if ownerID == "" {
@@ -143,14 +169,50 @@ func (h *Handler) ListFiles(c fiber.Ctx) error {
 		}
 	}
 
-	files, err := h.repo.ListByOwner(c.Context(), ownerID, limit, offset)
+	files, err := h.repo.ListByOwnerWithShareInfo(c.Context(), ownerID, limit, offset)
 	if err != nil {
 		return err
 	}
 
+	// Load retention config so we can compute auto_delete_at for each file.
+	cfg, _ := h.repo.GetStorageConfig(c.Context())
+
 	items := make([]fiber.Map, 0, len(files))
 	for _, f := range files {
-		items = append(items, fileResponse(f))
+		m := fileResponse(&f.File)
+		m["share_count"] = f.ShareCount
+		m["active_shares"] = f.ActiveShares
+		if f.LastShareExpiresAt != nil {
+			m["last_share_expires_at"] = f.LastShareExpiresAt.Format(time.RFC3339)
+		} else {
+			m["last_share_expires_at"] = nil
+		}
+		// Compute auto_delete_at:
+		// - nil if retention is disabled
+		// - nil if there's at least one active never-expiring share
+		// - created_at + orphan_retention_days for files that were never shared
+		// - last_share_expires_at + retention_days for files whose shares all ended
+		if cfg != nil && cfg.RetentionEnabled {
+			var autoDelete *time.Time
+			if f.ShareCount == 0 {
+				// Orphan: will be deleted after orphan_retention_days from upload
+				t := f.CreatedAt.Add(time.Duration(cfg.OrphanRetentionDays) * 24 * time.Hour)
+				autoDelete = &t
+			} else if f.ActiveShares == 0 && f.LastShareExpiresAt != nil {
+				// All shares expired: will be deleted after retention_days from last expiry
+				t := f.LastShareExpiresAt.Add(time.Duration(cfg.RetentionDays) * 24 * time.Hour)
+				autoDelete = &t
+			}
+			// else: active shares exist → file is protected → auto_delete_at stays nil
+			if autoDelete != nil {
+				m["auto_delete_at"] = autoDelete.Format(time.RFC3339)
+			} else {
+				m["auto_delete_at"] = nil
+			}
+		} else {
+			m["auto_delete_at"] = nil
+		}
+		items = append(items, m)
 	}
 	return c.JSON(fiber.Map{"files": items, "limit": limit, "offset": offset})
 }
@@ -297,24 +359,33 @@ func (h *Handler) Download(c fiber.Ctx) error {
 	}
 	defer rc.Close() //nolint:errcheck
 
-	raw, err := io.ReadAll(rc)
-	if err != nil {
-		return apperrors.Internal("read object data", err)
+	disposition := "attachment"
+	if c.Query("inline") == "1" {
+		disposition = "inline"
 	}
+	c.Set("Content-Disposition", fmt.Sprintf(`%s; filename=%q`, disposition, file.Filename))
+	c.Set("Content-Type", file.ContentType)
 
-	var plaintext []byte
 	if file.IsEncrypted && len(file.EncryptionIV) > 0 && h.encryptionKey != nil {
-		plaintext, err = decryptAESGCM(raw, h.encryptionKey, file.EncryptionIV)
+		if isChunkedEncryption(file.EncryptionIV) {
+			// New streaming chunked format — decrypt on the fly, no full-file buffering.
+			dec := newStreamDecryptor(rc, h.encryptionKey)
+			return c.SendStream(dec, int(file.SizeBytes))
+		}
+		// Legacy single-GCM block (files created before this fix; always < 4 MiB).
+		raw, err := io.ReadAll(rc)
+		if err != nil {
+			return apperrors.Internal("read object data", err)
+		}
+		plain, err := decryptAESGCM(raw, h.encryptionKey, file.EncryptionIV)
 		if err != nil {
 			return apperrors.Internal("decrypt file", err)
 		}
-	} else {
-		plaintext = raw
+		return c.Send(plain)
 	}
 
-	c.Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, file.Filename))
-	c.Set("Content-Type", file.ContentType)
-	return c.Send(plaintext)
+	// Unencrypted — stream directly from object store without buffering.
+	return c.SendStream(rc, int(file.SizeBytes))
 }
 
 func fileResponse(f *domain.File) fiber.Map {
@@ -327,6 +398,38 @@ func fileResponse(f *domain.File) fiber.Map {
 		"is_encrypted": f.IsEncrypted,
 		"created_at":   f.CreatedAt,
 	}
+}
+
+// GetMyUsage returns storage consumption for the authenticated user,
+// including the applicable quota settings so the client can render a progress bar.
+// GET /api/v1/files/usage
+func (h *Handler) GetMyUsage(c fiber.Ctx) error {
+	ownerID, _ := c.Locals("userID").(string)
+	if ownerID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+
+	usage, err := h.repo.GetUsageByOwner(c.Context(), ownerID)
+	if err != nil {
+		return err
+	}
+
+	// Include quota settings so the UI can show a progress bar.
+	cfg, cfgErr := h.repo.GetStorageConfig(c.Context())
+	quotaEnabled := false
+	var quotaBytes int64
+	if cfgErr == nil {
+		quotaEnabled = cfg.QuotaEnabled
+		quotaBytes = cfg.QuotaBytesPerUser
+	}
+
+	return c.JSON(fiber.Map{
+		"user_id":              usage.UserID,
+		"file_count":           usage.FileCount,
+		"total_bytes":          usage.TotalBytes,
+		"quota_enabled":        quotaEnabled,
+		"quota_bytes_per_user": quotaBytes,
+	})
 }
 
 func (h *Handler) publishAudit(ctx context.Context, action, userID, fileID string, extra map[string]any) {
@@ -387,4 +490,209 @@ func decryptAESGCM(ciphertext, key, _ []byte) ([]byte, error) {
 	}
 	iv, ct := ciphertext[:nonceSize], ciphertext[nonceSize:]
 	return gcm.Open(nil, iv, ct, nil)
+}
+
+// fmtBytes formats a byte count as a human-readable string (B/KB/MB/GB).
+func fmtBytes(b int64) string {
+	const k = 1024
+	switch {
+	case b < k:
+		return fmt.Sprintf("%d B", b)
+	case b < k*k:
+		return fmt.Sprintf("%.1f KB", float64(b)/k)
+	case b < k*k*k:
+		return fmt.Sprintf("%.1f MB", float64(b)/(k*k))
+	default:
+		return fmt.Sprintf("%.2f GB", float64(b)/(k*k*k))
+	}
+}
+
+// ── Chunked streaming AES-256-GCM encryption ─────────────────────────────────
+//
+// Format stored in MinIO for each encrypted object:
+//   [4-byte BE plaintext_len][12-byte chunk_IV][ciphertext (plaintext_len + 16 GCM tag)] ...
+//
+// The DB stores a 20-byte EncryptionIV: [8-byte magic "TZCHUNK\x01"][12-byte base_IV].
+// Each chunk's IV is derived as: base_IV XOR bigEndian(chunk_index, 8 bytes, right-aligned).
+// Legacy files have a 12-byte EncryptionIV and use the old single-GCM code path.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// uploadChunkSize is the plaintext chunk size for streaming encryption.
+const uploadChunkSize = 64 * 1024 * 1024 // 64 MiB
+
+// chunkMagic identifies the new streaming chunked encryption format.
+var chunkMagic = [8]byte{'T', 'Z', 'C', 'H', 'U', 'N', 'K', 0x01}
+
+// isChunkedEncryption reports whether iv uses the new 20-byte chunked format.
+func isChunkedEncryption(iv []byte) bool {
+	if len(iv) != 20 {
+		return false
+	}
+	for i, b := range chunkMagic {
+		if iv[i] != b {
+			return false
+		}
+	}
+	return true
+}
+
+// makeChunkedIV builds the 20-byte IV marker stored in the DB.
+func makeChunkedIV(baseIV []byte) []byte {
+	out := make([]byte, 20)
+	copy(out[:8], chunkMagic[:])
+	copy(out[8:], baseIV)
+	return out
+}
+
+// deriveChunkIV returns a per-chunk IV by XORing the base IV with the chunk index.
+func deriveChunkIV(baseIV []byte, idx uint64) []byte {
+	iv := make([]byte, 12)
+	copy(iv, baseIV)
+	for i := 0; i < 8; i++ {
+		iv[11-i] ^= byte(idx >> (uint(i) * 8))
+	}
+	return iv
+}
+
+// chunkedCiphertextSize computes the MinIO object size for a chunked-encrypted file.
+// Each chunk adds 4 (len header) + 12 (IV) + 16 (GCM tag) = 32 bytes of overhead.
+func chunkedCiphertextSize(plainSize int64) int64 {
+	numChunks := (plainSize + uploadChunkSize - 1) / uploadChunkSize
+	if numChunks == 0 {
+		numChunks = 1
+	}
+	return plainSize + numChunks*32
+}
+
+// streamEncryptor wraps an io.Reader and encrypts each chunk on the fly.
+type streamEncryptor struct {
+	src      io.Reader
+	key      []byte
+	baseIV   []byte
+	chunkIdx uint64
+	buf      []byte
+	eof      bool
+}
+
+func newStreamEncryptor(src io.Reader, key, baseIV []byte) *streamEncryptor {
+	return &streamEncryptor{src: src, key: key, baseIV: baseIV}
+}
+
+func (e *streamEncryptor) fill() error {
+	if e.eof {
+		return io.EOF
+	}
+	plain := make([]byte, uploadChunkSize)
+	n, err := io.ReadFull(e.src, plain)
+	plain = plain[:n]
+	switch {
+	case n == 0 && (err == io.EOF || err == io.ErrUnexpectedEOF):
+		e.eof = true
+		return io.EOF
+	case err == io.ErrUnexpectedEOF:
+		e.eof = true // last partial chunk; fall through to encrypt
+	case err != nil:
+		return err
+	}
+
+	iv := deriveChunkIV(e.baseIV, e.chunkIdx)
+	e.chunkIdx++
+
+	block, err := aes.NewCipher(e.key)
+	if err != nil {
+		return err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return err
+	}
+	ct := gcm.Seal(nil, iv, plain, nil) // len(ct) = len(plain) + 16
+
+	var hdr [4]byte
+	binary.BigEndian.PutUint32(hdr[:], uint32(len(plain)))
+	e.buf = append(e.buf[:0], hdr[:]...)
+	e.buf = append(e.buf, iv...)
+	e.buf = append(e.buf, ct...)
+	return nil
+}
+
+func (e *streamEncryptor) Read(p []byte) (int, error) {
+	for len(e.buf) == 0 {
+		if e.eof {
+			return 0, io.EOF
+		}
+		if err := e.fill(); err != nil {
+			return 0, err
+		}
+	}
+	n := copy(p, e.buf)
+	e.buf = e.buf[n:]
+	return n, nil
+}
+
+// streamDecryptor wraps an io.Reader and decrypts each chunk on the fly.
+type streamDecryptor struct {
+	src io.Reader
+	key []byte
+	buf []byte
+	eof bool
+}
+
+func newStreamDecryptor(src io.Reader, key []byte) *streamDecryptor {
+	return &streamDecryptor{src: src, key: key}
+}
+
+func (d *streamDecryptor) fill() error {
+	if d.eof {
+		return io.EOF
+	}
+	var hdr [4]byte
+	if _, err := io.ReadFull(d.src, hdr[:]); err != nil {
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			d.eof = true
+			return io.EOF
+		}
+		return fmt.Errorf("read chunk header: %w", err)
+	}
+	plainLen := binary.BigEndian.Uint32(hdr[:])
+
+	iv := make([]byte, 12)
+	if _, err := io.ReadFull(d.src, iv); err != nil {
+		return fmt.Errorf("read chunk IV: %w", err)
+	}
+
+	ct := make([]byte, int(plainLen)+16)
+	if _, err := io.ReadFull(d.src, ct); err != nil {
+		return fmt.Errorf("read chunk ciphertext: %w", err)
+	}
+
+	block, err := aes.NewCipher(d.key)
+	if err != nil {
+		return err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return err
+	}
+	plain, err := gcm.Open(nil, iv, ct, nil)
+	if err != nil {
+		return fmt.Errorf("decrypt chunk: %w", err)
+	}
+
+	d.buf = append(d.buf[:0], plain...)
+	return nil
+}
+
+func (d *streamDecryptor) Read(p []byte) (int, error) {
+	for len(d.buf) == 0 {
+		if d.eof {
+			return 0, io.EOF
+		}
+		if err := d.fill(); err != nil {
+			return 0, err
+		}
+	}
+	n := copy(p, d.buf)
+	d.buf = d.buf[n:]
+	return n, nil
 }

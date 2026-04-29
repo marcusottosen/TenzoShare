@@ -259,11 +259,11 @@ func (r *UserRepository) RecordFailedLogin(ctx context.Context, userID string, m
 	return nil
 }
 
-// RecordSuccessfulLogin resets the failed attempts counter.
+// RecordSuccessfulLogin resets the failed attempts counter and records the login time.
 func (r *UserRepository) RecordSuccessfulLogin(ctx context.Context, userID string) error {
 	_, err := r.db.Exec(ctx, `
 		UPDATE auth.users
-		SET failed_login_attempts = 0, locked_until = NULL
+		SET failed_login_attempts = 0, locked_until = NULL, last_login_at = now()
 		WHERE id = $1
 	`, userID)
 	if err != nil {

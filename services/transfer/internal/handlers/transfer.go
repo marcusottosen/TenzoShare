@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,7 +20,12 @@ import (
 	"github.com/tenzoshare/tenzoshare/services/transfer/internal/service"
 	apperrors "github.com/tenzoshare/tenzoshare/shared/pkg/errors"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jwtkeys"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 )
+
+// errFileDeleted is returned by fetchPresignURL when the storage service reports
+// that the requested file no longer exists (soft-deleted by admin or retention worker).
+var errFileDeleted = errors.New("file no longer available")
 
 type Handler struct {
 	svc           *service.TransferService
@@ -60,6 +66,11 @@ func (h *Handler) Create(c fiber.Ctx) error {
 	if ownerID == "" {
 		return apperrors.Unauthorized("unauthenticated")
 	}
+	claims, _ := c.Locals("claims").(*middleware.Claims)
+	senderEmail := ""
+	if claims != nil {
+		senderEmail = claims.Email
+	}
 
 	var req createRequest
 	if err := c.Bind().JSON(&req); err != nil {
@@ -71,6 +82,7 @@ func (h *Handler) Create(c fiber.Ctx) error {
 
 	result, err := h.svc.Create(c.Context(), service.CreateParams{
 		OwnerID:        ownerID,
+		SenderEmail:    senderEmail,
 		Name:           req.Name,
 		Description:    req.Description,
 		FileIDs:        req.FileIDs,
@@ -123,11 +135,13 @@ func (h *Handler) List(c fiber.Ctx) error {
 		return err
 	}
 
-	// By default exclude expired and revoked; pass ?status=all to include them.
+	// By default exclude expired and revoked; exhausted transfers are included.
+	// Pass ?status=all to include everything.
 	statusFilter := c.Query("status")
 	items := make([]fiber.Map, 0, len(transfers))
 	for _, t := range transfers {
-		if statusFilter != "all" && t.Status() != "active" {
+		s := t.Status()
+		if statusFilter != "all" && s != "active" && s != "exhausted" {
 			continue
 		}
 		items = append(items, transferResponse(t, nil))
@@ -149,7 +163,9 @@ func (h *Handler) Revoke(c fiber.Ctx) error {
 
 // Access is the public (unauthenticated) download-info endpoint.
 // GET /api/v1/t/:slug  — optionally with ?password=
-// Does NOT increment the download counter — viewing a transfer page is not a download.
+// Does NOT increment any counter — viewing the download page is not a download.
+// Returns per-file download counts (file_download_counts map) when max_downloads > 0
+// so the download UI can show per-file availability without requiring an attempt.
 func (h *Handler) Access(c fiber.Ctx) error {
 	slug := c.Params("slug")
 	password := c.Query("password")
@@ -162,24 +178,46 @@ func (h *Handler) Access(c fiber.Ctx) error {
 		return err
 	}
 
+	resp := transferResponse(result.Transfer, result.FileIDs)
+	if result.FileDownloadCounts != nil {
+		resp["file_download_counts"] = result.FileDownloadCounts
+	}
+	if result.FileInfos != nil {
+		type fileInfoJSON struct {
+			ID           string `json:"id"`
+			Filename     string `json:"filename"`
+			ContentType  string `json:"content_type"`
+			SizeBytes    int64  `json:"size_bytes"`
+			DeleteReason string `json:"delete_reason"` // empty = available; see repository.FileInfo
+		}
+		infos := make([]fileInfoJSON, len(result.FileInfos))
+		for i, f := range result.FileInfos {
+			infos[i] = fileInfoJSON{ID: f.ID, Filename: f.Filename, ContentType: f.ContentType, SizeBytes: f.SizeBytes, DeleteReason: f.DeleteReason}
+		}
+		resp["files"] = infos
+	}
+
 	return c.JSON(fiber.Map{
-		"transfer": transferResponse(result.Transfer, result.FileIDs),
+		"transfer": resp,
 	})
 }
 
 func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 	m := fiber.Map{
-		"id":             t.ID,
-		"owner_id":       t.OwnerID,
-		"name":           t.Name,
-		"description":    t.Description,
-		"slug":           t.Slug,
-		"status":         t.Status(),
-		"max_downloads":  t.MaxDownloads,
-		"download_count": t.DownloadCount,
-		"is_revoked":     t.IsRevoked,
-		"has_password":   t.PasswordHash != "",
-		"created_at":     t.CreatedAt,
+		"id":               t.ID,
+		"owner_id":         t.OwnerID,
+		"sender_email":     t.SenderEmail,
+		"name":             t.Name,
+		"description":      t.Description,
+		"slug":             t.Slug,
+		"status":           t.Status(),
+		"max_downloads":    t.MaxDownloads,
+		"download_count":   t.DownloadCount,
+		"is_revoked":       t.IsRevoked,
+		"has_password":     t.PasswordHash != "",
+		"created_at":       t.CreatedAt,
+		"file_count":       t.FileCount,
+		"total_size_bytes": t.TotalSizeBytes,
 	}
 	if t.RecipientEmail != "" {
 		m["recipient_email"] = t.RecipientEmail
@@ -198,11 +236,13 @@ func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 // GET /api/v1/t/:slug/files/:fileId/download[?password=...]
 //
 // This endpoint:
-//  1. Validates the transfer (slug, optional password, expiry, revocation, download limit).
+//  1. Validates the transfer (slug, optional password, expiry, revocation).
 //  2. Confirms the requested file belongs to this transfer.
-//  3. Issues a short-lived internal service JWT and proxies to the Storage service
+//  3. Atomically checks and increments the per-file download counter. If the
+//     file's individual limit is reached the request is rejected with 403.
+//     This prevents downloading file A from consuming quota for file B.
+//  4. Issues a short-lived internal service JWT and proxies to the Storage service
 //     presign endpoint. No auth is required from the caller.
-//  4. Increments the download counter (this is the actual download action).
 //
 // Response: { "url": "<presigned MinIO URL>", "expires_in": 900 }
 func (h *Handler) DownloadURL(c fiber.Ctx) error {
@@ -210,31 +250,18 @@ func (h *Handler) DownloadURL(c fiber.Ctx) error {
 	fileID := c.Params("fileId")
 	password := c.Query("password")
 
-	// Use Access (which increments the download counter) — this is the real download event.
-	result, err := h.svc.Access(c.Context(), service.AccessParams{
+	// AttemptFileDownload validates the transfer, confirms file ownership, and
+	// atomically enforces the per-file download limit.
+	result, err := h.svc.AttemptFileDownload(c.Context(), service.AttemptFileDownloadParams{
 		Slug:     slug,
+		FileID:   fileID,
 		Password: password,
 	})
 	if err != nil {
 		return err
 	}
 
-	// Confirm the file belongs to this transfer.
-	found := false
-	for _, fid := range result.FileIDs {
-		if fid == fileID {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return apperrors.NotFound("file not found in this transfer")
-	}
-
-	// Issue a short-lived (30 s) service JWT with role=admin so the Storage
-	// service's existing presign endpoint accepts the request without needing the
-	// file owner's credentials.
-	// The transfer owner's UUID is used as the subject (presign doesn't create records).
+	// Issue a short-lived (30 s) service JWT so the Storage service accepts the request.
 	svcToken, err := h.issueServiceToken(result.Transfer.OwnerID)
 	if err != nil {
 		return apperrors.Internal("issue service token", err)
@@ -243,6 +270,9 @@ func (h *Handler) DownloadURL(c fiber.Ctx) error {
 	// Proxy the presign request to the Storage service.
 	presignURL, err := h.fetchPresignURL(c.Context(), fileID, svcToken)
 	if err != nil {
+		if errors.Is(err, errFileDeleted) {
+			return apperrors.NotFound("this file has been deleted and is no longer available for download")
+		}
 		return apperrors.Internal("get presigned url from storage service", err)
 	}
 
@@ -324,6 +354,10 @@ func (h *Handler) fetchPresignURL(ctx context.Context, fileID, token string) (st
 	defer resp.Body.Close() //nolint:errcheck
 
 	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		// File was deleted (storage service returns 404 for soft-deleted files).
+		return "", errFileDeleted
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("storage service returned %d: %s", resp.StatusCode, string(body))
 	}

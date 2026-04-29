@@ -1,13 +1,26 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   listUsers, createUser, updateUser, deleteUser, unlockUser, verifyUserEmail,
-  type AdminUser,
+  listStorageUsage,
+  type AdminUser, type StorageUserUsage,
 } from '../api/admin';
+import { useSortState } from '../hooks/useSort';
+import { SortHeader } from '../components/SortHeader';
+
+type UserSortKey = 'email' | 'role' | 'is_active' | 'created_at';
 
 const PAGE_SIZE = 50;
 
 function fmt(date: string) {
   return new Date(date).toLocaleDateString();
+}
+
+function fmtBytes(n: number): string {
+  if (n === 0) return '0 B';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
 function isLocked(user: AdminUser) {
@@ -161,25 +174,35 @@ export default function UsersPage() {
   const [saving, setSaving] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<AdminUser | null>(null);
+  const [storageMap, setStorageMap] = useState<Map<string, StorageUserUsage>>(new Map());
+  const sort = useSortState<UserSortKey>('created_at', 'desc', () => setPage(0));
 
   const load = useCallback(async (offset = 0) => {
     setLoading(true);
     setError('');
     try {
-      const res = await listUsers({
-        limit: PAGE_SIZE,
-        offset,
-        search: search.trim() || undefined,
-        role: roleFilter || undefined,
-      });
-      setUsers(res.users ?? []);
-      setTotal(res.total ?? 0);
+      const [usersRes, storageRes] = await Promise.all([
+        listUsers({
+          limit: PAGE_SIZE,
+          offset,
+          search: search.trim() || undefined,
+          role: roleFilter || undefined,
+          sort_by: sort.sortKey,
+          sort_dir: sort.sortDir,
+        }),
+        listStorageUsage({ limit: 200 }),
+      ]);
+      setUsers(usersRes.users ?? []);
+      setTotal(usersRes.total ?? 0);
+      const map = new Map<string, StorageUserUsage>();
+      for (const u of storageRes.usage ?? []) map.set(u.user_id, u);
+      setStorageMap(map);
     } catch (err: any) {
       setError(err.message);
     } finally {
       setLoading(false);
     }
-  }, [search, roleFilter]);
+  }, [search, roleFilter, sort.sortKey, sort.sortDir]);
 
   useEffect(() => {
     load(page * PAGE_SIZE);
@@ -280,10 +303,13 @@ export default function UsersPage() {
         />
       )}
 
-      <div className="row mb-16" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1 className="page-title" style={{ margin: 0 }}>Users</h1>
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">User Management</h1>
+          <p className="page-subtitle">Manage accounts, roles, and access controls</p>
+        </div>
         <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
-          + Create User
+          + Add User
         </button>
       </div>
 
@@ -327,12 +353,14 @@ export default function UsersPage() {
           <table>
             <thead>
               <tr>
-                <th>User</th>
-                <th>Role</th>
-                <th>Status</th>
+                <SortHeader label="User" sortKey="email" sort={sort} />
+                <SortHeader label="Role" sortKey="role" sort={sort} />
+                <SortHeader label="Status" sortKey="is_active" sort={sort} />
                 <th>Email</th>
                 <th>Logins</th>
-                <th>Joined</th>
+                <th>Storage</th>
+                <SortHeader label="Joined" sortKey="created_at" sort={sort} />
+                <th>Last Login</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -387,7 +415,23 @@ export default function UsersPage() {
                       <span className="badge badge-red" style={{ marginLeft: 4 }}>Locked</span>
                     )}
                   </td>
+                  <td className="text-sm">
+                    {(() => {
+                      const s = storageMap.get(u.id);
+                      if (!s) return <span style={{ color: '#aaa' }}>—</span>;
+                      return (
+                        <span title={`${s.file_count} file${s.file_count !== 1 ? 's' : ''}`}>
+                          {fmtBytes(s.total_bytes)}
+                        </span>
+                      );
+                    })()}
+                  </td>
                   <td className="text-sm">{fmt(u.created_at)}</td>
+                  <td className="text-sm">
+                    {u.last_login_at
+                      ? <span title={new Date(u.last_login_at).toLocaleString()}>{fmt(u.last_login_at)}</span>
+                      : <span style={{ color: '#aaa' }}>Never</span>}
+                  </td>
                   <td>
                     <div className="action-group">
                       <button

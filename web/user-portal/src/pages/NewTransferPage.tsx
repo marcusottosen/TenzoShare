@@ -2,6 +2,8 @@ import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import { listFiles, uploadFile, type FileRecord, type UploadProgress } from '../api/files';
 import { createTransfer } from '../api/transfers';
+import { pendingUploadStore } from '../stores/pendingUpload';
+import { pendingFileStore } from '../stores/pendingFileStore';
 
 function fmtBytes(n: number) {
   if (n < 1024) return `${n} B`;
@@ -45,6 +47,7 @@ export default function NewTransferPage() {
   // Upload state
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
+  const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Library (reuse) panel
@@ -65,12 +68,57 @@ export default function NewTransferPage() {
       .finally(() => setLoadingLibrary(false));
   }, [showLibrary]);
 
-  async function handlePickFiles(e: React.ChangeEvent<HTMLInputElement>) {
-    const picked = Array.from(e.target.files ?? []);
-    if (picked.length === 0) return;
-    if (fileInputRef.current) fileInputRef.current.value = '';
+  // Consume any files forwarded from the dashboard upload zone
+  useEffect(() => {
+    const pending = pendingUploadStore.get();
+    if (pending.length === 0) return;
+    pendingUploadStore.clear();
+    // Synthesize a fake ChangeEvent-like call by uploading directly
+    (async () => {
+      for (const file of pending) {
+        setUploading(true);
+        setUploadProgress(null);
+        try {
+          const record = await uploadFile(file, (p) => setUploadProgress(p));
+          setStaged((prev) =>
+            prev.some((s) => s.id === record.id)
+              ? prev
+              : [...prev, { id: record.id, filename: record.filename, size_bytes: record.size_bytes }],
+          );
+          setLibrary((prev) =>
+            prev.some((f) => f.id === record.id) ? prev : [record, ...prev],
+          );
+        } catch (err: any) {
+          setError(`Upload failed for "${file.name}": ${err.message}`);
+        } finally {
+          setUploading(false);
+          setUploadProgress(null);
+        }
+      }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    for (const file of picked) {
+  // Consume existing file records forwarded from My Files share button
+  useEffect(() => {
+    const preStaged = pendingFileStore.get();
+    if (preStaged.length === 0) return;
+    pendingFileStore.clear();
+    setStaged((prev) => {
+      const next = [...prev];
+      for (const f of preStaged) {
+        if (!next.some((s) => s.id === f.id)) {
+          next.push({ id: f.id, filename: f.filename, size_bytes: f.size_bytes });
+        }
+      }
+      return next;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function uploadFiles(files: File[]) {
+    if (files.length === 0) return;
+    for (const file of files) {
       setUploading(true);
       setUploadProgress(null);
       try {
@@ -80,7 +128,6 @@ export default function NewTransferPage() {
             ? prev
             : [...prev, { id: record.id, filename: record.filename, size_bytes: record.size_bytes }],
         );
-        // Keep library in sync so newly uploaded files show up if panel is open
         setLibrary((prev) =>
           prev.some((f) => f.id === record.id) ? prev : [record, ...prev],
         );
@@ -91,6 +138,20 @@ export default function NewTransferPage() {
         setUploadProgress(null);
       }
     }
+  }
+
+  async function handlePickFiles(e: React.ChangeEvent<HTMLInputElement>) {
+    const picked = Array.from(e.target.files ?? []);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    await uploadFiles(picked);
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDragOver(false);
+    if (uploading) return;
+    const dropped = Array.from(e.dataTransfer.files);
+    uploadFiles(dropped);
   }
 
   function removeStaged(id: string) {
@@ -137,15 +198,20 @@ export default function NewTransferPage() {
   const stagedIds = new Set(staged.map((f) => f.id));
 
   return (
-    <div className="page">
-      <h1 className="page-title">New Transfer</h1>
+    <div className="page page-wide" style={{ maxWidth: 860 }}>
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">New Transfer</h1>
+          <p className="page-subtitle">Upload files and create a shareable link</p>
+        </div>
+      </div>
       {error && <div className="alert alert-error">{error}</div>}
 
       <form onSubmit={handleSubmit}>
 
         {/* ── Transfer details ─────────────────────────────────── */}
         <div className="card">
-          <div className="card-title">Details</div>
+          <div className="card-header"><h2 className="card-title">Details</h2></div>
           <div className="form-group">
             <label>Name <span style={{ color: 'var(--color-danger)' }}>*</span></label>
             <input
@@ -175,28 +241,33 @@ export default function NewTransferPage() {
 
         {/* ── Files ────────────────────────────────────────────── */}
         <div className="card">
-          <div className="card-title">Files</div>
+          <div className="card-header"><h2 className="card-title">Files</h2></div>
+
+          {/* Hidden file input */}
+          <input
+            type="file"
+            multiple
+            ref={fileInputRef}
+            style={{ display: 'none' }}
+            onChange={handlePickFiles}
+          />
 
           {/* Upload drop-zone */}
           <div
+            onDragOver={(e) => { e.preventDefault(); if (!uploading) setDragOver(true); }}
+            onDragEnter={(e) => { e.preventDefault(); if (!uploading) setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={handleDrop}
             style={{
-              border: '2px dashed var(--color-border)',
+              border: `2px dashed ${dragOver ? 'var(--color-primary)' : 'var(--color-border)'}`,
               borderRadius: 8,
-              padding: '20px 16px',
+              padding: '32px 16px',
               textAlign: 'center',
-              cursor: uploading ? 'wait' : 'pointer',
-              background: 'var(--color-bg)',
-              marginBottom: staged.length > 0 ? 16 : 0,
+              background: dragOver ? 'var(--color-primary-light, rgba(99,102,241,0.05))' : 'var(--color-bg)',
+              transition: 'border-color 0.15s, background 0.15s',
+              marginBottom: 12,
             }}
-            onClick={() => !uploading && fileInputRef.current?.click()}
           >
-            <input
-              type="file"
-              multiple
-              ref={fileInputRef}
-              style={{ display: 'none' }}
-              onChange={handlePickFiles}
-            />
             {uploading ? (
               <>
                 <div className="text-sm" style={{ marginBottom: 8 }}>
@@ -209,11 +280,30 @@ export default function NewTransferPage() {
                 )}
               </>
             ) : (
-              <span className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
-                Click to select files
-              </span>
+              <>
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--color-text-muted)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: 8 }}>
+                  <polyline points="16 16 12 12 8 16"/>
+                  <line x1="12" y1="12" x2="12" y2="21"/>
+                  <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/>
+                </svg>
+                <div className="text-sm" style={{ color: 'var(--color-text-muted)', marginBottom: 2 }}>
+                  {dragOver ? 'Drop files here' : 'Drag & drop files here'}
+                </div>
+              </>
             )}
           </div>
+
+          {/* Click-to-select button */}
+          {!uploading && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => fileInputRef.current?.click()}
+              style={{ width: '100%', marginBottom: staged.length > 0 ? 16 : 0 }}
+            >
+              Click to select files
+            </button>
+          )}
 
           {/* Staged file list */}
           {staged.length > 0 && (
@@ -302,7 +392,7 @@ export default function NewTransferPage() {
 
         {/* ── Options ──────────────────────────────────────────── */}
         <div className="card">
-          <div className="card-title">Options</div>
+          <div className="card-header"><h2 className="card-title">Options</h2></div>
           <div className="row">
             <div className="col">
               <div className="form-group">

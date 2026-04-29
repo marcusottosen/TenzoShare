@@ -7,12 +7,30 @@ export interface FileRecord {
   content_type: string;
   size_bytes: number;
   created_at: string;
+  // Share / retention info (populated by the storage service when retention is configured)
+  share_count?: number;
+  active_shares?: number;
+  last_share_expires_at?: string | null;
+  /** ISO date after which this file becomes eligible for automatic deletion. Null = protected. */
+  auto_delete_at?: string | null;
 }
 
 export interface FileListResponse {
   files: FileRecord[];
   limit: number;
   offset: number;
+}
+
+export interface StorageUsage {
+  user_id: string;
+  file_count: number;
+  total_bytes: number;
+  quota_enabled: boolean;
+  quota_bytes_per_user: number;
+}
+
+export async function getMyUsage(): Promise<StorageUsage> {
+  return request<StorageUsage>('/files/usage');
 }
 
 export async function listFiles(limit = 50, offset = 0): Promise<FileListResponse> {
@@ -69,7 +87,7 @@ export async function uploadFile(
       } else {
         try {
           const err = JSON.parse(xhr.responseText);
-          reject(new Error(err.message ?? `HTTP ${xhr.status}`));
+          reject(new Error(err.error?.message ?? err.message ?? `HTTP ${xhr.status}`));
         } catch {
           reject(new Error(`HTTP ${xhr.status}`));
         }

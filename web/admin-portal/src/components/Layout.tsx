@@ -1,11 +1,127 @@
 import React from 'react';
-import { NavLink, useNavigate, Outlet } from 'react-router';
+import { NavLink, useNavigate, Outlet, useLocation } from 'react-router';
 import { useAuth } from '../stores/auth';
 import { logout as apiLogout } from '../api/auth';
+
+/* ── Icons ──────────────────────────────────────────────────── */
+function IconDashboard() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+      <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+    </svg>
+  );
+}
+function IconUsers() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+      <circle cx="9" cy="7" r="4"/>
+      <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+      <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+    </svg>
+  );
+}
+function IconTransfer() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+      <polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+    </svg>
+  );
+}
+function IconAudit() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+      <polyline points="14 2 14 8 20 8"/>
+      <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+      <polyline points="10 9 9 9 8 9"/>
+    </svg>
+  );
+}
+function IconKey() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+    </svg>
+  );
+}
+function IconLogOut() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+      <polyline points="16 17 21 12 16 7"/>
+      <line x1="21" y1="12" x2="9" y2="12"/>
+    </svg>
+  );
+}
+function IconSearch() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+    </svg>
+  );
+}
+function IconShield() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+    </svg>
+  );
+}
+function IconStorage() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <ellipse cx="12" cy="5" rx="9" ry="3"/>
+      <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+      <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+    </svg>
+  );
+}
+function IconClock() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10"/>
+      <polyline points="12 6 12 12 16 14"/>
+    </svg>
+  );
+}
+
+const PAGE_TITLES: Record<string, string> = {
+  '/': 'System Overview',
+  '/users': 'User Management',
+  '/transfers': 'Transfers',
+  '/audit': 'Audit Logs',
+  '/audit/settings': 'Log Retention',
+  '/apikeys': 'API Keys',
+  '/storage': 'Storage Settings',
+  '/storage/files': 'Storage Files',
+  '/storage/insights': 'Storage Insights',
+};
+
+function getInitials(email?: string): string {
+  if (!email) return 'A';
+  const parts = email.split('@')[0].split(/[._-]/);
+  return parts.length > 1
+    ? (parts[0][0] + parts[1][0]).toUpperCase()
+    : email.slice(0, 2).toUpperCase();
+}
+
+function getDisplayName(email?: string): string {
+  if (!email) return 'Admin';
+  const local = email.split('@')[0];
+  const parts = local.split(/[._-]/);
+  return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
+}
 
 export default function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+
+
+  const pageTitle = PAGE_TITLES[location.pathname] ?? 'Admin';
 
   async function handleLogout() {
     try { await apiLogout(); } catch { /* ignore */ }
@@ -13,30 +129,82 @@ export default function Layout() {
     navigate('/login');
   }
 
+  const initials = getInitials(user?.email);
+  const displayName = getDisplayName(user?.email);
+
   return (
     <div className="app-shell">
+      {/* ── Dark navy sidebar ────────────────────────────────── */}
       <nav className="sidebar">
-        <div className="sidebar-title">TenzoShare</div>
-        <div className="sidebar-subtitle">ADMIN</div>
-        <NavLink to="/" end className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
-          Dashboard
-        </NavLink>
-        <NavLink to="/users" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
-          Users
-        </NavLink>
-        <NavLink to="/transfers" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
-          Transfers
-        </NavLink>
-        <NavLink to="/audit" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
-          Audit Logs
-        </NavLink>
-        <NavLink to="/apikeys" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
-          API Keys
-        </NavLink>
-        <div className="sidebar-spacer" />
-        <div className="sidebar-user">{user?.user_id?.slice(0, 8)}… ({user?.role})</div>
-        <button className="btn-link" onClick={handleLogout}>Logout</button>
+        <div className="sidebar-header">
+          <div className="sidebar-logo">
+            <IconShield />
+          </div>
+          <div>
+            <div className="sidebar-title">TenzoAdmin</div>
+            <div className="sidebar-subtitle">Admin Portal</div>
+          </div>
+        </div>
+
+        <div className="sidebar-nav">
+          <div className="sidebar-section-label">Overview</div>
+          <NavLink to="/" end className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            <IconDashboard /> System Overview
+          </NavLink>
+
+          <div className="sidebar-section-label">Management</div>
+          <NavLink to="/users" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            <IconUsers /> User Management
+          </NavLink>
+          <NavLink to="/transfers" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            <IconTransfer /> Transfers
+          </NavLink>
+          <NavLink to="/apikeys" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            <IconKey /> API Keys
+          </NavLink>
+
+          <div className="sidebar-section-label">Security</div>
+          <NavLink to="/audit" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            <IconAudit /> Audit Logs
+          </NavLink>
+          <NavLink to="/audit/settings" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            <IconClock /> Log Retention
+          </NavLink>
+
+          <div className="sidebar-section-label">Configuration</div>
+          <NavLink to="/storage" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            <IconStorage /> Storage Settings
+          </NavLink>
+          <NavLink to="/storage/files" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'} style={{ paddingLeft: 28 }}>
+            <IconStorage /> File Management
+          </NavLink>
+          <NavLink to="/storage/insights" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'} style={{ paddingLeft: 28 }}>
+            <IconStorage /> Storage Insights
+          </NavLink>
+        </div>
+
+        <div className="sidebar-footer">
+          <div className="sidebar-user-row">
+            <div className="sidebar-avatar">{initials}</div>
+            <div className="sidebar-user-info">
+              <div className="sidebar-user-name">{displayName}</div>
+              <div className="sidebar-user-role">{user?.role ?? 'admin'}</div>
+            </div>
+          </div>
+          <button className="sidebar-logout-btn" onClick={handleLogout}>
+            <IconLogOut /> Sign out
+          </button>
+        </div>
       </nav>
+
+      {/* ── Navbar ──────────────────────────────────────────── */}
+      <header className="navbar">
+        <div className="navbar-breadcrumb">{pageTitle}</div>
+
+        <div className="navbar-avatar">{initials}</div>
+      </header>
+
+      {/* ── Main content ────────────────────────────────────── */}
       <main className="main-content">
         <Outlet />
       </main>

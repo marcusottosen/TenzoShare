@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	stdlog "log"
+	"math"
 	"os"
 	"os/signal"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/tenzoshare/tenzoshare/services/storage/internal/backends"
+	"github.com/tenzoshare/tenzoshare/services/storage/internal/cleanup"
 	"github.com/tenzoshare/tenzoshare/services/storage/internal/handlers"
 	"github.com/tenzoshare/tenzoshare/services/storage/internal/repository"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/config"
@@ -67,16 +69,22 @@ func main() {
 
 	h := handlers.New(repo, minioBackend, js, log, cfg.App.EncryptionKey)
 
+	// ── Background retention cleanup worker ───────────────────────────────────
+	cleanupWorker := cleanup.New(repo, minioBackend, log)
+	go cleanupWorker.Run(ctx)
+
 	pubKey, err := jwtkeys.ParsePublicKey(cfg.JWT.PublicKeyPEM)
 	if err != nil {
 		log.Fatal("failed to parse JWT public key", zap.Error(err))
 	}
 
 	app := fiber.New(fiber.Config{
-		AppName:      "tenzoshare-storage",
-		ReadTimeout:  cfg.Server.ReadTimeout,
-		WriteTimeout: cfg.Server.WriteTimeout,
-		ErrorHandler: middleware.ErrorHandler,
+		AppName:           "tenzoshare-storage",
+		ReadTimeout:       cfg.Server.ReadTimeout,
+		WriteTimeout:      cfg.Server.WriteTimeout,
+		ErrorHandler:      middleware.ErrorHandler,
+		BodyLimit:         math.MaxInt, // no HTTP-level body size limit; quota enforced in handler
+		StreamRequestBody: true,        // stream large multipart bodies to disk instead of buffering in RAM
 	})
 
 	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
@@ -93,6 +101,7 @@ func main() {
 	auth := middleware.JWTAuth(pubKey)
 	v1 := app.Group("/api/v1/files") // no group-level middleware — Fiber's Group.Use applies prefix-wide
 	v1.Post("/", auth, h.Upload)
+	v1.Get("/usage", auth, h.GetMyUsage)
 	v1.Get("/", auth, h.ListFiles)
 	v1.Get("/:id", auth, h.GetFile)
 	v1.Delete("/:id", auth, h.DeleteFile)

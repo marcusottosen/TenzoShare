@@ -3,17 +3,13 @@ import type { FileRequestPublic } from '../types';
 import { RequestApiError } from '../types';
 import { fetchRequest, uploadFile } from '../api/requests';
 
-// ---------------------------------------------------------------------------
-// Slug resolution — extract from /r/<slug>
-// ---------------------------------------------------------------------------
+// ─── Slug resolution ───────────────────────────────────────────────────────
 function resolveSlug(): string | null {
   const m = window.location.pathname.match(/\/r\/([^/]+)/);
   return m ? m[1] : null;
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// ─── Helpers ───────────────────────────────────────────────────────────────
 function fmtBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
   const k = 1024;
@@ -23,204 +19,137 @@ function fmtBytes(bytes: number): string {
 }
 
 function fmtDate(iso: string): string {
-  return new Date(iso).toLocaleString();
+  return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-// ---------------------------------------------------------------------------
-// File upload state machine
-// ---------------------------------------------------------------------------
+// ─── File upload state ─────────────────────────────────────────────────────
 type FileStatus = 'pending' | 'uploading' | 'done' | 'error';
 
 interface FileEntry {
   id: string;
   file: File;
   status: FileStatus;
-  progress: number; // 0–100
+  progress: number;
   error?: string;
 }
 
-// ---------------------------------------------------------------------------
-// Styles
-// ---------------------------------------------------------------------------
-const styles = {
-  page: {
-    minHeight: '100vh',
-    display: 'flex',
-    flexDirection: 'column' as const,
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-    padding: '48px 16px',
-    background: '#f8f9fa',
-  },
-  card: {
-    background: '#fff',
-    borderRadius: 12,
-    boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
-    padding: 32,
-    width: '100%',
-    maxWidth: 560,
-  },
-  logo: {
-    fontSize: 13,
-    fontWeight: 600,
-    letterSpacing: '0.08em',
-    color: '#6c757d',
-    textTransform: 'uppercase' as const,
-    marginBottom: 24,
-  },
-  heading: {
-    fontSize: 22,
-    fontWeight: 700,
-    margin: '0 0 8px',
-    color: '#111',
-  },
-  description: {
-    fontSize: 15,
-    color: '#555',
-    margin: '0 0 20px',
-    lineHeight: 1.5,
-  },
-  metaRow: {
-    display: 'flex',
-    flexWrap: 'wrap' as const,
-    gap: 8,
-    marginBottom: 24,
-  },
-  chip: {
-    background: '#f1f3f5',
-    borderRadius: 20,
-    padding: '3px 10px',
-    fontSize: 12,
-    color: '#495057',
-  },
-  dropZone: (active: boolean) => ({
-    border: `2px dashed ${active ? '#4263eb' : '#ced4da'}`,
-    borderRadius: 8,
-    padding: '32px 16px',
-    textAlign: 'center' as const,
-    cursor: 'pointer',
-    transition: 'border-color 0.15s',
-    background: active ? '#edf2ff' : '#fafafa',
-    marginBottom: 16,
-  }),
-  dropText: {
-    fontSize: 14,
-    color: '#868e96',
-    margin: 0,
-  },
-  dropHint: {
-    fontSize: 12,
-    color: '#adb5bd',
-    marginTop: 4,
-  },
-  fileList: {
-    listStyle: 'none',
-    padding: 0,
-    margin: '0 0 16px',
-  },
-  fileItem: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
-    padding: '8px 10px',
-    borderRadius: 6,
-    background: '#f8f9fa',
-    marginBottom: 6,
-    fontSize: 13,
-  },
-  fileName: {
-    flex: 1,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap' as const,
-    color: '#212529',
-  },
-  fileSize: {
-    color: '#868e96',
-    flexShrink: 0,
-  },
-  progressBar: (pct: number, status: FileStatus) => ({
-    height: 3,
-    background: status === 'error' ? '#fa5252' : status === 'done' ? '#40c057' : '#4263eb',
-    borderRadius: 2,
-    width: `${pct}%`,
-    transition: 'width 0.2s',
-    marginTop: 4,
-  }),
-  removeBtn: {
-    background: 'none',
-    border: 'none',
-    cursor: 'pointer',
-    color: '#adb5bd',
-    fontSize: 16,
-    padding: '0 2px',
-    lineHeight: 1,
-    flexShrink: 0,
-  },
-  field: {
-    marginBottom: 14,
-  },
-  label: {
-    display: 'block',
-    fontSize: 13,
-    fontWeight: 500,
-    color: '#495057',
-    marginBottom: 4,
-  },
-  input: {
-    width: '100%',
-    border: '1px solid #ced4da',
-    borderRadius: 6,
-    padding: '8px 10px',
-    fontSize: 14,
-    fontFamily: 'inherit',
-    outline: 'none',
-    boxSizing: 'border-box' as const,
-  },
-  btnPrimary: (disabled: boolean) => ({
-    display: 'block',
-    width: '100%',
-    padding: '11px 0',
-    background: disabled ? '#a5b4fc' : '#4263eb',
-    color: '#fff',
-    border: 'none',
-    borderRadius: 7,
-    fontSize: 15,
-    fontWeight: 600,
-    cursor: disabled ? 'not-allowed' : 'pointer',
-    marginTop: 8,
-  }),
-  alert: (type: 'error' | 'success') => ({
-    padding: '10px 14px',
-    borderRadius: 6,
-    fontSize: 14,
-    marginBottom: 16,
-    background: type === 'error' ? '#fff5f5' : '#ebfbee',
-    color: type === 'error' ? '#c92a2a' : '#2b8a3e',
-    border: `1px solid ${type === 'error' ? '#ffc9c9' : '#b2f2bb'}`,
-  }),
-  muted: {
-    color: '#868e96',
-    fontSize: 14,
-    margin: 0,
-  },
-  expiredCard: {
-    textAlign: 'center' as const,
-    padding: '40px 24px',
-  },
-  expiredIcon: {
-    fontSize: 40,
-    marginBottom: 12,
-  },
-};
+// ─── Icon components ───────────────────────────────────────────────────────
 
-// ---------------------------------------------------------------------------
-// Main component
-// ---------------------------------------------------------------------------
+function IconBolt() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+    </svg>
+  );
+}
+
+function IconUpload() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="16 16 12 12 8 16" />
+      <line x1="12" y1="12" x2="12" y2="21" />
+      <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
+    </svg>
+  );
+}
+
+function IconFile() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+    </svg>
+  );
+}
+
+function IconCheck() {
+  return (
+    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+      <polyline points="22 4 12 14.01 9 11.01" />
+    </svg>
+  );
+}
+
+function IconClock() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <polyline points="12 6 12 12 16 14" />
+    </svg>
+  );
+}
+
+function IconLock() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </svg>
+  );
+}
+
+function IconAlert() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="8" x2="12" y2="12" />
+      <line x1="12" y1="16" x2="12.01" y2="16" />
+    </svg>
+  );
+}
+
+function IconShield() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    </svg>
+  );
+}
+
+function IconClose() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  );
+}
+
+// ─── Layout ────────────────────────────────────────────────────────────────
+
+function Layout({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="tenzo-page">
+      <div className="tenzo-card">
+        <div className="tenzo-brand">
+          <div className="tenzo-brand-icon">
+            <IconBolt />
+          </div>
+          <span className="tenzo-brand-name">TenzoShare</span>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ─── Footer ────────────────────────────────────────────────────────────────
+
+function TenzoFooter() {
+  return (
+    <div className="tenzo-footer">
+      <IconShield />
+      Files are encrypted and delivered securely via TenzoShare
+    </div>
+  );
+}
+
+// ─── Main component ────────────────────────────────────────────────────────
+
 export default function RequestPage() {
   const slug = resolveSlug();
 
-  // View state
   type View =
     | { kind: 'loading' }
     | { kind: 'error'; message: string; status?: number }
@@ -236,7 +165,6 @@ export default function RequestPage() {
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Fetch request metadata on mount
   useEffect(() => {
     if (!slug) {
       setView({ kind: 'error', message: 'No request link found. Please check the URL.' });
@@ -257,7 +185,6 @@ export default function RequestPage() {
       });
   }, [slug]);
 
-  // Add files helper
   const addFiles = useCallback((incoming: FileList | File[]) => {
     const arr = Array.from(incoming);
     const entries: FileEntry[] = arr.map((f) => ({
@@ -269,7 +196,6 @@ export default function RequestPage() {
     setFiles((prev) => [...prev, ...entries]);
   }, []);
 
-  // Drag & drop handlers
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
@@ -279,11 +205,7 @@ export default function RequestPage() {
     [addFiles],
   );
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(true);
-  };
-
+  const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); setDragOver(true); };
   const handleDragLeave = () => setDragOver(false);
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -295,7 +217,6 @@ export default function RequestPage() {
     setFiles((prev) => prev.filter((f) => f.id !== id));
   };
 
-  // Submit handler — uploads files one at a time
   const handleSubmit = async () => {
     if (!slug || files.length === 0) return;
     setSubmitting(true);
@@ -307,7 +228,6 @@ export default function RequestPage() {
       setFiles((prev) =>
         prev.map((f) => (f.id === entry.id ? { ...f, status: 'uploading', progress: 0 } : f)),
       );
-
       try {
         await uploadFile(slug, entry.file, submitterName, message, (pct) => {
           setFiles((prev) =>
@@ -330,71 +250,73 @@ export default function RequestPage() {
     if (allOk) setView({ kind: 'success' });
   };
 
-  // ---------------------------------------------------------------------------
-  // Render
-  // ---------------------------------------------------------------------------
+  // ─── Render ──────────────────────────────────────────────────────────────
 
   if (view.kind === 'loading') {
     return (
-      <div style={styles.page}>
-        <div style={styles.card}>
-          <div style={styles.logo}>TenzoShare</div>
-          <p style={styles.muted}>Loading…</p>
+      <Layout>
+        <div className="state-center">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, justifyContent: 'center' }}>
+            <span className="spinner" />
+            <span className="tenzo-muted">Loading request…</span>
+          </div>
         </div>
-      </div>
+      </Layout>
     );
   }
 
   if (view.kind === 'error') {
     return (
-      <div style={styles.page}>
-        <div style={styles.card}>
-          <div style={styles.logo}>TenzoShare</div>
-          <div style={styles.alert('error')}>
-            {view.status === 404
-              ? 'This file request does not exist.'
-              : view.message}
+      <Layout>
+        <div className="state-center">
+          <div className="state-icon state-icon-error">
+            <IconAlert />
           </div>
+          <h2 className="tenzo-title">
+            {view.status === 404 ? 'Request not found' : 'Something went wrong'}
+          </h2>
+          <p className="tenzo-subtitle">{view.message}</p>
         </div>
-      </div>
+      </Layout>
     );
   }
 
   if (view.kind === 'closed') {
+    const isExpired = view.reason === 'expired';
     return (
-      <div style={styles.page}>
-        <div style={styles.card}>
-          <div style={styles.logo}>TenzoShare</div>
-          <div style={styles.expiredCard}>
-            <div style={styles.expiredIcon}>{view.reason === 'expired' ? '⌛' : '🔒'}</div>
-            <h2 style={{ ...styles.heading, marginBottom: 8 }}>
-              {view.reason === 'expired' ? 'This request has expired' : 'This request is closed'}
-            </h2>
-            <p style={styles.muted}>
-              {view.reason === 'expired'
-                ? 'The upload deadline has passed. Please contact the requester for a new link.'
-                : 'This request has been closed by the requester.'}
-            </p>
+      <Layout>
+        <div className="state-center">
+          <div className={`state-icon ${isExpired ? 'state-icon-warn' : 'state-icon-error'}`}>
+            {isExpired ? <IconClock /> : <IconLock />}
           </div>
+          <h2 className="tenzo-title">
+            {isExpired ? 'This request has expired' : 'This request is closed'}
+          </h2>
+          <p className="tenzo-subtitle">
+            {isExpired
+              ? 'The upload deadline has passed. Please contact the requester for a new link.'
+              : 'This request has been closed by the requester.'}
+          </p>
         </div>
-      </div>
+        <TenzoFooter />
+      </Layout>
     );
   }
 
   if (view.kind === 'success') {
     return (
-      <div style={styles.page}>
-        <div style={styles.card}>
-          <div style={styles.logo}>TenzoShare</div>
-          <div style={{ textAlign: 'center', padding: '32px 0' }}>
-            <div style={{ fontSize: 48, marginBottom: 16 }}>✅</div>
-            <h2 style={{ ...styles.heading, marginBottom: 8 }}>Files submitted!</h2>
-            <p style={styles.muted}>
-              Your files have been uploaded successfully. The requester has been notified.
-            </p>
+      <Layout>
+        <div className="state-center">
+          <div className="state-icon state-icon-teal">
+            <IconCheck />
           </div>
+          <h2 className="tenzo-title">Files submitted!</h2>
+          <p className="tenzo-subtitle">
+            Your files have been uploaded successfully. The requester has been notified.
+          </p>
         </div>
-      </div>
+        <TenzoFooter />
+      </Layout>
     );
   }
 
@@ -402,127 +324,165 @@ export default function RequestPage() {
   const hasFiles = files.length > 0;
   const allDone = hasFiles && files.every((f) => f.status === 'done');
   const isUploading = files.some((f) => f.status === 'uploading');
+  const pendingCount = files.filter((f) => f.status !== 'done').length;
   const canSubmit = hasFiles && !submitting && !allDone && !isUploading;
 
   return (
-    <div style={styles.page}>
-      <div style={styles.card}>
-        <div style={styles.logo}>TenzoShare</div>
+    <Layout>
+      <h2 className="tenzo-title">{req.name}</h2>
+      {req.description && (
+        <p className="tenzo-subtitle">{req.description}</p>
+      )}
 
-        <h1 style={styles.heading}>{req.name}</h1>
-        {req.description && <p style={styles.description}>{req.description}</p>}
+      {/* Metadata chips */}
+      <div className="chips-row">
+        <span className="chip">Expires {fmtDate(req.expires_at)}</span>
+        {req.max_size_mb > 0 && (
+          <span className="chip">Max {req.max_size_mb} MB per file</span>
+        )}
+        {req.max_files > 0 && (
+          <span className="chip">Up to {req.max_files} file{req.max_files !== 1 ? 's' : ''}</span>
+        )}
+        {req.allowed_types && (
+          <span className="chip">{req.allowed_types}</span>
+        )}
+      </div>
 
-        <div style={styles.metaRow}>
-          <span style={styles.chip}>⏰ Expires {fmtDate(req.expires_at)}</span>
-          {req.max_size_mb > 0 && (
-            <span style={styles.chip}>📦 Max {req.max_size_mb} MB per file</span>
-          )}
-          {req.max_files > 0 && (
-            <span style={styles.chip}>📁 Max {req.max_files} file{req.max_files !== 1 ? 's' : ''}</span>
-          )}
-          {req.allowed_types && (
-            <span style={styles.chip}>🗂 {req.allowed_types}</span>
-          )}
+      {/* Drop zone */}
+      <div
+        className={`drop-zone${dragOver ? ' active' : ''}`}
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onClick={() => fileInputRef.current?.click()}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => e.key === 'Enter' && fileInputRef.current?.click()}
+        aria-label="Upload files"
+      >
+        <div className="drop-zone-icon">
+          <IconUpload />
         </div>
+        <p className="drop-zone-text">
+          {dragOver ? 'Drop files here' : 'Drag & drop files here, or click to browse'}
+        </p>
+        <p className="drop-zone-hint">
+          {req.max_size_mb > 0 ? `Up to ${req.max_size_mb} MB per file` : 'No file size limit'}
+        </p>
+      </div>
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        style={{ display: 'none' }}
+        onChange={handleFileInput}
+        aria-hidden="true"
+      />
 
-        {/* Drop zone */}
-        <div
-          style={styles.dropZone(dragOver)}
-          onDrop={handleDrop}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onClick={() => fileInputRef.current?.click()}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => e.key === 'Enter' && fileInputRef.current?.click()}
-        >
-          <p style={styles.dropText}>Drag & drop files here, or click to browse</p>
-          <p style={styles.dropHint}>
-            {req.max_size_mb > 0 ? `Up to ${req.max_size_mb} MB per file` : 'No size limit'}
-          </p>
-        </div>
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          style={{ display: 'none' }}
-          onChange={handleFileInput}
-        />
-
-        {/* File list */}
-        {files.length > 0 && (
-          <ul style={styles.fileList}>
-            {files.map((entry) => (
-              <li key={entry.id} style={styles.fileItem}>
-                <span style={styles.fileName}>{entry.file.name}</span>
-                <span style={styles.fileSize}>{fmtBytes(entry.file.size)}</span>
-                {entry.status === 'done' && <span style={{ color: '#40c057' }}>✓</span>}
-                {entry.status === 'error' && (
-                  <span style={{ color: '#fa5252' }} title={entry.error}>✗</span>
+      {/* File list */}
+      {files.length > 0 && (
+        <ul className="file-list">
+          {files.map((entry) => (
+            <li key={entry.id} className="file-item">
+              <div className="file-item-row">
+                <div className="file-icon">
+                  <IconFile />
+                </div>
+                <span className="file-name">{entry.file.name}</span>
+                <span className="file-size">{fmtBytes(entry.file.size)}</span>
+                {entry.status === 'done' && (
+                  <span className="file-status-done" aria-label="Uploaded">✓</span>
+                )}
+                {entry.status === 'uploading' && (
+                  <span className="spinner" style={{ width: 14, height: 14, borderWidth: 1.5 }} />
                 )}
                 {entry.status === 'pending' && (
                   <button
-                    style={styles.removeBtn}
+                    className="remove-btn"
                     onClick={() => removeFile(entry.id)}
-                    title="Remove"
+                    title="Remove file"
                     type="button"
+                    aria-label={`Remove ${entry.file.name}`}
                   >
-                    ×
+                    <IconClose />
                   </button>
                 )}
-                {(entry.status === 'uploading' || entry.status === 'done' || entry.status === 'error') && (
-                  <div style={{ width: '100%', marginTop: 4 }}>
-                    <div style={styles.progressBar(entry.progress, entry.status)} />
-                  </div>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
+              </div>
+              {entry.status === 'error' && entry.error && (
+                <div className="file-status-error">{entry.error}</div>
+              )}
+              {(entry.status === 'uploading' || entry.status === 'done' || entry.status === 'error') && (
+                <div className="progress-bar-wrap">
+                  <div
+                    className={`progress-bar progress-bar-${entry.status}`}
+                    style={{ width: `${entry.progress}%` }}
+                    role="progressbar"
+                    aria-valuenow={entry.progress}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                  />
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
 
-        {/* Optional fields */}
-        <div style={styles.field}>
-          <label style={styles.label} htmlFor="submitter-name">
-            Your name <span style={{ color: '#adb5bd', fontWeight: 400 }}>(optional)</span>
-          </label>
-          <input
-            id="submitter-name"
-            type="text"
-            style={styles.input}
-            value={submitterName}
-            onChange={(e) => setSubmitterName(e.target.value)}
-            placeholder="e.g. Jane Smith"
-            maxLength={100}
-          />
-        </div>
+      <hr className="tenzo-divider" />
 
-        <div style={styles.field}>
-          <label style={styles.label} htmlFor="message">
-            Message <span style={{ color: '#adb5bd', fontWeight: 400 }}>(optional)</span>
-          </label>
-          <textarea
-            id="message"
-            style={{ ...styles.input, resize: 'vertical', minHeight: 72 }}
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            placeholder="Add a note for the requester…"
-            maxLength={500}
-          />
-        </div>
-
-        <button
-          type="button"
-          style={styles.btnPrimary(!canSubmit)}
-          onClick={handleSubmit}
-          disabled={!canSubmit}
-        >
-          {isUploading
-            ? 'Uploading…'
-            : allDone
-            ? 'All files uploaded ✓'
-            : `Submit ${files.length > 0 ? `${files.filter((f) => f.status !== 'done').length} file${files.filter((f) => f.status !== 'done').length !== 1 ? 's' : ''}` : 'files'}`}
-        </button>
+      {/* Optional fields */}
+      <div className="form-group">
+        <label htmlFor="submitter-name">
+          Your name <span className="form-label-optional">(optional)</span>
+        </label>
+        <input
+          id="submitter-name"
+          type="text"
+          className="tenzo-input"
+          value={submitterName}
+          onChange={(e) => setSubmitterName(e.target.value)}
+          placeholder="e.g. Jane Smith"
+          maxLength={100}
+        />
       </div>
-    </div>
+
+      <div className="form-group">
+        <label htmlFor="req-message">
+          Message <span className="form-label-optional">(optional)</span>
+        </label>
+        <textarea
+          id="req-message"
+          className="tenzo-input"
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          placeholder="Add a note for the requester…"
+          maxLength={500}
+          rows={3}
+        />
+      </div>
+
+      <button
+        type="button"
+        className="btn btn-primary btn-full btn-lg"
+        style={{ marginTop: 8 }}
+        onClick={handleSubmit}
+        disabled={!canSubmit}
+      >
+        {isUploading ? (
+          <>
+            <span className="spinner" style={{ width: 14, height: 14, borderWidth: 2, borderColor: 'rgba(255,255,255,0.3)', borderTopColor: '#fff' }} />
+            Uploading…
+          </>
+        ) : allDone ? (
+          'All files uploaded ✓'
+        ) : (
+          `Submit ${pendingCount > 0 ? `${pendingCount} file${pendingCount !== 1 ? 's' : ''}` : 'files'}`
+        )}
+      </button>
+
+      <TenzoFooter />
+    </Layout>
   );
 }
+
+

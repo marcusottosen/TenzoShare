@@ -6,6 +6,7 @@ export interface Transfer {
   name: string;
   description: string;
   slug: string;
+  status?: 'active' | 'exhausted' | 'expired' | 'revoked';
   recipient_email?: string;
   max_downloads: number;
   download_count: number;
@@ -14,6 +15,8 @@ export interface Transfer {
   expires_at?: string;
   created_at: string;
   file_ids?: string[];
+  file_count?: number;
+  total_size_bytes?: number;
 }
 
 export interface TransferListResponse {

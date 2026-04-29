@@ -12,6 +12,7 @@ export interface FileRequest {
   is_active: boolean;
   is_expired: boolean;
   created_at: string;
+  submission_count?: number;
   submissions?: Submission[];
 }
 

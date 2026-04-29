@@ -16,26 +16,44 @@ import (
 
 // AuditLog is a single audit event row.
 type AuditLog struct {
-	ID        string          `json:"id"`
-	Source    string          `json:"source"`
-	Action    string          `json:"action"`
-	UserID    *string         `json:"user_id"`
-	ClientIP  *string         `json:"client_ip"`
-	Subject   string          `json:"subject"`
-	Payload   json.RawMessage `json:"payload"`
-	Success   bool            `json:"success"`
-	CreatedAt time.Time       `json:"created_at"`
+	ID         string          `json:"id"`
+	Source     string          `json:"source"`
+	Action     string          `json:"action"`
+	UserID     *string         `json:"user_id"`
+	ActorEmail *string         `json:"actor_email"`
+	ClientIP   *string         `json:"client_ip"`
+	Subject    string          `json:"subject"`
+	Payload    json.RawMessage `json:"payload"`
+	Success    bool            `json:"success"`
+	CreatedAt  time.Time       `json:"created_at"`
 }
 
 // ListFilter holds optional query filters for ListEvents.
 type ListFilter struct {
-	UserID    string
-	Source    string
+	UserIDs   []string
+	Sources   []string
 	Action    string
 	StartTime *time.Time
 	EndTime   *time.Time
 	Limit     int
 	Offset    int
+	SortBy    string
+	SortDir   string
+}
+
+// auditOrderClause returns a safe ORDER BY expression.
+func auditOrderClause(sortBy, sortDir string) string {
+	if sortDir != "asc" {
+		sortDir = "desc"
+	}
+	switch sortBy {
+	case "source":
+		return "source " + sortDir
+	case "action":
+		return "action " + sortDir
+	default:
+		return "created_at " + sortDir
+	}
 }
 
 // Repository handles audit_logs persistence.
@@ -82,33 +100,39 @@ func (r *Repository) List(ctx context.Context, f ListFilter) ([]AuditLog, int, e
 		argIdx++
 	}
 
-	if f.UserID != "" {
-		addCondition("user_id = $"+itoa(argIdx), f.UserID)
+	if len(f.UserIDs) == 1 {
+		addCondition("al.user_id = $"+itoa(argIdx), f.UserIDs[0])
+	} else if len(f.UserIDs) > 1 {
+		addCondition("al.user_id = ANY($"+itoa(argIdx)+")", f.UserIDs)
 	}
-	if f.Source != "" {
-		addCondition("source = $"+itoa(argIdx), f.Source)
+	if len(f.Sources) == 1 {
+		addCondition("al.source = $"+itoa(argIdx), f.Sources[0])
+	} else if len(f.Sources) > 1 {
+		addCondition("al.source = ANY($"+itoa(argIdx)+")", f.Sources)
 	}
 	if f.Action != "" {
-		addCondition("action LIKE $"+itoa(argIdx), f.Action+"%")
+		addCondition("al.action LIKE $"+itoa(argIdx), f.Action+"%")
 	}
 	if f.StartTime != nil {
-		addCondition("created_at >= $"+itoa(argIdx), *f.StartTime)
+		addCondition("al.created_at >= $"+itoa(argIdx), *f.StartTime)
 	}
 	if f.EndTime != nil {
-		addCondition("created_at < $"+itoa(argIdx), *f.EndTime)
+		addCondition("al.created_at < $"+itoa(argIdx), *f.EndTime)
 	}
+
+	fromClause := "FROM audit.audit_logs al LEFT JOIN auth.users u ON al.user_id = u.id "
 
 	// Count query
 	var total int
-	countSQL := "SELECT count(*) FROM audit.audit_logs " + where
+	countSQL := "SELECT count(*) " + fromClause + where
 	if err := r.db.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
 		return nil, 0, apperrors.Internal("count audit logs", err)
 	}
 
 	// Data query
-	dataSQL := "SELECT id, source, action, user_id, client_ip, subject, payload, success, created_at " +
-		"FROM audit.audit_logs " + where +
-		" ORDER BY created_at DESC" +
+	dataSQL := "SELECT al.id, al.source, al.action, al.user_id, u.email, al.client_ip, al.subject, al.payload, al.success, al.created_at " +
+		fromClause + where +
+		" ORDER BY " + auditOrderClause(f.SortBy, f.SortDir) +
 		" LIMIT $" + itoa(argIdx) + " OFFSET $" + itoa(argIdx+1)
 	args = append(args, f.Limit, f.Offset)
 
@@ -125,7 +149,7 @@ func (r *Repository) List(ctx context.Context, f ListFilter) ([]AuditLog, int, e
 	for rows.Next() {
 		var l AuditLog
 		if err := rows.Scan(
-			&l.ID, &l.Source, &l.Action, &l.UserID, &l.ClientIP,
+			&l.ID, &l.Source, &l.Action, &l.UserID, &l.ActorEmail, &l.ClientIP,
 			&l.Subject, &l.Payload, &l.Success, &l.CreatedAt,
 		); err != nil {
 			return nil, 0, apperrors.Internal("scan audit log row", err)

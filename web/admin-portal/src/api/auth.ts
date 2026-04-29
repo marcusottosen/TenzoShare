@@ -16,6 +16,7 @@ export interface LoginResult {
 
 export interface MeResponse {
   user_id: string;
+  email: string;
   role: string;
 }
 
