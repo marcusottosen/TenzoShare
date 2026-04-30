@@ -90,6 +90,17 @@ export async function verifyUserEmail(id: string) {
   return request<{ ok: boolean }>(`/admin/users/${id}/verify`, { method: 'POST' });
 }
 
+export async function resetUserPassword(id: string): Promise<{ temp_password: string }> {
+  return request<{ temp_password: string }>(`/admin/users/${id}/reset-password`, { method: 'POST' });
+}
+
+export async function setUserPassword(id: string, password: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/admin/users/${id}/set-password`, {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+  });
+}
+
 export async function getStats(): Promise<SystemStats> {
   return request<SystemStats>('/admin/stats');
 }

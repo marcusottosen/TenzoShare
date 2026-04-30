@@ -426,7 +426,14 @@ func (h *Handler) Download(c fiber.Ctx) error {
 	if err != nil {
 		return apperrors.Internal("download from object store", err)
 	}
-	defer rc.Close() //nolint:errcheck
+	// Do NOT use defer rc.Close() here.
+	// Fiber/fasthttp reads the response body stream AFTER the handler function
+	// returns. A deferred close would shut down the MinIO HTTP connection
+	// before fasthttp reads a single byte — causing an empty reply for any file
+	// large enough that Go's HTTP client hasn't fully buffered it (typically > ~32 KiB).
+	// FastHTTP calls Close() itself on the body stream when it implements io.Closer.
+	// For the chunked-encrypted path we wrap the decryptor in an io.ReadCloser
+	// so that rc is closed once fasthttp finishes streaming the plaintext.
 
 	disposition := "attachment"
 	if c.Query("inline") == "1" {
@@ -440,12 +447,19 @@ func (h *Handler) Download(c fiber.Ctx) error {
 			// New streaming chunked format — decrypt on the fly, no full-file buffering.
 			dec, decErr := newStreamDecryptor(rc, h.encryptionKey)
 			if decErr != nil {
+				rc.Close() //nolint:errcheck
 				return apperrors.Internal("init decryption", decErr)
 			}
-			return c.SendStream(dec, int(file.SizeBytes))
+			// Wrap dec+rc so fasthttp closes the MinIO body when streaming is done.
+			return c.SendStream(struct {
+				io.Reader
+				io.Closer
+			}{dec, rc}, int(file.SizeBytes))
 		}
-		// Legacy single-GCM block (files created before this fix; always < 4 MiB).
+		// Legacy single-GCM block (files created before chunked format; always < 4 MiB).
+		// io.ReadAll fully consumes rc before we return, so closing inline is correct.
 		raw, err := io.ReadAll(rc)
+		rc.Close() //nolint:errcheck
 		if err != nil {
 			return apperrors.Internal("read object data", err)
 		}
@@ -456,7 +470,7 @@ func (h *Handler) Download(c fiber.Ctx) error {
 		return c.Send(plain)
 	}
 
-	// Unencrypted — stream directly from object store without buffering.
+	// Unencrypted — rc is io.ReadCloser; fasthttp closes it after streaming.
 	return c.SendStream(rc, int(file.SizeBytes))
 }
 

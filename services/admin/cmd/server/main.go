@@ -184,6 +184,8 @@ func main() {
 	v1.Delete("/users/:id", handleDeleteUser)
 	v1.Post("/users/:id/unlock", handleUnlockUser)
 	v1.Post("/users/:id/verify", handleVerifyEmail)
+	v1.Post("/users/:id/reset-password", handleResetPassword)
+	v1.Post("/users/:id/set-password", handleSetPassword)
 	v1.Get("/stats", handleGetStats)
 	v1.Get("/system/health", handleSystemHealth)
 	v1.Get("/storage/usage", handleListStorageUsage)
@@ -245,6 +247,8 @@ func userSortClause(sortBy, sortDir string) string {
 		return "role " + sortDir
 	case "is_active":
 		return "is_active " + sortDir
+	case "last_login_at":
+		return "last_login_at " + sortDir
 	default:
 		return "created_at " + sortDir
 	}
@@ -482,6 +486,60 @@ func handleVerifyEmail(c fiber.Ctx) error {
 		return apperrors.NotFound("user not found")
 	}
 	publishAdminAudit(c, "admin.user_email_verified", id, nil)
+	return c.JSON(fiber.Map{"ok": true})
+}
+
+// POST /api/v1/admin/users/:id/reset-password — generate a random temp password and return it
+func handleResetPassword(c fiber.Ctx) error {
+	id := c.Params("id")
+	// Generate a 12-byte (16-char base64url) temp password
+	tempPw, err := crypto.RandomToken(12)
+	if err != nil {
+		return apperrors.Internal("generate temp password", err)
+	}
+	hash, err := crypto.HashPassword(tempPw, cfg.App.Pepper)
+	if err != nil {
+		return apperrors.Internal("hash temp password", err)
+	}
+	tag, err := db.Exec(c.Context(),
+		"UPDATE auth.users SET password_hash = $1, updated_at = now() WHERE id = $2",
+		hash, id)
+	if err != nil {
+		return apperrors.Internal("reset password", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperrors.NotFound("user not found")
+	}
+	publishAdminAudit(c, "admin.user_password_reset", id, map[string]any{"target_user_id": id})
+	return c.JSON(fiber.Map{"temp_password": tempPw})
+}
+
+// POST /api/v1/admin/users/:id/set-password  body: {password}
+func handleSetPassword(c fiber.Ctx) error {
+	id := c.Params("id")
+	var body struct {
+		Password string `json:"password"`
+	}
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return apperrors.BadRequest("invalid JSON body")
+	}
+	if len(body.Password) < 8 {
+		return apperrors.BadRequest("password must be at least 8 characters")
+	}
+	hash, err := crypto.HashPassword(body.Password, cfg.App.Pepper)
+	if err != nil {
+		return apperrors.Internal("hash password", err)
+	}
+	tag, err := db.Exec(c.Context(),
+		"UPDATE auth.users SET password_hash = $1, updated_at = now() WHERE id = $2",
+		hash, id)
+	if err != nil {
+		return apperrors.Internal("set password", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperrors.NotFound("user not found")
+	}
+	publishAdminAudit(c, "admin.user_password_set", id, map[string]any{"target_user_id": id})
 	return c.JSON(fiber.Map{"ok": true})
 }
 
