@@ -651,6 +651,7 @@ type transferRow struct {
 	ExpiresAt      *string `json:"expires_at"`
 	DownloadCount  int     `json:"download_count"`
 	MaxDownloads   *int    `json:"max_downloads"`
+	ViewOnly       bool    `json:"view_only"`
 	CreatedAt      string  `json:"created_at"`
 	Status         string  `json:"status"`
 	HasPassword    bool    `json:"has_password"`
@@ -737,7 +738,7 @@ func handleListTransfers(c fiber.Ctx) error {
 		       COALESCE(t.description, '') AS description,
 		       COALESCE(t.recipient_email, '') AS recipient_email,
 		       t.slug, t.is_revoked, t.expires_at, t.download_count,
-		       t.max_downloads, t.created_at, t.password_hash,
+		       t.max_downloads, t.view_only, t.created_at, t.password_hash,
 		       (SELECT count(*) FROM transfer.transfer_files tf WHERE tf.transfer_id = t.id) AS file_count,
 		       COALESCE((SELECT sum(f.size_bytes)
 		                 FROM transfer.transfer_files tf
@@ -770,7 +771,7 @@ func handleListTransfers(c fiber.Ctx) error {
 		var passwordHash *string
 		if err := rows.Scan(&r.ID, &r.OwnerEmail, &r.Name, &r.Description,
 			&r.RecipientEmail, &r.Slug, &r.IsRevoked,
-			&expiresAt, &r.DownloadCount, &maxDownloads, &createdAt, &passwordHash, &r.FileCount, &r.TotalSizeBytes, &r.IsExhausted); err != nil {
+			&expiresAt, &r.DownloadCount, &maxDownloads, &r.ViewOnly, &createdAt, &passwordHash, &r.FileCount, &r.TotalSizeBytes, &r.IsExhausted); err != nil {
 			continue
 		}
 		scanTransferRow(&r, expiresAt, maxDownloads, createdAt, passwordHash)
@@ -798,7 +799,7 @@ func handleGetTransfer(c fiber.Ctx) error {
 		       COALESCE(t.description, '') AS description,
 		       COALESCE(t.recipient_email, '') AS recipient_email,
 		       t.slug, t.is_revoked, t.expires_at, t.download_count,
-		       t.max_downloads, t.created_at, t.password_hash,
+		       t.max_downloads, t.view_only, t.created_at, t.password_hash,
 		       (SELECT count(*) FROM transfer.transfer_files tf WHERE tf.transfer_id = t.id) AS file_count,
 		       COALESCE((SELECT sum(f.size_bytes)
 		                 FROM transfer.transfer_files tf
@@ -815,7 +816,7 @@ func handleGetTransfer(c fiber.Ctx) error {
 		WHERE t.id = $1`, id,
 	).Scan(&r.ID, &r.OwnerEmail, &r.Name, &r.Description,
 		&r.RecipientEmail, &r.Slug, &r.IsRevoked,
-		&expiresAt, &r.DownloadCount, &maxDownloads, &createdAt, &passwordHash, &r.FileCount, &r.TotalSizeBytes, &r.IsExhausted)
+		&expiresAt, &r.DownloadCount, &maxDownloads, &r.ViewOnly, &createdAt, &passwordHash, &r.FileCount, &r.TotalSizeBytes, &r.IsExhausted)
 	if err != nil {
 		return apperrors.NotFound("transfer not found")
 	}
@@ -985,17 +986,17 @@ func handleSystemHealth(c fiber.Ctx) error {
 
 // StorageConfig is the singleton storage policy row.
 type StorageConfig struct {
-	QuotaEnabled        bool   `json:"quota_enabled"`
-	QuotaBytesPerUser   int64  `json:"quota_bytes_per_user"`
-	MaxUploadSizeBytes  int64  `json:"max_upload_size_bytes"`
-	RetentionEnabled    bool   `json:"retention_enabled"`
-	RetentionDays       int    `json:"retention_days"`
-	OrphanRetentionDays int    `json:"orphan_retention_days"`
+	QuotaEnabled        bool  `json:"quota_enabled"`
+	QuotaBytesPerUser   int64 `json:"quota_bytes_per_user"`
+	MaxUploadSizeBytes  int64 `json:"max_upload_size_bytes"`
+	RetentionEnabled    bool  `json:"retention_enabled"`
+	RetentionDays       int   `json:"retention_days"`
+	OrphanRetentionDays int   `json:"orphan_retention_days"`
 	// TestMode disables the HTTPS-only requirement for uploads.
 	// Must only be enabled in development / test environments.
-	TestMode            bool   `json:"test_mode"`
-	UpdatedAt           string `json:"updated_at"`
-	UpdatedBy           string `json:"updated_by"`
+	TestMode  bool   `json:"test_mode"`
+	UpdatedAt string `json:"updated_at"`
+	UpdatedBy string `json:"updated_by"`
 }
 
 // GET /api/v1/admin/storage/config

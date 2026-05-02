@@ -338,7 +338,19 @@ export default function TransferDetailPage() {
               <td style={{ paddingLeft: 0 }}>{transfer.has_password ? 'Yes' : 'No'}</td>
             </tr>
             <tr>
-              <td style={{ paddingLeft: 0, fontWeight: 500 }}>Downloads</td>
+              <td style={{ paddingLeft: 0, fontWeight: 500 }}>Mode</td>
+              <td style={{ paddingLeft: 0 }}>
+                {transfer.view_only ? (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600, padding: '2px 8px', borderRadius: 4, background: 'rgba(99,102,241,0.1)', color: 'var(--color-primary)', border: '1px solid rgba(99,102,241,0.25)' }}>
+                    👁 View only — recipients cannot download
+                  </span>
+                ) : (
+                  <span style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>Standard (download allowed)</span>
+                )}
+              </td>
+            </tr>
+            <tr>
+              <td style={{ paddingLeft: 0, fontWeight: 500 }}>{transfer.view_only ? 'Views' : 'Downloads'}</td>
               <td style={{ paddingLeft: 0 }}>
                 {transfer.download_count}
                 {transfer.max_downloads > 0 && ` / ${transfer.max_downloads}`}

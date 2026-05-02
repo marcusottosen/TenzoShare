@@ -106,6 +106,24 @@ function IconShield() {
   );
 }
 
+function IconEye() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function IconViewOnly() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
 function IconTrash() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -117,7 +135,30 @@ function IconTrash() {
   );
 }
 
+function IconClose() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  );
+}
+
 // ─── File type icon helper ─────────────────────────────────────────────────
+
+function canPreview(contentType: string): boolean {
+  const t = contentType.split(';')[0].trim().toLowerCase();
+  return (
+    t.startsWith('image/') ||
+    t.startsWith('text/') ||
+    t.startsWith('audio/') ||
+    t.startsWith('video/') ||
+    t === 'application/pdf' ||
+    t === 'application/json' ||
+    t === 'application/javascript' ||
+    t === 'application/xml'
+  );
+}
 
 function fileTypeIcon(contentType: string) {
   if (contentType.startsWith('image/')) return <IconImage />;
@@ -142,6 +183,19 @@ function resolveSlug(): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Viewer modal state
+// ---------------------------------------------------------------------------
+
+type ViewerModal = {
+  viewUrl: string;      // URL used for display (inline=1 appended for proxy URLs)
+  downloadUrl: string;  // Original URL used for download
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  viewOnly: boolean;
+};
+
+// ---------------------------------------------------------------------------
 // View states
 // ---------------------------------------------------------------------------
 
@@ -162,6 +216,7 @@ export default function DownloadPage() {
   const [passwordError, setPasswordError] = useState('');
   const [downloading, setDownloading] = useState<Record<string, boolean>>({});
   const [downloadErrors, setDownloadErrors] = useState<Record<string, string>>({});
+  const [viewer, setViewer] = useState<ViewerModal | null>(null);
 
   // Initial fetch — no password yet.
   useEffect(() => {
@@ -201,24 +256,48 @@ export default function DownloadPage() {
     [view, passwordInput],
   );
 
-  // Trigger download for a single file.
-  const handleDownload = useCallback(
-    async (fileId: string) => {
+  // Core action: either opens the in-page viewer modal or triggers a browser download.
+  const handleAction = useCallback(
+    async (fileId: string, action: 'download' | 'preview') => {
       if (!slug) return;
       const password = view.kind === 'ready' ? view.password : undefined;
+      const isViewOnly = view.kind === 'ready' && view.transfer.view_only;
+      const file =
+        view.kind === 'ready' && view.transfer.files
+          ? view.transfer.files.find((f) => f.id === fileId) ?? null
+          : null;
+      const shouldPreview = action === 'preview' || isViewOnly;
       setDownloading((d) => ({ ...d, [fileId]: true }));
       setDownloadErrors((d) => { const n = { ...d }; delete n[fileId]; return n; });
       try {
-        const { url } = await fetchDownloadUrl(slug, fileId, password);
-        const a = document.createElement('a');
-        a.href = url;
-        a.rel = 'noopener noreferrer';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        const result = await fetchDownloadUrl(slug, fileId, password);
+        const effectivelyViewOnly = isViewOnly || !!result.view_only;
+        if (shouldPreview || effectivelyViewOnly) {
+          const downloadUrl = result.url;
+          let viewUrl = result.url;
+          // For our own proxy URLs, append inline=1 so storage serves Content-Disposition: inline.
+          if (viewUrl.startsWith('/') && !viewUrl.includes('inline=1')) {
+            viewUrl += (viewUrl.includes('?') ? '&' : '?') + 'inline=1';
+          }
+          setViewer({
+            viewUrl,
+            downloadUrl,
+            filename: file?.filename ?? fileId,
+            contentType: file?.content_type ?? '',
+            sizeBytes: file?.size_bytes ?? 0,
+            viewOnly: effectivelyViewOnly,
+          });
+        } else {
+          const a = document.createElement('a');
+          a.href = result.url;
+          a.rel = 'noopener noreferrer';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        }
       } catch (err: unknown) {
         const message =
-          err instanceof TransferApiError ? err.message : 'Download failed.';
+          err instanceof TransferApiError ? err.message : 'Failed to open file.';
         setDownloadErrors((d) => ({ ...d, [fileId]: message }));
       } finally {
         setDownloading((d) => ({ ...d, [fileId]: false }));
@@ -226,6 +305,9 @@ export default function DownloadPage() {
     },
     [slug, view],
   );
+
+  const handleDownload = useCallback((fileId: string) => handleAction(fileId, 'download'), [handleAction]);
+  const handlePreview  = useCallback((fileId: string) => handleAction(fileId, 'preview'),  [handleAction]);
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
@@ -293,7 +375,8 @@ export default function DownloadPage() {
 
   // view.kind === 'ready'
   const { transfer } = view;
-  const downloadsLeft = transfer.max_downloads > 0
+  const viewOnly = !!transfer.view_only;
+  const accessesLeft = transfer.max_downloads > 0
     ? Math.max(0, transfer.max_downloads - transfer.download_count)
     : null;
 
@@ -305,6 +388,7 @@ export default function DownloadPage() {
       : transfer.file_ids.map((id) => ({ id }));
 
   return (
+    <>
     <Layout>
       {transfer.is_revoked && (
         <div className="revoked-banner" style={{ marginBottom: 20 }}>
@@ -312,7 +396,30 @@ export default function DownloadPage() {
         </div>
       )}
 
-      <h2 className="tenzo-title">{transfer.name || 'Files ready to download'}</h2>
+      {/* View-only notice */}
+      {viewOnly && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: 12,
+          padding: '12px 16px',
+          marginBottom: 16,
+          background: 'rgba(99,102,241,0.07)',
+          border: '1px solid rgba(99,102,241,0.3)',
+          borderRadius: 10,
+          fontSize: 13,
+          color: '#3730a3',
+          lineHeight: 1.5,
+        }}>
+          <span style={{ marginTop: 1, flexShrink: 0 }}><IconViewOnly /></span>
+          <div>
+            <strong>View only</strong> — these files are provided for reading only.
+            Downloading or saving is not permitted per the sender's settings.
+          </div>
+        </div>
+      )}
+
+      <h2 className="tenzo-title">{transfer.name || 'Files ready'}</h2>
       {transfer.sender_email && (
         <p className="tenzo-subtitle">
           Shared by <strong>{transfer.sender_email}</strong>
@@ -327,9 +434,9 @@ export default function DownloadPage() {
         {transfer.expires_at && (
           <span className="chip">Expires {formatDate(transfer.expires_at)}</span>
         )}
-        {downloadsLeft !== null && (
-          <span className={`chip ${downloadsLeft > 0 ? 'chip-teal' : ''}`}>
-            {downloadsLeft} download{downloadsLeft !== 1 ? 's' : ''} remaining
+        {accessesLeft !== null && (
+          <span className={`chip ${accessesLeft > 0 ? 'chip-teal' : ''}`}>
+            {accessesLeft} {viewOnly ? 'view' : 'download'}{accessesLeft !== 1 ? 's' : ''} remaining
           </span>
         )}
         <span className="chip">
@@ -338,18 +445,22 @@ export default function DownloadPage() {
         {transfer.total_size_bytes > 0 && (
           <span className="chip">{fmtBytes(transfer.total_size_bytes)}</span>
         )}
+        {viewOnly && (
+          <span className="chip" style={{ background: 'rgba(99,102,241,0.1)', color: '#3730a3', border: '1px solid rgba(99,102,241,0.25)' }}>
+            👁 View only
+          </span>
+        )}
       </div>
 
       <hr className="tenzo-divider" />
 
-      {/* File list */}
       <ul className="file-list">
         {fileEntries.map((f) => {
           const fid = f.id;
           const isRich = 'filename' in f && f.filename !== undefined;
           const deleteReason = isRich ? (f as FileInfo).delete_reason : '';
           const isDeleted = !!deleteReason;
-          const isDisabled = !!downloading[fid] || transfer.is_revoked || downloadsLeft === 0 || isDeleted;
+          const isDisabled = !!downloading[fid] || transfer.is_revoked || accessesLeft === 0 || isDeleted;
           const downloadError = downloadErrors[fid];
           const isDeletedError = downloadError &&
             (downloadError.toLowerCase().includes('no longer available') ||
@@ -394,33 +505,56 @@ export default function DownloadPage() {
                   </div>
                 )}
               </div>
-              <button
-                className={`btn ${isDeleted ? 'btn-secondary' : 'btn-primary'} btn-sm`}
-                onClick={() => !isDeleted && handleDownload(fid)}
-                disabled={isDisabled}
-                title={isDeleted ? deletedTitle : undefined}
-              >
-                {downloading[fid] ? (
-                  <>
-                    <span className="spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} />
-                    Preparing…
-                  </>
-                ) : isDeleted ? (
-                  'Unavailable'
-                ) : (
-                  <>
-                    <IconDownload />
-                    Download
-                  </>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {/* Preview button for non-view-only previewable file types */}
+                {!viewOnly && !isDeleted && isRich && canPreview((f as FileInfo).content_type) && (
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => handlePreview(fid)}
+                    disabled={isDisabled}
+                    title="Preview file"
+                    aria-label="Preview file"
+                  >
+                    <IconEye />
+                  </button>
                 )}
-              </button>
+                <button
+                  className={`btn ${isDeleted ? 'btn-secondary' : 'btn-primary'} btn-sm`}
+                  onClick={() => !isDeleted && handleDownload(fid)}
+                  disabled={isDisabled}
+                  title={isDeleted ? deletedTitle : (viewOnly ? 'View file (view only mode)' : 'Download file')}
+                >
+                  {downloading[fid] ? (
+                    <>
+                      <span className="spinner" style={{ width: 12, height: 12, borderWidth: 1.5 }} />
+                      {viewOnly ? 'Opening…' : 'Preparing…'}
+                    </>
+                  ) : isDeleted ? (
+                    'Unavailable'
+                  ) : viewOnly ? (
+                    <>
+                      <IconEye />
+                      View
+                    </>
+                  ) : (
+                    <>
+                      <IconDownload />
+                      Download
+                    </>
+                  )}
+                </button>
+              </div>
             </li>
           );
         })}
       </ul>
 
-      <TenzoFooter />
+      <TenzoFooter viewOnly={viewOnly} />
     </Layout>
+    {viewer && (
+      <FileViewerModal viewer={viewer} onClose={() => setViewer(null)} />
+    )}
+  </>
   );
 }
 
@@ -442,13 +576,240 @@ function Layout({ children }: { children: React.ReactNode }) {
   );
 }
 
+// ─── File Viewer Modal ─────────────────────────────────────────────────────
+
+function FileViewerModal({
+  viewer,
+  onClose,
+}: {
+  viewer: ViewerModal;
+  onClose: () => void;
+}) {
+  const { viewUrl, downloadUrl, filename, contentType, sizeBytes, viewOnly } = viewer;
+  const t = contentType.split(';')[0].trim().toLowerCase();
+  const isImage = t.startsWith('image/');
+  const isPDF = t === 'application/pdf';
+  const isAudio = t.startsWith('audio/');
+  const isVideo = t.startsWith('video/');
+  const isText =
+    t.startsWith('text/') ||
+    t === 'application/json' ||
+    t === 'application/javascript' ||
+    t === 'application/xml';
+
+  const TEXT_SIZE_LIMIT = 500 * 1024; // 500 KB
+  const [textContent, setTextContent] = useState<string | null>(null);
+  const [textLoading, setTextLoading] = useState(false);
+  const [textError, setTextError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isText) return;
+    if (sizeBytes > TEXT_SIZE_LIMIT) {
+      setTextError(`File is too large to preview inline (${fmtBytes(sizeBytes)}). Download it to view.`);
+      return;
+    }
+    setTextLoading(true);
+    fetch(viewUrl)
+      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
+      .then((text) => { setTextContent(text); setTextLoading(false); })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : 'Unknown error';
+        setTextError(`Could not load file content: ${msg}`);
+        setTextLoading(false);
+      });
+  }, [viewUrl, isText, sizeBytes]);
+
+  // ESC to close
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const handleModalDownload = () => {
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = filename;
+    a.rel = 'noopener noreferrer';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const isUnsupported = !isImage && !isPDF && !isText && !isAudio && !isVideo;
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Viewing ${filename}`}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 1000,
+        background: 'rgba(0,0,0,0.72)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: 16,
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        style={{
+          background: '#fff',
+          borderRadius: 12,
+          boxShadow: '0 24px 64px rgba(0,0,0,0.45)',
+          display: 'flex',
+          flexDirection: 'column',
+          width: '100%',
+          maxWidth: isPDF ? 960 : isImage ? 860 : isVideo ? 860 : 720,
+          maxHeight: '92vh',
+          overflow: 'hidden',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '12px 14px',
+          borderBottom: '1px solid #f0f0f0',
+          flexShrink: 0,
+        }}>
+          <span style={{
+            flex: 1, fontSize: 13, fontWeight: 600, color: '#111827',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>
+            {filename}
+          </span>
+          {viewOnly && (
+            <span style={{
+              fontSize: 10, fontWeight: 700, letterSpacing: '0.06em',
+              background: 'rgba(99,102,241,0.1)', color: '#3730a3',
+              border: '1px solid rgba(99,102,241,0.2)',
+              borderRadius: 5, padding: '2px 8px', flexShrink: 0,
+            }}>
+              VIEW ONLY
+            </span>
+          )}
+          <button
+            onClick={onClose}
+            aria-label="Close viewer"
+            style={{
+              background: 'none', border: 'none', cursor: 'pointer',
+              padding: '4px 6px', borderRadius: 6,
+              color: '#6b7280', display: 'flex', alignItems: 'center',
+              flexShrink: 0,
+            }}
+          >
+            <IconClose />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative' }}>
+          {isImage && (
+            <div style={{
+              width: '100%', height: '100%', minHeight: 300,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              padding: 16, boxSizing: 'border-box',
+              background: '#f9fafb', overflow: 'auto',
+            }}>
+              <img
+                src={viewUrl}
+                alt={filename}
+                style={{ maxWidth: '100%', maxHeight: '75vh', objectFit: 'contain', borderRadius: 4 }}
+              />
+            </div>
+          )}
+
+          {isPDF && (
+            <iframe
+              src={viewUrl}
+              title={filename}
+              style={{ width: '100%', height: '76vh', border: 'none', display: 'block' }}
+            />
+          )}
+
+          {isText && (
+            <div style={{ overflow: 'auto', maxHeight: '75vh' }}>
+              {textLoading && (
+                <div style={{ padding: 32, textAlign: 'center', color: '#6b7280', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+                  <span className="spinner" /> Loading…
+                </div>
+              )}
+              {textError && (
+                <div style={{ padding: 24, color: '#b91c1c', fontSize: 13 }}>{textError}</div>
+              )}
+              {textContent !== null && (
+                <pre style={{
+                  margin: 0, padding: '16px 20px',
+                  fontSize: 12.5,
+                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                  whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                  color: '#1f2937', lineHeight: 1.65,
+                  background: '#f8fafc', minHeight: '30vh',
+                }}>
+                  {textContent}
+                </pre>
+              )}
+            </div>
+          )}
+
+          {isAudio && (
+            <div style={{ padding: 40, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+              <audio controls src={viewUrl} style={{ width: '100%', maxWidth: 520 }} />
+            </div>
+          )}
+
+          {isVideo && (
+            <div style={{ background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <video
+                controls
+                src={viewUrl}
+                style={{ maxWidth: '100%', maxHeight: '75vh', display: 'block' }}
+              />
+            </div>
+          )}
+
+          {isUnsupported && (
+            <div style={{ padding: 48, textAlign: 'center', color: '#6b7280' }}>
+              <p style={{ marginBottom: 12 }}>Preview is not available for this file type.</p>
+              {!viewOnly && (
+                <button onClick={handleModalDownload} className="btn btn-primary btn-sm">
+                  <IconDownload /> Download to view
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{
+          display: 'flex', justifyContent: 'flex-end', gap: 8,
+          padding: '10px 14px',
+          borderTop: '1px solid #f0f0f0',
+          flexShrink: 0,
+        }}>
+          {!viewOnly && (
+            <button onClick={handleModalDownload} className="btn btn-secondary btn-sm">
+              <IconDownload /> Download
+            </button>
+          )}
+          <button onClick={onClose} className="btn btn-primary btn-sm">
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Footer ────────────────────────────────────────────────────────────────
 
-function TenzoFooter() {
+function TenzoFooter({ viewOnly }: { viewOnly?: boolean }) {
   return (
     <div className="tenzo-footer">
       <IconShield />
-      Files are encrypted and served securely via TenzoShare
+      {viewOnly
+        ? 'Files are encrypted and served securely in view-only mode via TenzoShare'
+        : 'Files are encrypted and served securely via TenzoShare'}
     </div>
   );
 }

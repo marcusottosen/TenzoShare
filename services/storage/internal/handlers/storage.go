@@ -80,11 +80,29 @@ func (h *Handler) Upload(c fiber.Ctx) error {
 						"If you are a system administrator, enable Test Mode in Storage Settings to allow HTTP uploads.")
 			}
 		}
-		// Cheap Content-Length pre-check (multipart framing overhead ≤ 1 KiB).
-		// Lets us reject oversized uploads before reading a single byte of body.
+		// Cheap Content-Length pre-checks — reject before reading a single byte.
+		// The multipart framing adds at most ~1 KiB of boundary overhead, so
+		// Content-Length ≈ file size and is safe for these comparisons.
+		cl := int64(c.Request().Header.ContentLength())
 		if cfg.MaxUploadSizeBytes > 0 {
-			if cl := c.Request().Header.ContentLength(); cl > 0 && int64(cl) > cfg.MaxUploadSizeBytes+1024 {
+			if cl > 0 && cl > cfg.MaxUploadSizeBytes+1024 {
 				return apperrors.BadRequest(fmt.Sprintf("file exceeds maximum upload size of %s", fmtBytes(cfg.MaxUploadSizeBytes)))
+			}
+		}
+		// Pre-quota check: if Content-Length is known, verify the upload would
+		// not immediately exceed quota. Prevents fully uploading a file to MinIO
+		// only to delete it after the post-upload quota check.
+		if cfg.QuotaEnabled && cfg.QuotaBytesPerUser > 0 && cl > 0 {
+			usage, uErr := h.repo.GetUsageByOwner(c.Context(), ownerID)
+			if uErr == nil && usage.TotalBytes+cl > cfg.QuotaBytesPerUser {
+				remaining := cfg.QuotaBytesPerUser - usage.TotalBytes
+				if remaining < 0 {
+					remaining = 0
+				}
+				return apperrors.BadRequest(fmt.Sprintf(
+					"storage quota would be exceeded: %s remaining of %s",
+					fmtBytes(remaining), fmtBytes(cfg.QuotaBytesPerUser),
+				))
 			}
 		}
 	}

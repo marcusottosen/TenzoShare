@@ -55,6 +55,7 @@ type CreateParams struct {
 	RecipientEmail string
 	Password       string // empty = no password
 	MaxDownloads   int
+	ViewOnly       bool          // true = serve files inline; no download button for recipients
 	ExpiresIn      time.Duration // must be > 0 and <= 90 days
 	ClientIP       string        // for audit log
 }
@@ -94,6 +95,7 @@ func (s *TransferService) Create(ctx context.Context, p CreateParams) (*CreateRe
 		RecipientEmail: p.RecipientEmail,
 		Slug:           slug,
 		MaxDownloads:   p.MaxDownloads,
+		ViewOnly:       p.ViewOnly,
 	}
 
 	if p.Password != "" {

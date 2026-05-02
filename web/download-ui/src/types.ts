@@ -63,6 +63,11 @@ export interface TransferPublic {
   sender_email?: string;
   /** ISO-8601 creation timestamp. */
   created_at: string;
+  /**
+   * When true, files are served inline (browser renders them) and no download
+   * button is shown. The server enforces Content-Disposition: inline.
+   */
+  view_only?: boolean;
 }
 
 /** Returned by the file download URL endpoint. */
@@ -75,6 +80,8 @@ export interface FileDownloadUrl {
   url: string;
   /** Seconds until the presigned URL expires (typically 900 = 15 min). */
   expires_in: number;
+  /** Whether the transfer is view-only; when true, open inline rather than downloading. */
+  view_only?: boolean;
 }
 
 /** Structured error returned when the backend rejects a request. */

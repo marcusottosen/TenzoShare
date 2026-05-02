@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-playground/validator/v10"
@@ -57,6 +58,7 @@ type createRequest struct {
 	RecipientEmail string   `json:"recipient_email" validate:"omitempty,email"`
 	Password       string   `json:"password"`
 	MaxDownloads   int      `json:"max_downloads"   validate:"min=0"`
+	ViewOnly       bool     `json:"view_only"`
 	ExpiresInHours int      `json:"expires_in_hours" validate:"required,min=1,max=2160"`
 }
 
@@ -89,6 +91,7 @@ func (h *Handler) Create(c fiber.Ctx) error {
 		RecipientEmail: req.RecipientEmail,
 		Password:       req.Password,
 		MaxDownloads:   req.MaxDownloads,
+		ViewOnly:       req.ViewOnly,
 		ExpiresIn:      time.Duration(req.ExpiresInHours) * time.Hour,
 		ClientIP:       realClientIP(c),
 	})
@@ -215,6 +218,7 @@ func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 		"max_downloads":    t.MaxDownloads,
 		"download_count":   t.DownloadCount,
 		"is_revoked":       t.IsRevoked,
+		"view_only":        t.ViewOnly,
 		"has_password":     t.PasswordHash != "",
 		"created_at":       t.CreatedAt,
 		"file_count":       t.FileCount,
@@ -278,7 +282,21 @@ func (h *Handler) DownloadURL(c fiber.Ctx) error {
 		return apperrors.Internal("get presigned url from storage service", err)
 	}
 
-	return c.JSON(fiber.Map{"url": presignURL, "expires_in": 900})
+	// For view-only transfers, ensure the file is served with Content-Disposition: inline
+	// so the browser renders it rather than prompting a save dialog.
+	// This only applies to encrypted files served via our own proxy endpoint
+	// (URLs beginning with /api/v1/files/); raw MinIO presigned URLs cannot have
+	// headers injected and are handled at the UI level instead.
+	viewOnly := result.Transfer.ViewOnly
+	if viewOnly && strings.HasPrefix(presignURL, "/api/v1/files/") {
+		if strings.Contains(presignURL, "?") {
+			presignURL += "&inline=1"
+		} else {
+			presignURL += "?inline=1"
+		}
+	}
+
+	return c.JSON(fiber.Map{"url": presignURL, "expires_in": 900, "view_only": viewOnly})
 }
 
 // ListRecipients GET /api/v1/transfers/:id/recipients

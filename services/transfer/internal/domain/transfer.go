@@ -12,8 +12,9 @@ type Transfer struct {
 	RecipientEmail string     // empty = public link
 	Slug           string     // short URL token
 	PasswordHash   string     // empty = no password
-	MaxDownloads   int        // 0 = unlimited; limit is enforced per individual file
-	DownloadCount  int        // informational grand total; not used for limit enforcement
+	MaxDownloads   int        // 0 = unlimited; limit is enforced per individual file (also "max views" for ViewOnly)
+	DownloadCount  int        // informational grand total; not used for limit enforcement (also "view count" for ViewOnly)
+	ViewOnly       bool       // true = file is served inline only; no download button shown to recipient
 	FileCount      int        // number of files; populated by repo queries
 	TotalSizeBytes int64      // sum of size_bytes from storage.files; populated by repo queries
 	IsExhausted    bool       // true when every file has reached MaxDownloads; populated by repo
