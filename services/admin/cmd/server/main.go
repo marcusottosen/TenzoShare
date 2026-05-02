@@ -1810,6 +1810,12 @@ func getEnvOr(key, fallback string) string {
 type BrandingConfig struct {
 	PrimaryColor   string  `json:"primary_color"`
 	SecondaryColor string  `json:"secondary_color"`
+	PageBgColor    string  `json:"page_bg_color"`
+	SurfaceColor   string  `json:"surface_color"`
+	TextColor      string  `json:"text_color"`
+	BorderRadius   int     `json:"border_radius"`
+	AppName        string  `json:"app_name"`
+	CustomCSS      *string `json:"custom_css"`
 	LogoDataURL    *string `json:"logo_data_url"`
 	UpdatedAt      string  `json:"updated_at"`
 }
@@ -1818,9 +1824,11 @@ func scanBranding(c fiber.Ctx) (BrandingConfig, error) {
 	var bc BrandingConfig
 	var updatedAt time.Time
 	err := db.QueryRow(c.Context(), `
-		SELECT primary_color, secondary_color, logo_data_url, updated_at
+		SELECT primary_color, secondary_color, page_bg_color, surface_color,
+		       text_color, border_radius, app_name, custom_css, logo_data_url, updated_at
 		FROM admin_svc.branding_settings WHERE id = 1`,
-	).Scan(&bc.PrimaryColor, &bc.SecondaryColor, &bc.LogoDataURL, &updatedAt)
+	).Scan(&bc.PrimaryColor, &bc.SecondaryColor, &bc.PageBgColor, &bc.SurfaceColor,
+		&bc.TextColor, &bc.BorderRadius, &bc.AppName, &bc.CustomCSS, &bc.LogoDataURL, &updatedAt)
 	if err != nil {
 		return bc, err
 	}
@@ -1847,6 +1855,13 @@ func handlePutBranding(c fiber.Ctx) error {
 	var body struct {
 		PrimaryColor   *string `json:"primary_color"`
 		SecondaryColor *string `json:"secondary_color"`
+		PageBgColor    *string `json:"page_bg_color"`
+		SurfaceColor   *string `json:"surface_color"`
+		TextColor      *string `json:"text_color"`
+		BorderRadius   *int    `json:"border_radius"`
+		AppName        *string `json:"app_name"`
+		CustomCSS      *string `json:"custom_css"`
+		ClearCustomCSS *bool   `json:"clear_custom_css"`
 		LogoDataURL    *string `json:"logo_data_url"` // empty string = clear logo
 		ClearLogo      *bool   `json:"clear_logo"`
 	}
@@ -1854,10 +1869,16 @@ func handlePutBranding(c fiber.Ctx) error {
 		return apperrors.BadRequest("invalid JSON body")
 	}
 	// Validate hex colors if provided.
-	for _, col := range []*string{body.PrimaryColor, body.SecondaryColor} {
+	for _, col := range []*string{body.PrimaryColor, body.SecondaryColor, body.PageBgColor, body.SurfaceColor, body.TextColor} {
 		if col != nil && (len(*col) != 7 || (*col)[0] != '#') {
 			return apperrors.BadRequest("colors must be a 7-character hex value like #1E293B")
 		}
+	}
+	if body.BorderRadius != nil && (*body.BorderRadius < 0 || *body.BorderRadius > 32) {
+		return apperrors.BadRequest("border_radius must be between 0 and 32")
+	}
+	if body.AppName != nil && len(*body.AppName) == 0 {
+		return apperrors.BadRequest("app_name must not be empty")
 	}
 	// Validate logo size (base64 of 512 KB ≈ 700 KB string).
 	if body.LogoDataURL != nil && len(*body.LogoDataURL) > 800_000 {
@@ -1865,7 +1886,6 @@ func handlePutBranding(c fiber.Ctx) error {
 	}
 
 	// Determine new logo_data_url value.
-	// Use *string so pgx knows the PostgreSQL type (text) even when nil.
 	clearLogo := (body.ClearLogo != nil && *body.ClearLogo) ||
 		(body.LogoDataURL != nil && *body.LogoDataURL == "")
 	var logoSQL *string
@@ -1873,19 +1893,43 @@ func handlePutBranding(c fiber.Ctx) error {
 		logoSQL = body.LogoDataURL
 	}
 
+	// Determine new custom_css value.
+	clearCSS := body.ClearCustomCSS != nil && *body.ClearCustomCSS
+	var cssSQL *string
+	if !clearCSS && body.CustomCSS != nil {
+		cssSQL = body.CustomCSS
+	}
+
 	_, err := db.Exec(c.Context(), `
 		UPDATE admin_svc.branding_settings SET
-		    primary_color   = COALESCE($1::text, primary_color),
-		    secondary_color = COALESCE($2::text, secondary_color),
+		    primary_color   = COALESCE($1::text,    primary_color),
+		    secondary_color = COALESCE($2::text,    secondary_color),
+		    page_bg_color   = COALESCE($3::text,    page_bg_color),
+		    surface_color   = COALESCE($4::text,    surface_color),
+		    text_color      = COALESCE($5::text,    text_color),
+		    border_radius   = COALESCE($6::smallint, border_radius),
+		    app_name        = COALESCE($7::text,    app_name),
+		    custom_css      = CASE
+		                          WHEN $8::bool    THEN NULL
+		                          WHEN $9::text IS NOT NULL THEN $9::text
+		                          ELSE custom_css
+		                      END,
 		    logo_data_url   = CASE
-		                          WHEN $3::bool THEN NULL
-		                          WHEN $4::text IS NOT NULL THEN $4::text
+		                          WHEN $10::bool   THEN NULL
+		                          WHEN $11::text IS NOT NULL THEN $11::text
 		                          ELSE logo_data_url
 		                      END,
 		    updated_at      = now()
 		WHERE id = 1`,
 		body.PrimaryColor,
 		body.SecondaryColor,
+		body.PageBgColor,
+		body.SurfaceColor,
+		body.TextColor,
+		body.BorderRadius,
+		body.AppName,
+		clearCSS,
+		cssSQL,
 		clearLogo,
 		logoSQL,
 	)

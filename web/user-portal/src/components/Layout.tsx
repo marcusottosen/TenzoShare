@@ -2,7 +2,7 @@ import React from 'react';
 import { NavLink, useNavigate, Outlet, useLocation } from 'react-router';
 import { useAuth } from '../stores/auth';
 import { logout as apiLogout } from '../api/auth';
-import { getLogoUrl } from '../branding';
+import { getLogoUrl, getAppName } from '../branding';
 
 function IconGrid() {
   return (
@@ -155,6 +155,11 @@ export default function Layout() {
           <button className="sidebar-logout-btn" onClick={handleLogout}>
             <IconLogOut /> Sign out
           </button>
+          {getAppName() !== 'TenzoShare' && (
+            <div style={{ fontSize: 10, opacity: 0.35, textAlign: 'center', padding: '6px 0 2px', letterSpacing: '0.02em' }}>
+              Powered by TenzoShare
+            </div>
+          )}
         </div>
       </nav>
 

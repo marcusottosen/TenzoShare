@@ -410,6 +410,12 @@ export async function updateAuthConfig(body: {
 export interface BrandingConfig {
   primary_color: string;
   secondary_color: string;
+  page_bg_color: string;
+  surface_color: string;
+  text_color: string;
+  border_radius: number;
+  app_name: string;
+  custom_css: string | null;
   logo_data_url: string | null;
   updated_at: string;
 }
@@ -421,6 +427,13 @@ export async function getBranding(): Promise<BrandingConfig> {
 export async function updateBranding(body: {
   primary_color?: string;
   secondary_color?: string;
+  page_bg_color?: string;
+  surface_color?: string;
+  text_color?: string;
+  border_radius?: number;
+  app_name?: string;
+  custom_css?: string;
+  clear_custom_css?: boolean;
   logo_data_url?: string;
   clear_logo?: boolean;
 }): Promise<BrandingConfig> {

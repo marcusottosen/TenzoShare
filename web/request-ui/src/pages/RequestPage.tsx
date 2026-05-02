@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import type { FileRequestPublic } from '../types';
 import { RequestApiError } from '../types';
 import { fetchRequest, uploadFile } from '../api/requests';
-import { getLogoUrl } from '../branding';
+import { getLogoUrl, getAppName } from '../branding';
 
 // ─── Slug resolution ───────────────────────────────────────────────────────
 function resolveSlug(): string | null {
@@ -122,10 +122,15 @@ function Layout({ children }: { children: React.ReactNode }) {
 // ─── Footer ────────────────────────────────────────────────────────────────
 
 function TenzoFooter() {
+  const appName = getAppName();
+  const branded = appName !== 'TenzoShare';
   return (
     <div className="tenzo-footer">
       <img src={getLogoUrl()} alt="" style={{ width: 14, height: 14, objectFit: 'contain' }} />
-      Files are encrypted and delivered securely via TenzoShare
+      {`Files are encrypted and delivered securely via ${appName}`}
+      {branded && (
+        <span style={{ marginLeft: 6, opacity: 0.45, fontSize: '0.8em' }}>· Powered by TenzoShare</span>
+      )}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { TransferPublic, FileInfo } from '../types';
 import { fetchTransfer, fetchDownloadUrl, TransferApiError } from '../api/transfer';
-import { getLogoUrl } from '../branding';
+import { getLogoUrl, getAppName } from '../branding';
 
 // ─── Icon components ───────────────────────────────────────────────────────
 
@@ -789,12 +789,17 @@ function FileViewerModal({
 // ─── Footer ────────────────────────────────────────────────────────────────
 
 function TenzoFooter({ viewOnly }: { viewOnly?: boolean }) {
+  const appName = getAppName();
+  const branded = appName !== 'TenzoShare';
   return (
     <div className="tenzo-footer">
       <img src={getLogoUrl()} alt="" style={{ width: 14, height: 14, objectFit: 'contain' }} />
       {viewOnly
-        ? 'Files are encrypted and served securely in view-only mode via TenzoShare'
-        : 'Files are encrypted and served securely via TenzoShare'}
+        ? `Files are encrypted and served securely in view-only mode via ${appName}`
+        : `Files are encrypted and served securely via ${appName}`}
+      {branded && (
+        <span style={{ marginLeft: 6, opacity: 0.45, fontSize: '0.8em' }}>· Powered by TenzoShare</span>
+      )}
     </div>
   );
 }
