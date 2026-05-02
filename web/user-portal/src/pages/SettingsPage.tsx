@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { isDarkMode, setDarkMode } from '../branding';
 
 function ComingSoonBadge() {
   return (
@@ -39,6 +40,14 @@ function SettingRow({ label, description, children }: { label: string; descripti
 }
 
 export default function SettingsPage() {
+  const [darkMode, setDarkModeState] = useState(() => isDarkMode());
+
+  function handleDarkModeToggle(e: React.ChangeEvent<HTMLInputElement>) {
+    const enabled = e.target.checked;
+    setDarkModeState(enabled);
+    setDarkMode(enabled);
+  }
+
   return (
     <div className="page">
       <div className="page-header">
@@ -51,15 +60,19 @@ export default function SettingsPage() {
       {/* Appearance */}
       <div className="card" style={{ marginBottom: 20 }}>
         <div className="card-header" style={{ marginBottom: 4 }}>
-          <h2 className="card-title">Appearance <ComingSoonBadge /></h2>
+          <h2 className="card-title">Appearance</h2>
         </div>
         <SettingRow
           label="Dark mode"
           description="Switch the interface to a dark colour scheme."
         >
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'not-allowed', opacity: 0.45 }}>
-            <input type="checkbox" disabled style={{ width: 16, height: 16 }} />
-            <span style={{ fontSize: 13 }}>Enable dark mode</span>
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={darkMode}
+              onChange={handleDarkModeToggle}
+            />
+            <span className="toggle-track" />
           </label>
         </SettingRow>
       </div>

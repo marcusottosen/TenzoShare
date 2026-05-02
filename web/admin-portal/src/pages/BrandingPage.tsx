@@ -11,6 +11,14 @@ const DEFAULTS = {
   app_name: 'TenzoShare',
 };
 
+const DM_DEFAULTS = {
+  dm_primary_color: '#0F172A',
+  dm_secondary_color: '#0D9488',
+  dm_page_bg_color: '#0F172A',
+  dm_surface_color: '#1E293B',
+  dm_text_color: '#E2E8F0',
+};
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function ColorPicker({
@@ -67,6 +75,13 @@ export default function BrandingPage() {
   const [appName, setAppName] = useState(DEFAULTS.app_name);
   const [customCss, setCustomCss] = useState('');
   const [clearCustomCss, setClearCustomCss] = useState(false);
+  // Dark mode state
+  const [customDarkMode, setCustomDarkMode] = useState(false);
+  const [dmPrimaryColor, setDmPrimaryColor] = useState(DM_DEFAULTS.dm_primary_color);
+  const [dmSecondaryColor, setDmSecondaryColor] = useState(DM_DEFAULTS.dm_secondary_color);
+  const [dmPageBgColor, setDmPageBgColor] = useState(DM_DEFAULTS.dm_page_bg_color);
+  const [dmSurfaceColor, setDmSurfaceColor] = useState(DM_DEFAULTS.dm_surface_color);
+  const [dmTextColor, setDmTextColor] = useState(DM_DEFAULTS.dm_text_color);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const [logoChanged, setLogoChanged] = useState(false);
   const [clearLogo, setClearLogo] = useState(false);
@@ -85,6 +100,14 @@ export default function BrandingPage() {
         setBorderRadius(c.border_radius);
         setAppName(c.app_name);
         setCustomCss(c.custom_css ?? '');
+        // Dark mode
+        const hasDm = !!(c.dm_primary_color || c.dm_secondary_color || c.dm_page_bg_color || c.dm_surface_color || c.dm_text_color);
+        setCustomDarkMode(hasDm);
+        setDmPrimaryColor(c.dm_primary_color ?? DM_DEFAULTS.dm_primary_color);
+        setDmSecondaryColor(c.dm_secondary_color ?? DM_DEFAULTS.dm_secondary_color);
+        setDmPageBgColor(c.dm_page_bg_color ?? DM_DEFAULTS.dm_page_bg_color);
+        setDmSurfaceColor(c.dm_surface_color ?? DM_DEFAULTS.dm_surface_color);
+        setDmTextColor(c.dm_text_color ?? DM_DEFAULTS.dm_text_color);
         setLogoPreview(c.logo_data_url ?? null);
       })
       .catch(() => setError('Failed to load branding settings.'))
@@ -140,6 +163,15 @@ export default function BrandingPage() {
         border_radius: borderRadius,
         app_name: appName,
       };
+      if (!customDarkMode) {
+        body.clear_dark_mode = true;
+      } else {
+        body.dm_primary_color = dmPrimaryColor;
+        body.dm_secondary_color = dmSecondaryColor;
+        body.dm_page_bg_color = dmPageBgColor;
+        body.dm_surface_color = dmSurfaceColor;
+        body.dm_text_color = dmTextColor;
+      }
       if (clearCustomCss) {
         body.clear_custom_css = true;
       } else if (customCss.trim()) {
@@ -251,6 +283,90 @@ export default function BrandingPage() {
             >
               Reset all to defaults
             </button>
+          </div>
+
+          {/* ── Dark Mode ── */}
+          <div className="card" style={{ padding: 24 }}>
+            <h2 style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>Dark Mode</h2>
+            <p className="text-sm" style={{ color: 'var(--color-text-muted)', marginBottom: 20 }}>
+              The User Portal ships with a built-in dark palette based on TenzoShare's design system.
+              Enable custom colours below to override the defaults for your brand.
+            </p>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', marginBottom: 20, width: 'fit-content' }}>
+              <div style={{ position: 'relative', display: 'inline-block', width: 44, height: 24, flexShrink: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={customDarkMode}
+                  onChange={(e) => setCustomDarkMode(e.target.checked)}
+                  style={{ opacity: 0, width: 0, height: 0, position: 'absolute' }}
+                />
+                <span style={{
+                  position: 'absolute', inset: 0, borderRadius: 12, cursor: 'pointer',
+                  background: customDarkMode ? 'var(--color-secondary)' : 'var(--color-border)',
+                  transition: 'background 0.2s',
+                }}>
+                  <span style={{
+                    position: 'absolute', width: 18, height: 18, borderRadius: '50%',
+                    background: 'white', top: 3, left: customDarkMode ? 23 : 3,
+                    transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                  }} />
+                </span>
+              </div>
+              <span style={{ fontSize: 14, fontWeight: 500 }}>Use custom dark mode colours</span>
+            </label>
+
+            {customDarkMode && (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+                  <ColorPicker
+                    label="Dark sidebar / primary color"
+                    description="Sidebar and widget background in dark mode."
+                    value={dmPrimaryColor}
+                    onChange={setDmPrimaryColor}
+                  />
+                  <ColorPicker
+                    label="Dark accent color"
+                    description="Buttons, active states and highlights in dark mode."
+                    value={dmSecondaryColor}
+                    onChange={setDmSecondaryColor}
+                  />
+                  <ColorPicker
+                    label="Dark page background"
+                    description="Background of every page in dark mode."
+                    value={dmPageBgColor}
+                    onChange={setDmPageBgColor}
+                  />
+                  <ColorPicker
+                    label="Dark surface / card color"
+                    description="Cards, modals, and inputs in dark mode."
+                    value={dmSurfaceColor}
+                    onChange={setDmSurfaceColor}
+                  />
+                  <ColorPicker
+                    label="Dark text color"
+                    description="Main body text and headings in dark mode."
+                    value={dmTextColor}
+                    onChange={setDmTextColor}
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  style={{ marginTop: 20 }}
+                  onClick={() => {
+                    setDmPrimaryColor(DM_DEFAULTS.dm_primary_color);
+                    setDmSecondaryColor(DM_DEFAULTS.dm_secondary_color);
+                    setDmPageBgColor(DM_DEFAULTS.dm_page_bg_color);
+                    setDmSurfaceColor(DM_DEFAULTS.dm_surface_color);
+                    setDmTextColor(DM_DEFAULTS.dm_text_color);
+                  }}
+                  disabled={saving}
+                >
+                  Reset dark colours to TenzoShare defaults
+                </button>
+              </>
+            )}
           </div>
 
           {/* ── Shape ── */}

@@ -1818,6 +1818,12 @@ type BrandingConfig struct {
 	CustomCSS      *string `json:"custom_css"`
 	LogoDataURL    *string `json:"logo_data_url"`
 	UpdatedAt      string  `json:"updated_at"`
+	// Dark-mode colour overrides (nil = use built-in dark defaults)
+	DmPrimaryColor   *string `json:"dm_primary_color"`
+	DmSecondaryColor *string `json:"dm_secondary_color"`
+	DmPageBgColor    *string `json:"dm_page_bg_color"`
+	DmSurfaceColor   *string `json:"dm_surface_color"`
+	DmTextColor      *string `json:"dm_text_color"`
 }
 
 func scanBranding(c fiber.Ctx) (BrandingConfig, error) {
@@ -1825,10 +1831,12 @@ func scanBranding(c fiber.Ctx) (BrandingConfig, error) {
 	var updatedAt time.Time
 	err := db.QueryRow(c.Context(), `
 		SELECT primary_color, secondary_color, page_bg_color, surface_color,
-		       text_color, border_radius, app_name, custom_css, logo_data_url, updated_at
+		       text_color, border_radius, app_name, custom_css, logo_data_url, updated_at,
+		       dm_primary_color, dm_secondary_color, dm_page_bg_color, dm_surface_color, dm_text_color
 		FROM admin_svc.branding_settings WHERE id = 1`,
 	).Scan(&bc.PrimaryColor, &bc.SecondaryColor, &bc.PageBgColor, &bc.SurfaceColor,
-		&bc.TextColor, &bc.BorderRadius, &bc.AppName, &bc.CustomCSS, &bc.LogoDataURL, &updatedAt)
+		&bc.TextColor, &bc.BorderRadius, &bc.AppName, &bc.CustomCSS, &bc.LogoDataURL, &updatedAt,
+		&bc.DmPrimaryColor, &bc.DmSecondaryColor, &bc.DmPageBgColor, &bc.DmSurfaceColor, &bc.DmTextColor)
 	if err != nil {
 		return bc, err
 	}
@@ -1864,12 +1872,20 @@ func handlePutBranding(c fiber.Ctx) error {
 		ClearCustomCSS *bool   `json:"clear_custom_css"`
 		LogoDataURL    *string `json:"logo_data_url"` // empty string = clear logo
 		ClearLogo      *bool   `json:"clear_logo"`
+		// Dark-mode overrides
+		DmPrimaryColor   *string `json:"dm_primary_color"`
+		DmSecondaryColor *string `json:"dm_secondary_color"`
+		DmPageBgColor    *string `json:"dm_page_bg_color"`
+		DmSurfaceColor   *string `json:"dm_surface_color"`
+		DmTextColor      *string `json:"dm_text_color"`
+		ClearDarkMode    *bool   `json:"clear_dark_mode"`
 	}
 	if err := json.Unmarshal(c.Body(), &body); err != nil {
 		return apperrors.BadRequest("invalid JSON body")
 	}
 	// Validate hex colors if provided.
-	for _, col := range []*string{body.PrimaryColor, body.SecondaryColor, body.PageBgColor, body.SurfaceColor, body.TextColor} {
+	for _, col := range []*string{body.PrimaryColor, body.SecondaryColor, body.PageBgColor, body.SurfaceColor, body.TextColor,
+		body.DmPrimaryColor, body.DmSecondaryColor, body.DmPageBgColor, body.DmSurfaceColor, body.DmTextColor} {
 		if col != nil && (len(*col) != 7 || (*col)[0] != '#') {
 			return apperrors.BadRequest("colors must be a 7-character hex value like #1E293B")
 		}
@@ -1900,6 +1916,9 @@ func handlePutBranding(c fiber.Ctx) error {
 		cssSQL = body.CustomCSS
 	}
 
+	// Determine dark-mode color values.
+	clearDM := body.ClearDarkMode != nil && *body.ClearDarkMode
+
 	_, err := db.Exec(c.Context(), `
 		UPDATE admin_svc.branding_settings SET
 		    primary_color   = COALESCE($1::text,    primary_color),
@@ -1919,6 +1938,11 @@ func handlePutBranding(c fiber.Ctx) error {
 		                          WHEN $11::text IS NOT NULL THEN $11::text
 		                          ELSE logo_data_url
 		                      END,
+		    dm_primary_color   = CASE WHEN $12::bool THEN NULL WHEN $13::text IS NOT NULL THEN $13::text ELSE dm_primary_color END,
+		    dm_secondary_color = CASE WHEN $12::bool THEN NULL WHEN $14::text IS NOT NULL THEN $14::text ELSE dm_secondary_color END,
+		    dm_page_bg_color   = CASE WHEN $12::bool THEN NULL WHEN $15::text IS NOT NULL THEN $15::text ELSE dm_page_bg_color END,
+		    dm_surface_color   = CASE WHEN $12::bool THEN NULL WHEN $16::text IS NOT NULL THEN $16::text ELSE dm_surface_color END,
+		    dm_text_color      = CASE WHEN $12::bool THEN NULL WHEN $17::text IS NOT NULL THEN $17::text ELSE dm_text_color END,
 		    updated_at      = now()
 		WHERE id = 1`,
 		body.PrimaryColor,
@@ -1932,6 +1956,12 @@ func handlePutBranding(c fiber.Ctx) error {
 		cssSQL,
 		clearLogo,
 		logoSQL,
+		clearDM,
+		body.DmPrimaryColor,
+		body.DmSecondaryColor,
+		body.DmPageBgColor,
+		body.DmSurfaceColor,
+		body.DmTextColor,
 	)
 	if err != nil {
 		return apperrors.Internal("update branding", err)
