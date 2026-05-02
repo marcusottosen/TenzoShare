@@ -8,8 +8,11 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"path"
 	"path/filepath"
@@ -57,12 +60,8 @@ func (h *Handler) Upload(c fiber.Ctx) error {
 		return apperrors.Unauthorized("unauthenticated")
 	}
 
-	fileHeader, err := c.FormFile("file")
-	if err != nil {
-		return apperrors.BadRequest("missing file field")
-	}
-
-	// ── Enforce storage policy (quota + max upload size) ─────────────────────
+	// ── Enforce storage policy (HTTPS, size cap) ──────────────────────────────
+	// All checks happen before the body is touched so that rejections are cheap.
 	cfg, cfgErr := h.repo.GetStorageConfig(c.Context())
 	if cfgErr == nil {
 		// In production mode (test_mode disabled), reject uploads that arrive
@@ -73,113 +72,175 @@ func (h *Handler) Upload(c fiber.Ctx) error {
 			if !isHTTPS {
 				h.log.Warn("upload rejected: plain HTTP connection in production mode",
 					zap.String("owner_id", ownerID),
-					zap.String("filename", fileHeader.Filename),
 				)
 				h.publishAuditFail(c.Context(), "storage.upload_rejected", ownerID, "http_not_allowed",
-					map[string]any{"filename": fileHeader.Filename, "size": fileHeader.Size})
+					map[string]any{"owner_id": ownerID})
 				return fiber.NewError(fiber.StatusForbidden,
 					"uploads require a secure HTTPS connection — plain HTTP is not permitted. "+
 						"If you are a system administrator, enable Test Mode in Storage Settings to allow HTTP uploads.")
 			}
 		}
-
-		// Per-file size cap
-		if cfg.MaxUploadSizeBytes > 0 && fileHeader.Size > cfg.MaxUploadSizeBytes {
-			msg := fmt.Sprintf("file exceeds maximum upload size of %s", fmtBytes(cfg.MaxUploadSizeBytes))
-			h.log.Warn("upload rejected: file too large",
-				zap.String("owner_id", ownerID),
-				zap.String("filename", fileHeader.Filename),
-				zap.Int64("size", fileHeader.Size),
-				zap.Int64("limit", cfg.MaxUploadSizeBytes),
-			)
-			h.publishAuditFail(c.Context(), "storage.upload_rejected", ownerID, "file_too_large",
-				map[string]any{"filename": fileHeader.Filename, "size": fileHeader.Size, "limit": cfg.MaxUploadSizeBytes})
-			return apperrors.BadRequest(msg)
-		}
-		// Per-user quota
-		if cfg.QuotaEnabled && cfg.QuotaBytesPerUser > 0 {
-			usage, uErr := h.repo.GetUsageByOwner(c.Context(), ownerID)
-			if uErr == nil && usage.TotalBytes+fileHeader.Size > cfg.QuotaBytesPerUser {
-				msg := fmt.Sprintf("storage quota exceeded: %s used of %s",
-					fmtBytes(usage.TotalBytes),
-					fmtBytes(cfg.QuotaBytesPerUser),
-				)
-				h.log.Warn("upload rejected: quota exceeded",
-					zap.String("owner_id", ownerID),
-					zap.String("filename", fileHeader.Filename),
-					zap.Int64("size", fileHeader.Size),
-					zap.Int64("used", usage.TotalBytes),
-					zap.Int64("quota", cfg.QuotaBytesPerUser),
-				)
-				h.publishAuditFail(c.Context(), "storage.upload_rejected", ownerID, "quota_exceeded",
-					map[string]any{"filename": fileHeader.Filename, "size": fileHeader.Size, "used": usage.TotalBytes, "quota": cfg.QuotaBytesPerUser})
-				return apperrors.BadRequest(msg)
+		// Cheap Content-Length pre-check (multipart framing overhead ≤ 1 KiB).
+		// Lets us reject oversized uploads before reading a single byte of body.
+		if cfg.MaxUploadSizeBytes > 0 {
+			if cl := c.Request().Header.ContentLength(); cl > 0 && int64(cl) > cfg.MaxUploadSizeBytes+1024 {
+				return apperrors.BadRequest(fmt.Sprintf("file exceeds maximum upload size of %s", fmtBytes(cfg.MaxUploadSizeBytes)))
 			}
 		}
 	}
 	// ─────────────────────────────────────────────────────────────────────────
 
-	f, err := fileHeader.Open()
-	if err != nil {
-		return apperrors.Internal("open uploaded file", err)
+	// Parse the multipart boundary from the Content-Type header.
+	// This is pure header inspection — the body is not read yet.
+	ct := string(c.Request().Header.ContentType())
+	mediaType, params, mimeErr := mime.ParseMediaType(ct)
+	if mimeErr != nil || mediaType != "multipart/form-data" {
+		return apperrors.BadRequest("expected multipart/form-data upload")
 	}
-	defer f.Close() //nolint:errcheck
+	boundary := params["boundary"]
+	if boundary == "" {
+		return apperrors.BadRequest("missing multipart boundary")
+	}
 
-	// Sanitize the filename to prevent path traversal and strip control characters.
-	filename := sanitizeFilename(fileHeader.Filename)
+	// Stream the multipart body directly — no temp file, no double-buffering.
+	//
+	// c.FormFile() internally calls Request.MultipartForm() which writes the
+	// entire body to a temp file before returning — a 10 GB upload would require
+	// 10 GB of disk I/O before a single byte reaches MinIO (sequential).
+	// Instead, we drive a multipart.Reader directly on the live network stream
+	// so receiving from the browser and forwarding to MinIO happen concurrently.
+	mr := multipart.NewReader(c.Request().BodyStream(), boundary)
+
+	var filePart *multipart.Part
+	var origFilename, partCT string
+	for {
+		part, partErr := mr.NextPart()
+		if errors.Is(partErr, io.EOF) {
+			break
+		}
+		if partErr != nil {
+			return apperrors.BadRequest("failed to parse multipart upload")
+		}
+		if part.FormName() == "file" {
+			filePart = part
+			origFilename = part.FileName()
+			partCT = part.Header.Get("Content-Type")
+			break
+		}
+		// Drain and discard any non-file fields before the file part.
+		_, _ = io.Copy(io.Discard, part)
+	}
+	if filePart == nil {
+		return apperrors.BadRequest("missing file field")
+	}
+	// Note: we intentionally do NOT defer filePart.Close().
+	// Part.Close() drains all remaining bytes from the connection, which would
+	// cause the server to consume the rest of a 10 GB body just to send an error
+	// on size-limit violations. fasthttp closes the TCP connection cleanly when
+	// the handler returns with an error, discarding any unread body data.
+
+	filename := sanitizeFilename(origFilename)
 	objectKey := fmt.Sprintf("uploads/%s/%s/%s", ownerID, uuid.New().String(), filename)
 
-	// Sniff the real content type from the first 512 bytes.
-	// Browsers frequently send "application/octet-stream" for types they don't recognise,
-	// which would cause incorrect icons and broken inline previews on download.
+	// Wrap filePart in an uploadTracker to count plaintext bytes and abort
+	// mid-stream if the per-file size cap is exceeded.
+	tracker := &uploadTracker{r: filePart}
+	if cfgErr == nil && cfg.MaxUploadSizeBytes > 0 {
+		tracker.limit = cfg.MaxUploadSizeBytes
+	}
+
+	// Sniff the real content type from the first 512 bytes so we store an
+	// accurate MIME type even when the browser sends "application/octet-stream".
+	// We read through the tracker so that tracker.n reflects the total plaintext
+	// size (sniff bytes + remaining bytes = full file size).
 	sniffBuf := make([]byte, 512)
-	sniffN, _ := io.ReadFull(f, sniffBuf)
+	sniffN, _ := io.ReadFull(tracker, sniffBuf)
 	sniffBuf = sniffBuf[:sniffN]
-	browserType := fileHeader.Header.Get("Content-Type")
-	contentType := browserType
+	contentType := partCT
 	if contentType == "" || contentType == "application/octet-stream" {
 		contentType = http.DetectContentType(sniffBuf)
 	}
-	// Reconstruct the full stream: re-prepend the already-read bytes.
-	fullReader := io.MultiReader(bytes.NewReader(sniffBuf), f)
+	// Re-prepend the sniffed bytes so the encryptor / MinIO sees the full stream.
+	fullSrc := io.MultiReader(bytes.NewReader(sniffBuf), tracker)
 
-	// Stream to MinIO without loading the file fully into memory.
-	// Encrypted uploads use chunked streaming AES-256-GCM.
+	// ── Encryption setup ─────────────────────────────────────────────────────
 	var uploadReader io.Reader
-	var uploadSize int64
 	var encIV []byte
-
-	if h.encryptionKey != nil && fileHeader.Size > 0 {
+	if h.encryptionKey != nil {
 		baseIV := make([]byte, 12)
 		if _, err := io.ReadFull(rand.Reader, baseIV); err != nil {
 			return apperrors.Internal("generate encryption IV", err)
 		}
-		enc, encErr := newStreamEncryptor(fullReader, h.encryptionKey, baseIV)
+		enc, encErr := newStreamEncryptor(fullSrc, h.encryptionKey, baseIV)
 		if encErr != nil {
 			return apperrors.Internal("init encryption", encErr)
 		}
 		uploadReader = enc
-		uploadSize = chunkedCiphertextSize(fileHeader.Size)
 		encIV = makeChunkedIV(baseIV)
 	} else {
-		// Unencrypted (or zero-length): stream directly to MinIO.
-		uploadReader = fullReader
-		uploadSize = fileHeader.Size
+		uploadReader = fullSrc
 	}
+	// ─────────────────────────────────────────────────────────────────────────
 
-	if err := h.backend.Upload(c.Context(), objectKey, uploadReader, uploadSize, contentType); err != nil {
+	// Upload using size=-1 (chunked transfer encoding).
+	// We do not know the final encrypted size before the stream is consumed, and
+	// passing the wrong Content-Length would cause MinIO to reject the object.
+	if err := h.backend.Upload(c.Context(), objectKey, uploadReader, -1, contentType); err != nil {
+		if tracker.exceeded {
+			// Size limit was hit mid-stream; the MinIO PutObject was aborted.
+			// No object was committed, so no cleanup is needed.
+			msg := fmt.Sprintf("file exceeds maximum upload size of %s", fmtBytes(cfg.MaxUploadSizeBytes))
+			h.log.Warn("upload rejected: file too large mid-stream",
+				zap.String("owner_id", ownerID),
+				zap.String("filename", filename),
+				zap.Int64("limit", cfg.MaxUploadSizeBytes),
+			)
+			h.publishAuditFail(c.Context(), "storage.upload_rejected", ownerID, "file_too_large",
+				map[string]any{"filename": filename, "limit": cfg.MaxUploadSizeBytes})
+			return apperrors.BadRequest(msg)
+		}
 		h.log.Error("upload to object store failed",
 			zap.String("owner_id", ownerID),
 			zap.String("filename", filename),
-			zap.Int64("size", fileHeader.Size),
 			zap.Error(err),
 		)
 		h.publishAuditFail(c.Context(), "storage.upload_failed", ownerID, "s3_error",
-			map[string]any{"filename": filename, "size": fileHeader.Size})
+			map[string]any{"filename": filename})
 		return apperrors.Internal("upload to object store", err)
 	}
 
-	record, err := h.repo.Create(c.Context(), ownerID, objectKey, filename, contentType, fileHeader.Size, encIV)
+	// tracker.n is the total plaintext byte count:
+	//   initial 512-byte sniff (read through tracker) + all remaining bytes
+	//   consumed from filePart via the fullSrc → tracker pipeline.
+	plaintextSize := tracker.n
+
+	// ── Post-upload quota check (with rollback) ───────────────────────────────
+	// Quota is enforced after upload because we don't know the plaintext size
+	// before the stream is fully consumed. If the quota is violated we delete
+	// the just-uploaded object and return an error.
+	if cfgErr == nil && cfg.QuotaEnabled && cfg.QuotaBytesPerUser > 0 {
+		usage, uErr := h.repo.GetUsageByOwner(c.Context(), ownerID)
+		if uErr == nil && usage.TotalBytes+plaintextSize > cfg.QuotaBytesPerUser {
+			_ = h.backend.Delete(c.Context(), objectKey)
+			msg := fmt.Sprintf("storage quota exceeded: %s used of %s",
+				fmtBytes(usage.TotalBytes),
+				fmtBytes(cfg.QuotaBytesPerUser),
+			)
+			h.log.Warn("upload rejected: quota exceeded",
+				zap.String("owner_id", ownerID),
+				zap.String("filename", filename),
+				zap.Int64("size", plaintextSize),
+				zap.Int64("used", usage.TotalBytes),
+				zap.Int64("quota", cfg.QuotaBytesPerUser),
+			)
+			h.publishAuditFail(c.Context(), "storage.upload_rejected", ownerID, "quota_exceeded",
+				map[string]any{"filename": filename, "size": plaintextSize, "used": usage.TotalBytes, "quota": cfg.QuotaBytesPerUser})
+			return apperrors.BadRequest(msg)
+		}
+	}
+	// ─────────────────────────────────────────────────────────────────────────
+
+	record, err := h.repo.Create(c.Context(), ownerID, objectKey, filename, contentType, plaintextSize, encIV)
 	if err != nil {
 		_ = h.backend.Delete(c.Context(), objectKey) // best-effort cleanup
 		h.log.Error("failed to create file record",
@@ -188,7 +249,7 @@ func (h *Handler) Upload(c fiber.Ctx) error {
 			zap.Error(err),
 		)
 		h.publishAuditFail(c.Context(), "storage.upload_failed", ownerID, "db_error",
-			map[string]any{"filename": filename, "size": fileHeader.Size})
+			map[string]any{"filename": filename, "size": plaintextSize})
 		return err
 	}
 
@@ -649,6 +710,32 @@ func fmtBytes(b int64) string {
 	default:
 		return fmt.Sprintf("%.2f GB", float64(b)/(k*k*k))
 	}
+}
+
+// ── Upload stream helpers ─────────────────────────────────────────────────────
+
+var errUploadTooLarge = errors.New("upload exceeds size limit")
+
+// uploadTracker wraps an io.Reader, counting every plaintext byte read and
+// aborting mid-stream if an optional per-file size cap is exceeded.
+type uploadTracker struct {
+	r        io.Reader
+	n        int64 // total bytes consumed so far
+	limit    int64 // 0 = no limit
+	exceeded bool
+}
+
+func (t *uploadTracker) Read(p []byte) (int, error) {
+	if t.exceeded {
+		return 0, errUploadTooLarge
+	}
+	n, err := t.r.Read(p)
+	t.n += int64(n)
+	if t.limit > 0 && t.n > t.limit {
+		t.exceeded = true
+		return n, errUploadTooLarge
+	}
+	return n, err
 }
 
 // ── Chunked streaming AES-256-GCM encryption ─────────────────────────────────

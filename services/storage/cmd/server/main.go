@@ -79,12 +79,26 @@ func main() {
 	}
 
 	app := fiber.New(fiber.Config{
-		AppName:           "tenzoshare-storage",
-		ReadTimeout:       cfg.Server.ReadTimeout,
-		WriteTimeout:      cfg.Server.WriteTimeout,
-		ErrorHandler:      middleware.ErrorHandler,
-		BodyLimit:         math.MaxInt, // no HTTP-level body size limit; quota enforced in handler
-		StreamRequestBody: true,        // stream large multipart bodies to disk instead of buffering in RAM
+		AppName:      "tenzoshare-storage",
+		ReadTimeout:  cfg.Server.ReadTimeout,
+		WriteTimeout: cfg.Server.WriteTimeout,
+		ErrorHandler: middleware.ErrorHandler,
+		// BodyLimit: no HTTP-level body size cap — quota is enforced in the Upload handler.
+		// Set to math.MaxInt so fasthttp never rejects on size alone.
+		BodyLimit: math.MaxInt,
+		// StreamRequestBody: true tells fasthttp to call the handler as soon as the
+		// request headers are read, exposing the body as a lazy network stream via
+		// c.Request().BodyStream(). Without this the entire body is buffered in RAM.
+		StreamRequestBody: true,
+		// DisablePreParseMultipartForm: fasthttp's default behaviour is to pre-parse
+		// multipart/form-data bodies before invoking the handler — writing large file
+		// parts to OS temp files (in /tmp, on the root filesystem). For a 10 GB file
+		// on a server with limited free space this temp-file write fails at ~60 %,
+		// causing the handler to receive an empty body stream and the connection to be
+		// dropped (→ nginx 502). Disabling pre-parsing lets the body flow through as a
+		// raw network stream. Our Upload handler already reads it correctly via
+		// multipart.NewReader(c.Request().BodyStream(), boundary).
+		DisablePreParseMultipartForm: true,
 	})
 
 	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
