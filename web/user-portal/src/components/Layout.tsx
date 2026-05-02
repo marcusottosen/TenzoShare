@@ -57,13 +57,6 @@ function IconLogOut() {
     </svg>
   );
 }
-function IconTenz() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
-    </svg>
-  );
-}
 
 const PAGE_TITLES: Record<string, string> = {
   '/': 'Dashboard',
@@ -114,7 +107,7 @@ export default function Layout() {
       <nav className="sidebar">
         <div className="sidebar-header">
           <div className="sidebar-logo">
-            <IconTenz />
+            <img src="/logo.png" alt="TenzoShare" style={{ width: 32, height: 32, objectFit: 'contain' }} />
           </div>
           <div>
             <div className="sidebar-title">TenzoShare</div>
