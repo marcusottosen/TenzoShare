@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { NavLink, useNavigate, Outlet, useLocation } from 'react-router';
 import { useAuth } from '../stores/auth';
 import { logout as apiLogout } from '../api/auth';
@@ -129,11 +129,21 @@ function getDisplayName(email?: string): string {
   return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
 }
 
+function IconMenu() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+    </svg>
+  );
+}
+
 export default function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
+  useEffect(() => { setSidebarOpen(false); }, [location.pathname]);
 
   const pageTitle = PAGE_TITLES[location.pathname] ?? 'Admin';
 
@@ -148,8 +158,11 @@ export default function Layout() {
 
   return (
     <div className="app-shell">
+      {/* ── Sidebar overlay (mobile) ─────────────────────── */}
+      {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
+
       {/* ── Dark navy sidebar ────────────────────────────────── */}
-      <nav className="sidebar">
+      <nav className={sidebarOpen ? 'sidebar open' : 'sidebar'}>
         <div className="sidebar-header">
           <div className="sidebar-logo">
             <img src="/logo.png" alt="TenzoShare" style={{ width: 32, height: 32, objectFit: 'contain' }} />
@@ -219,6 +232,9 @@ export default function Layout() {
 
       {/* ── Navbar ──────────────────────────────────────────── */}
       <header className="navbar">
+        <button className="hamburger-btn" onClick={() => setSidebarOpen(s => !s)} aria-label="Toggle menu">
+          <IconMenu />
+        </button>
         <div className="navbar-breadcrumb">{pageTitle}</div>
 
         <div className="navbar-avatar">{initials}</div>

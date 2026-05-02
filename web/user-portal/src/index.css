@@ -947,6 +947,8 @@ tbody tr:hover td { background: var(--color-page-bg); }
 .folder-quick-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.07); border-color: var(--color-secondary); }
 
 /* ─── FilesPage ──────────────────────────────────────────────── */
+.files-stats-grid { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 14px; }
+
 .files-row {
   display: grid;
   grid-template-columns: 2fr 90px 130px 130px 140px 120px;
@@ -1180,4 +1182,131 @@ tbody tr:hover td { background: var(--color-page-bg); }
   white-space: pre-wrap;
   word-break: break-all;
   overflow-y: auto;
+}
+
+/* ─── Sidebar transition (for mobile slide-in) ───────────────── */
+.sidebar { transition: transform 0.25s ease; }
+
+/* ─── Sidebar overlay (mobile backdrop) ─────────────────────── */
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  z-index: 39;
+}
+
+/* ─── Hamburger button (hidden on desktop) ───────────────────── */
+.hamburger-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s;
+}
+.hamburger-btn:hover { background: var(--color-nav-active); color: var(--color-text-primary); }
+
+/* ─── Mobile responsive ──────────────────────────────────────── */
+@media (max-width: 768px) {
+  .hamburger-btn { display: flex; }
+
+  .sidebar {
+    transform: translateX(-100%);
+    z-index: 40;
+    box-shadow: none;
+  }
+  .sidebar.open {
+    transform: translateX(0);
+    box-shadow: 4px 0 24px rgba(0,0,0,0.15);
+  }
+  .sidebar-overlay { display: block; }
+  /* Overlay only visible when sidebar is open */
+  .sidebar:not(.open) ~ .sidebar-overlay { display: none; }
+
+  .navbar {
+    left: 0;
+    padding: 0 12px;
+  }
+
+  .main-content {
+    margin-left: 0;
+    width: 100%;
+    padding: 16px;
+  }
+
+  .page-header { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .page-header .btn, .page-header button { align-self: flex-start; }
+
+  .stat-grid, .stat-cards { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .grid-2 { grid-template-columns: 1fr; }
+  .grid-3 { grid-template-columns: 1fr; }
+  .grid-4 { grid-template-columns: 1fr 1fr; }
+
+  .dash-row { flex-direction: column; }
+  .dash-widgets { flex: none; width: 100%; }
+  .upload-zone-card { max-width: 100%; }
+
+  .auth-box { padding: 24px 20px; }
+
+  .file-list-header { display: none; }
+  .file-row { grid-template-columns: 1fr 80px; }
+  .file-row > *:nth-child(3),
+  .file-row > *:nth-child(4) { display: none; }
+
+  .files-stats-grid { grid-template-columns: 1fr; }
+
+  .files-row { grid-template-columns: 1fr 120px; }
+  .files-row > *:nth-child(2),
+  .files-row > *:nth-child(3),
+  .files-row > *:nth-child(4),
+  .files-row > *:nth-child(5) { display: none; }
+
+  /* My Shares table: hide Recipient, Size and Expires on mobile */
+  .shares-table th:nth-child(3),
+  .shares-table td:nth-child(3),
+  .shares-table th:nth-child(5),
+  .shares-table td:nth-child(5),
+  .shares-table th:nth-child(6),
+  .shares-table td:nth-child(6) { display: none; }
+
+  /* Submission download button goes full-width on narrow screens */
+  .submission-dl-btn { width: 100%; justify-content: center; margin-top: 4px; }
+
+  .share-row, .share-row-header { grid-template-columns: 1fr 90px 90px; }
+  .share-row > *:nth-child(4),
+  .share-row > *:nth-child(5),
+  .share-row-header > *:nth-child(4),
+  .share-row-header > *:nth-child(5) { display: none; }
+
+  .table-wrap { font-size: 12px; }
+  td, th { padding: 8px 10px; }
+
+  .preview-modal { max-width: 100%; border-radius: 8px 8px 0 0; align-self: flex-end; max-height: 92vh; }
+  .preview-backdrop { align-items: flex-end; padding: 0; }
+
+  .zk-banner { flex-direction: column; gap: 12px; }
+
+  .modal { max-width: calc(100vw - 32px); }
+}
+
+@media (max-width: 480px) {
+  .stat-grid, .stat-cards { grid-template-columns: 1fr; }
+  .grid-4 { grid-template-columns: 1fr; }
+  .main-content { padding: 12px; }
+  .page-title { font-size: 18px; }
+  .card { padding: 16px; }
+  /* Prevent iOS auto-zoom on input focus */
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="number"],
+  select,
+  textarea { font-size: 16px; }
 }

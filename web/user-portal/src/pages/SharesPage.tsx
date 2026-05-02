@@ -84,11 +84,12 @@ function SubmissionList({ subs, onDownload }: { subs: Submission[]; onDownload: 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       {subs.map((s) => (
-        <div key={s.id} style={{
+        <div key={s.id} className="submission-item" style={{
           display: 'flex', alignItems: 'flex-start', gap: 12,
           padding: '12px 14px', borderRadius: 8,
           background: 'var(--color-nav-active)',
           border: '1px solid var(--color-border)',
+          flexWrap: 'wrap',
         }}>
           {/* File icon */}
           <div style={{
@@ -127,7 +128,7 @@ function SubmissionList({ subs, onDownload }: { subs: Submission[]; onDownload: 
 
           {/* Download */}
           <button
-            className="btn btn-primary btn-sm"
+            className="btn btn-primary btn-sm submission-dl-btn"
             title="Download file"
             onClick={() => onDownload(s.file_id, s.filename)}
             style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 5, alignSelf: 'center' }}
@@ -212,7 +213,7 @@ function MySharesTab() {
   return (
     <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
       <div className="table-wrap" style={{ border: 'none', borderRadius: 0 }}>
-        <table>
+        <table className="shares-table">
           <thead>
             <tr>
               <th className="sort-th" onClick={() => toggleSort('name')}>

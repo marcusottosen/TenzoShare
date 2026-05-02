@@ -204,7 +204,7 @@ function FileTypeChart({ data }: { data: { content_type: string; count: number; 
   const total = chartData.reduce((s, d) => s + d.count, 0);
   if (chartData.length === 0) return <EmptyChart message="No file type data" />;
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+    <div className="donut-inner">
       <ResponsiveContainer width={130} height={130}>
         <PieChart>
           <Pie data={chartData} dataKey="count" cx="50%" cy="50%" innerRadius={38} outerRadius={58} strokeWidth={0} isAnimationActive animationDuration={600}>
@@ -242,7 +242,7 @@ function PurgeReasonChart({ data }: { data: { reason: string; count: number; fre
   const total = chartData.reduce((s, d) => s + d.count, 0);
   if (chartData.length === 0) return <EmptyChart message="No purge events recorded" />;
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+    <div className="donut-inner">
       <ResponsiveContainer width={130} height={130}>
         <PieChart>
           <Pie data={chartData} dataKey="count" cx="50%" cy="50%" innerRadius={38} outerRadius={58} strokeWidth={0} isAnimationActive animationDuration={600}>
@@ -279,7 +279,7 @@ function FileStatusChart({ active, deleted }: { active: number; deleted: number 
     { name: 'Deleted', value: deleted, color: '#F87171' },
   ].filter((d) => d.value > 0);
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+    <div className="donut-inner">
       <ResponsiveContainer width={130} height={130}>
         <PieChart>
           <Pie data={data} dataKey="value" cx="50%" cy="50%" innerRadius={38} outerRadius={58} strokeWidth={0} isAnimationActive animationDuration={600}>
@@ -429,7 +429,7 @@ export default function StorageInsightsPage() {
 
       {/* ── Row 1: Growth + Top Users ─────────────────────────────────── */}
       {insights && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+        <div className="insights-row-2">
           <ChartCard title="Storage Growth" subtitle="Data uploaded per day — last 30 days">
             <StorageGrowthChart data={insights.storage_per_day} />
           </ChartCard>
@@ -441,7 +441,7 @@ export default function StorageInsightsPage() {
 
       {/* ── Row 2: File types + File Status + Purge Reasons ──────────── */}
       {insights && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 16 }}>
+        <div className="insights-row-3">
           <ChartCard title="File Type Breakdown" subtitle="Active files by MIME category">
             <FileTypeChart data={insights.content_type_breakdown} />
           </ChartCard>

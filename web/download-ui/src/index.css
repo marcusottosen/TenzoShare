@@ -317,3 +317,28 @@ body {
   font-size: 13px;
   font-weight: 500;
 }
+
+/* ─── Mobile responsive ──────────────────────────── */
+@media (max-width: 600px) {
+  .tenzo-page {
+    padding: 24px 12px 60px;
+    justify-content: flex-start;
+  }
+
+  .tenzo-card {
+    padding: 24px 20px;
+    border-radius: var(--radius-md);
+  }
+
+  .tenzo-title { font-size: 17px; }
+  .tenzo-subtitle { font-size: 13px; }
+
+  .file-item { padding: 10px 12px; gap: 10px; }
+  .file-name { font-size: 12px; }
+
+  .btn { font-size: 13px; }
+  .btn-lg { height: 40px; }
+
+  .chips-row { gap: 4px; }
+  .chip { font-size: 11px; padding: 2px 8px; }
+}

@@ -305,7 +305,7 @@ export default function FilesPage() {
       {error && <div className="alert alert-error">{error}</div>}
 
       {/* ── Stats row ─────────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 14, marginBottom: 20 }}>
+      <div className="files-stats-grid" style={{ marginBottom: 20 }}>
         {/* Storage card */}
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
@@ -412,9 +412,8 @@ export default function FilesPage() {
         ) : (
           <>
             {/* Table header */}
-            <div style={{
-              display: 'grid', gridTemplateColumns: '2fr 90px 130px 130px 140px 120px',
-              padding: '8px 20px', borderBottom: '1px solid var(--color-border)',
+            <div className="files-row" style={{
+              padding: '8px 20px',
               fontSize: 11, fontWeight: 600, color: 'var(--color-text-muted)',
               textTransform: 'uppercase', letterSpacing: '0.06em',
             }}>

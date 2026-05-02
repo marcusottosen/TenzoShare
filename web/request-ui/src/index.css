@@ -390,3 +390,24 @@ body {
 .state-icon-teal  { background: var(--color-accent-teal-bg); color: var(--color-secondary); border: 1px solid var(--color-accent-teal-border); }
 .state-icon-error { background: var(--color-error-bg); color: var(--color-danger); border: 1px solid var(--color-error-border); }
 .state-icon-warn  { background: var(--color-warn-bg); color: var(--color-warn-text); border: 1px solid var(--color-warn-border); }
+
+/* ─── Mobile responsive ──────────────────────────── */
+@media (max-width: 600px) {
+  .tenzo-page {
+    padding: 24px 12px 60px;
+    justify-content: flex-start;
+  }
+
+  .tenzo-card {
+    padding: 24px 20px;
+    border-radius: var(--radius-md);
+  }
+
+  .tenzo-title { font-size: 17px; }
+  .tenzo-subtitle { font-size: 13px; }
+
+  .btn { font-size: 13px; }
+  .btn-lg { height: 40px; font-size: 14px; }
+
+  .tenzo-input { font-size: 16px; /* prevents iOS zoom */ }
+}
