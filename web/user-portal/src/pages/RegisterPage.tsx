@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router';
 import { register } from '../api/auth';
+import { getLogoUrl } from '../branding';
 
 export default function RegisterPage() {
   const [email, setEmail] = useState('');
@@ -29,7 +30,7 @@ export default function RegisterPage() {
     <div className="auth-page">
       <div className="auth-box">
         <div className="auth-logo">
-          <div className="auth-logo-icon"><img src="/logo.png" alt="TenzoShare" style={{ width: 28, height: 28, objectFit: 'contain' }} /></div>
+          <div className="auth-logo-icon"><img src={getLogoUrl()} alt="TenzoShare" style={{ width: 28, height: 28, objectFit: 'contain' }} /></div>
           <span className="auth-logo-name">TenzoShare</span>
         </div>
         <h1>Create your account</h1>

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import type { FileRequestPublic } from '../types';
 import { RequestApiError } from '../types';
 import { fetchRequest, uploadFile } from '../api/requests';
+import { getLogoUrl } from '../branding';
 
 // ─── Slug resolution ───────────────────────────────────────────────────────
 function resolveSlug(): string | null {
@@ -108,7 +109,7 @@ function Layout({ children }: { children: React.ReactNode }) {
       <div className="tenzo-card">
         <div className="tenzo-brand">
           <div className="tenzo-brand-icon">
-            <img src="/logo.png" alt="TenzoShare" style={{ width: 32, height: 32, objectFit: 'contain' }} />
+            <img src={getLogoUrl()} alt="TenzoShare" style={{ width: 32, height: 32, objectFit: 'contain' }} />
           </div>
           <span className="tenzo-brand-name">TenzoShare</span>
         </div>
@@ -123,7 +124,7 @@ function Layout({ children }: { children: React.ReactNode }) {
 function TenzoFooter() {
   return (
     <div className="tenzo-footer">
-      <img src="/logo.png" alt="" style={{ width: 14, height: 14, objectFit: 'contain' }} />
+      <img src={getLogoUrl()} alt="" style={{ width: 14, height: 14, objectFit: 'contain' }} />
       Files are encrypted and delivered securely via TenzoShare
     </div>
   );

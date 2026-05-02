@@ -2,6 +2,7 @@ import React from 'react';
 import { NavLink, useNavigate, Outlet, useLocation } from 'react-router';
 import { useAuth } from '../stores/auth';
 import { logout as apiLogout } from '../api/auth';
+import { getLogoUrl } from '../branding';
 
 function IconGrid() {
   return (
@@ -107,7 +108,7 @@ export default function Layout() {
       <nav className="sidebar">
         <div className="sidebar-header">
           <div className="sidebar-logo">
-            <img src="/logo.png" alt="TenzoShare" style={{ width: 32, height: 32, objectFit: 'contain' }} />
+            <img src={getLogoUrl()} alt="TenzoShare" style={{ width: 32, height: 32, objectFit: 'contain' }} />
           </div>
           <div>
             <div className="sidebar-title">TenzoShare</div>

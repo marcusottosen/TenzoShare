@@ -205,6 +205,11 @@ func main() {
 	v1.Get("/audit/stats", handleGetAuditStats)
 	v1.Get("/auth/config", handleGetAuthConfig)
 	v1.Put("/auth/config", handlePutAuthConfig)
+	v1.Get("/branding", handleGetBranding)
+	v1.Put("/branding", handlePutBranding)
+
+	// Public branding endpoint — no auth required so user-facing sites can fetch it.
+	app.Get("/api/v1/branding", handleGetBrandingPublic)
 
 	go func() {
 		if err := app.Listen(":" + cfg.Server.Port); err != nil {
@@ -1800,6 +1805,97 @@ func getEnvOr(key, fallback string) string {
 }
 
 // isUniqueViolation checks for PostgreSQL unique constraint violation (SQLSTATE 23505).
+// ── Branding ─────────────────────────────────────────────────────────────────
+
+type BrandingConfig struct {
+	PrimaryColor   string  `json:"primary_color"`
+	SecondaryColor string  `json:"secondary_color"`
+	LogoDataURL    *string `json:"logo_data_url"`
+	UpdatedAt      string  `json:"updated_at"`
+}
+
+func scanBranding(c fiber.Ctx) (BrandingConfig, error) {
+	var bc BrandingConfig
+	var updatedAt time.Time
+	err := db.QueryRow(c.Context(), `
+		SELECT primary_color, secondary_color, logo_data_url, updated_at
+		FROM admin_svc.branding_settings WHERE id = 1`,
+	).Scan(&bc.PrimaryColor, &bc.SecondaryColor, &bc.LogoDataURL, &updatedAt)
+	if err != nil {
+		return bc, err
+	}
+	bc.UpdatedAt = updatedAt.Format(time.RFC3339)
+	return bc, nil
+}
+
+// GET /api/v1/branding  (public — no auth)
+func handleGetBrandingPublic(c fiber.Ctx) error {
+	bc, err := scanBranding(c)
+	if err != nil {
+		return apperrors.Internal("get branding", err)
+	}
+	return c.JSON(bc)
+}
+
+// GET /api/v1/admin/branding
+func handleGetBranding(c fiber.Ctx) error {
+	return handleGetBrandingPublic(c)
+}
+
+// PUT /api/v1/admin/branding
+func handlePutBranding(c fiber.Ctx) error {
+	var body struct {
+		PrimaryColor   *string `json:"primary_color"`
+		SecondaryColor *string `json:"secondary_color"`
+		LogoDataURL    *string `json:"logo_data_url"` // empty string = clear logo
+		ClearLogo      *bool   `json:"clear_logo"`
+	}
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return apperrors.BadRequest("invalid JSON body")
+	}
+	// Validate hex colors if provided.
+	for _, col := range []*string{body.PrimaryColor, body.SecondaryColor} {
+		if col != nil && (len(*col) != 7 || (*col)[0] != '#') {
+			return apperrors.BadRequest("colors must be a 7-character hex value like #1E293B")
+		}
+	}
+	// Validate logo size (base64 of 512 KB ≈ 700 KB string).
+	if body.LogoDataURL != nil && len(*body.LogoDataURL) > 800_000 {
+		return apperrors.BadRequest("logo must be under 512 KB")
+	}
+
+	// Determine new logo_data_url value.
+	// Use *string so pgx knows the PostgreSQL type (text) even when nil.
+	clearLogo := (body.ClearLogo != nil && *body.ClearLogo) ||
+		(body.LogoDataURL != nil && *body.LogoDataURL == "")
+	var logoSQL *string
+	if !clearLogo && body.LogoDataURL != nil && *body.LogoDataURL != "" {
+		logoSQL = body.LogoDataURL
+	}
+
+	_, err := db.Exec(c.Context(), `
+		UPDATE admin_svc.branding_settings SET
+		    primary_color   = COALESCE($1::text, primary_color),
+		    secondary_color = COALESCE($2::text, secondary_color),
+		    logo_data_url   = CASE
+		                          WHEN $3::bool THEN NULL
+		                          WHEN $4::text IS NOT NULL THEN $4::text
+		                          ELSE logo_data_url
+		                      END,
+		    updated_at      = now()
+		WHERE id = 1`,
+		body.PrimaryColor,
+		body.SecondaryColor,
+		clearLogo,
+		logoSQL,
+	)
+	if err != nil {
+		return apperrors.Internal("update branding", err)
+	}
+	publishAdminAudit(c, "admin.branding_updated", "branding_settings", nil)
+	return handleGetBrandingPublic(c)
+}
+
 func isUniqueViolation(err error) bool {
 	if err == nil {
 		return false

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { TransferPublic, FileInfo } from '../types';
 import { fetchTransfer, fetchDownloadUrl, TransferApiError } from '../api/transfer';
+import { getLogoUrl } from '../branding';
 
 // ─── Icon components ───────────────────────────────────────────────────────
 
@@ -550,7 +551,7 @@ function Layout({ children }: { children: React.ReactNode }) {
       <div className="tenzo-card">
         <div className="tenzo-brand">
           <div className="tenzo-brand-icon">
-            <img src="/logo.png" alt="TenzoShare" style={{ width: 32, height: 32, objectFit: 'contain' }} />
+            <img src={getLogoUrl()} alt="TenzoShare" style={{ width: 32, height: 32, objectFit: 'contain' }} />
           </div>
           <span className="tenzo-brand-name">TenzoShare</span>
         </div>
@@ -790,7 +791,7 @@ function FileViewerModal({
 function TenzoFooter({ viewOnly }: { viewOnly?: boolean }) {
   return (
     <div className="tenzo-footer">
-      <img src="/logo.png" alt="" style={{ width: 14, height: 14, objectFit: 'contain' }} />
+      <img src={getLogoUrl()} alt="" style={{ width: 14, height: 14, objectFit: 'contain' }} />
       {viewOnly
         ? 'Files are encrypted and served securely in view-only mode via TenzoShare'
         : 'Files are encrypted and served securely via TenzoShare'}

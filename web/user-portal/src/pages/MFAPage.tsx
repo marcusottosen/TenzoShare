@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router';
 import { loginMFA, storeTokens, getMe } from '../api/auth';
 import { useAuth } from '../stores/auth';
+import { getLogoUrl } from '../branding';
 
 export default function MFAPage() {
   const [code, setCode] = useState('');
@@ -43,7 +44,7 @@ export default function MFAPage() {
     <div className="auth-page">
       <div className="auth-box">
         <div className="auth-logo">
-          <div className="auth-logo-icon"><img src="/logo.png" alt="TenzoShare" style={{ width: 28, height: 28, objectFit: 'contain' }} /></div>
+          <div className="auth-logo-icon"><img src={getLogoUrl()} alt="TenzoShare" style={{ width: 28, height: 28, objectFit: 'contain' }} /></div>
           <span className="auth-logo-name">TenzoShare</span>
         </div>
         <h1>Two-factor authentication</h1>

@@ -341,7 +341,7 @@ services:
       - tenzoshare-net
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.admin.rule=PathPrefix(`/api/v1/admin`)"
+      - "traefik.http.routers.admin.rule=PathPrefix(`/api/v1/admin`) || PathPrefix(`/api/v1/branding`)"
       - "traefik.http.services.admin.loadbalancer.server.port=8087"
 
 # ── UI Applications ────────────────────────────────────────────────────────────

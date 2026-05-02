@@ -88,6 +88,17 @@ function IconLock() {
     </svg>
   );
 }
+function IconPalette() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/>
+      <circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/>
+      <circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/>
+      <circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/>
+      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10c.28 0 .5-.22.5-.5 0-.16-.08-.28-.14-.35-.41-.46-.63-1.05-.63-1.65 0-1.38 1.12-2.5 2.5-2.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8z"/>
+    </svg>
+  );
+}
 
 const PAGE_TITLES: Record<string, string> = {
   '/': 'System Overview',
@@ -100,6 +111,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/storage': 'Storage Settings',
   '/storage/files': 'Storage Files',
   '/storage/insights': 'Storage Insights',
+  '/branding': 'Branding',
 };
 
 function getInitials(email?: string): string {
@@ -177,6 +189,9 @@ export default function Layout() {
           </NavLink>
 
           <div className="sidebar-section-label">Configuration</div>
+          <NavLink to="/branding" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            <IconPalette /> Branding
+          </NavLink>
           <NavLink to="/storage" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             <IconStorage /> Storage Settings
           </NavLink>

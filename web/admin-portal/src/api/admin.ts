@@ -405,3 +405,28 @@ export async function updateAuthConfig(body: {
   });
 }
 
+// ── Branding ──────────────────────────────────────────────────────────────────
+
+export interface BrandingConfig {
+  primary_color: string;
+  secondary_color: string;
+  logo_data_url: string | null;
+  updated_at: string;
+}
+
+export async function getBranding(): Promise<BrandingConfig> {
+  return request<BrandingConfig>('/admin/branding');
+}
+
+export async function updateBranding(body: {
+  primary_color?: string;
+  secondary_color?: string;
+  logo_data_url?: string;
+  clear_logo?: boolean;
+}): Promise<BrandingConfig> {
+  return request<BrandingConfig>('/admin/branding', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+}
+

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { requestPasswordReset, confirmPasswordReset } from '../api/auth';
+import { getLogoUrl } from '../branding';
 
 export default function ForgotPasswordPage() {
   const [searchParams] = useSearchParams();
@@ -44,7 +45,7 @@ export default function ForgotPasswordPage() {
     <div className="auth-page">
       <div className="auth-box">
         <div className="auth-logo">
-          <div className="auth-logo-icon"><img src="/logo.png" alt="TenzoShare" style={{ width: 28, height: 28, objectFit: 'contain' }} /></div>
+          <div className="auth-logo-icon"><img src={getLogoUrl()} alt="TenzoShare" style={{ width: 28, height: 28, objectFit: 'contain' }} /></div>
           <span className="auth-logo-name">TenzoShare</span>
         </div>
 
