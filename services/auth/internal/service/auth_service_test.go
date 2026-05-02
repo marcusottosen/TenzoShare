@@ -25,8 +25,8 @@ import (
 
 // stubUserRepo is a minimal in-memory implementation of userRepository for tests.
 type stubUserRepo struct {
-	users         map[string]*domain.User   // keyed by email
-	usersByID     map[string]*domain.User   // keyed by id
+	users         map[string]*domain.User // keyed by email
+	usersByID     map[string]*domain.User // keyed by id
 	refreshTokens map[string]*domain.RefreshToken
 	err           error // if set, every method returns this error
 }
@@ -120,9 +120,9 @@ func (r *stubUserRepo) GetMFASecret(_ context.Context, _ string) (*domain.MFASec
 }
 
 func (r *stubUserRepo) UpsertMFASecret(_ context.Context, _, _ string) error    { return r.err }
-func (r *stubUserRepo) EnableMFA(_ context.Context, _ string) error              { return r.err }
-func (r *stubUserRepo) RecordSuccessfulLogin(_ context.Context, _ string) error  { return r.err }
-func (r *stubUserRepo) UpdatePassword(_ context.Context, _, _ string) error      { return r.err }
+func (r *stubUserRepo) EnableMFA(_ context.Context, _ string) error             { return r.err }
+func (r *stubUserRepo) RecordSuccessfulLogin(_ context.Context, _ string) error { return r.err }
+func (r *stubUserRepo) UpdatePassword(_ context.Context, _, _ string) error     { return r.err }
 
 func (r *stubUserRepo) RecordFailedLogin(_ context.Context, id string, _ int, _ time.Duration) error {
 	if u, ok := r.usersByID[id]; ok {
@@ -151,6 +151,10 @@ func (r *stubUserRepo) ListAPIKeys(_ context.Context, _ string) ([]*domain.APIKe
 }
 
 func (r *stubUserRepo) DeleteAPIKey(_ context.Context, _, _ string) error { return r.err }
+
+func (r *stubUserRepo) GetLockoutConfig(_ context.Context) (int, time.Duration, error) {
+	return 10, 15 * time.Minute, nil
+}
 
 // ── test helpers ──────────────────────────────────────────────────────────────
 

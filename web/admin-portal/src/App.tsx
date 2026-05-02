@@ -13,6 +13,7 @@ import StorageSettingsPage from './pages/StorageSettingsPage';
 import StorageFilesPage from './pages/StorageFilesPage';
 import StorageInsightsPage from './pages/StorageInsightsPage';
 import LogRetentionPage from './pages/LogRetentionPage';
+import SecuritySettingsPage from './pages/SecuritySettingsPage';
 
 export default function App() {
   return (
@@ -29,6 +30,7 @@ export default function App() {
               <Route path="/apikeys" element={<ApiKeysPage />} />
               <Route path="/audit" element={<AuditPage />} />
               <Route path="/audit/settings" element={<LogRetentionPage />} />
+              <Route path="/security" element={<SecuritySettingsPage />} />
               <Route path="/storage" element={<StorageSettingsPage />} />
               <Route path="/storage/files" element={<StorageFilesPage />} />
               <Route path="/storage/insights" element={<StorageInsightsPage />} />

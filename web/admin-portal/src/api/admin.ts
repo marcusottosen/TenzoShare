@@ -382,3 +382,26 @@ export async function getAuditStats(): Promise<AuditStats> {
 export async function triggerAuditPurge(): Promise<AuditPurgeResult> {
   return request<AuditPurgeResult>('/admin/audit/purge', { method: 'POST' });
 }
+
+// ── Auth lockout config ────────────────────────────────────────────────────────
+
+export interface AuthLockoutConfig {
+  max_failed_attempts: number;
+  lockout_duration_minutes: number;
+  updated_at: string;
+}
+
+export async function getAuthConfig(): Promise<AuthLockoutConfig> {
+  return request<AuthLockoutConfig>('/admin/auth/config');
+}
+
+export async function updateAuthConfig(body: {
+  max_failed_attempts?: number;
+  lockout_duration_minutes?: number;
+}): Promise<AuthLockoutConfig> {
+  return request<AuthLockoutConfig>('/admin/auth/config', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+}
+

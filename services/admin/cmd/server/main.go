@@ -203,9 +203,10 @@ func main() {
 	v1.Put("/audit/config", handlePutAuditConfig)
 	v1.Post("/audit/purge", handleTriggerAuditPurge)
 	v1.Get("/audit/stats", handleGetAuditStats)
+	v1.Get("/auth/config", handleGetAuthConfig)
+	v1.Put("/auth/config", handlePutAuthConfig)
 
 	go func() {
-		log.Info("admin service starting", zap.String("port", cfg.Server.Port))
 		if err := app.Listen(":" + cfg.Server.Port); err != nil {
 			log.Error("server error", zap.Error(err))
 		}
@@ -1732,6 +1733,61 @@ func runAuditPurge(log *zap.Logger) {
 	if tag.RowsAffected() > 0 {
 		log.Info("audit purge complete", zap.Int64("deleted", tag.RowsAffected()), zap.Int("retention_days", retDays))
 	}
+}
+
+// ── Auth lockout config ───────────────────────────────────────────────────────
+
+// AuthLockoutConfig holds the account-lockout policy stored in auth.auth_settings.
+type AuthLockoutConfig struct {
+	MaxFailedAttempts      int    `json:"max_failed_attempts"`
+	LockoutDurationMinutes int    `json:"lockout_duration_minutes"`
+	UpdatedAt              string `json:"updated_at"`
+}
+
+// GET /api/v1/admin/auth/config
+func handleGetAuthConfig(c fiber.Ctx) error {
+	var cfg AuthLockoutConfig
+	var updatedAt time.Time
+	err := db.QueryRow(c.Context(), `
+		SELECT max_failed_attempts, lockout_duration_minutes, updated_at
+		FROM auth.auth_settings WHERE id = 1`,
+	).Scan(&cfg.MaxFailedAttempts, &cfg.LockoutDurationMinutes, &updatedAt)
+	if err != nil {
+		return apperrors.Internal("get auth config", err)
+	}
+	cfg.UpdatedAt = updatedAt.Format(time.RFC3339)
+	return c.JSON(cfg)
+}
+
+// PUT /api/v1/admin/auth/config
+func handlePutAuthConfig(c fiber.Ctx) error {
+	var body struct {
+		MaxFailedAttempts      *int `json:"max_failed_attempts"`
+		LockoutDurationMinutes *int `json:"lockout_duration_minutes"`
+	}
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return apperrors.BadRequest("invalid JSON body")
+	}
+	if body.MaxFailedAttempts != nil && *body.MaxFailedAttempts < 1 {
+		return apperrors.BadRequest("max_failed_attempts must be >= 1")
+	}
+	if body.LockoutDurationMinutes != nil && *body.LockoutDurationMinutes < 1 {
+		return apperrors.BadRequest("lockout_duration_minutes must be >= 1")
+	}
+
+	_, err := db.Exec(c.Context(), `
+		UPDATE auth.auth_settings SET
+		    max_failed_attempts      = COALESCE($1, max_failed_attempts),
+		    lockout_duration_minutes = COALESCE($2, lockout_duration_minutes),
+		    updated_at               = now()
+		WHERE id = 1`,
+		body.MaxFailedAttempts, body.LockoutDurationMinutes,
+	)
+	if err != nil {
+		return apperrors.Internal("update auth config", err)
+	}
+	publishAdminAudit(c, "admin.auth_config_updated", "auth_settings", nil)
+	return handleGetAuthConfig(c)
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }

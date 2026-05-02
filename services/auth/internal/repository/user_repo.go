@@ -329,6 +329,17 @@ func (r *UserRepository) DeleteAPIKey(ctx context.Context, id, userID string) er
 	return nil
 }
 
+// GetLockoutConfig returns the current max_failed_attempts and lockout_duration
+// from the auth.auth_settings singleton row.
+func (r *UserRepository) GetLockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration, err error) {
+	var mins int
+	row := r.db.QueryRow(ctx, `SELECT max_failed_attempts, lockout_duration_minutes FROM auth.auth_settings WHERE id = 1`)
+	if err = row.Scan(&maxAttempts, &mins); err != nil {
+		return 10, 15 * time.Minute, nil // safe fallback to previous defaults
+	}
+	return maxAttempts, time.Duration(mins) * time.Minute, nil
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func hashToken(raw string) string {
