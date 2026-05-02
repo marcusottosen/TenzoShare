@@ -21,6 +21,7 @@ import (
 	"github.com/tenzoshare/tenzoshare/shared/pkg/crypto"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/database"
 	apperrors "github.com/tenzoshare/tenzoshare/shared/pkg/errors"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jwtkeys"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/logger"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
@@ -109,10 +110,11 @@ type StorageInsights struct {
 	StoragePerDay        []StorageDayStat  `json:"storage_per_day"`
 }
 
-// ── Global DB pool and config ─────────────────────────────────────────────────
+// ── Global DB pool, config and NATS ─────────────────────────────────────────
 
 var db *pgxpool.Pool
 var cfg *config.Config
+var js *jetstream.Client
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
@@ -138,6 +140,19 @@ func main() {
 		log.Fatal("failed to connect to database", zap.Error(err))
 	}
 	defer db.Close()
+
+	// NATS JetStream — optional; admin service publishes audit events but never blocks on it.
+	if cfg.NATS.URL != "" {
+		js, err = jetstream.New(cfg.NATS.URL)
+		if err != nil {
+			log.Warn("failed to connect to NATS — admin audit events will not be published", zap.Error(err))
+		} else {
+			if err2 := js.EnsureStreams(ctx); err2 != nil {
+				log.Warn("failed to ensure NATS streams", zap.Error(err2))
+			}
+			log.Info("admin: connected to NATS JetStream")
+		}
+	}
 
 	app := fiber.New(fiber.Config{
 		AppName:      "tenzoshare-admin",
@@ -169,6 +184,8 @@ func main() {
 	v1.Delete("/users/:id", handleDeleteUser)
 	v1.Post("/users/:id/unlock", handleUnlockUser)
 	v1.Post("/users/:id/verify", handleVerifyEmail)
+	v1.Post("/users/:id/reset-password", handleResetPassword)
+	v1.Post("/users/:id/set-password", handleSetPassword)
 	v1.Get("/stats", handleGetStats)
 	v1.Get("/system/health", handleSystemHealth)
 	v1.Get("/storage/usage", handleListStorageUsage)
@@ -186,9 +203,10 @@ func main() {
 	v1.Put("/audit/config", handlePutAuditConfig)
 	v1.Post("/audit/purge", handleTriggerAuditPurge)
 	v1.Get("/audit/stats", handleGetAuditStats)
+	v1.Get("/auth/config", handleGetAuthConfig)
+	v1.Put("/auth/config", handlePutAuthConfig)
 
 	go func() {
-		log.Info("admin service starting", zap.String("port", cfg.Server.Port))
 		if err := app.Listen(":" + cfg.Server.Port); err != nil {
 			log.Error("server error", zap.Error(err))
 		}
@@ -230,6 +248,8 @@ func userSortClause(sortBy, sortDir string) string {
 		return "role " + sortDir
 	case "is_active":
 		return "is_active " + sortDir
+	case "last_login_at":
+		return "last_login_at " + sortDir
 	default:
 		return "created_at " + sortDir
 	}
@@ -374,6 +394,7 @@ func handleCreateUser(c fiber.Ctx) error {
 		return apperrors.Internal("create user", err)
 	}
 
+	publishAdminAudit(c, "admin.user_created", u.ID, map[string]any{"target_email": body.Email, "role": body.Role})
 	return c.Status(fiber.StatusCreated).JSON(u)
 }
 
@@ -394,12 +415,14 @@ func handleUpdateUser(c fiber.Ctx) error {
 		return apperrors.BadRequest("role must be 'admin' or 'user'")
 	}
 
+	payload := map[string]any{"target_user_id": id}
 	if body.Role != nil {
 		if _, err := db.Exec(c.Context(),
 			"UPDATE auth.users SET role = $1, updated_at = now() WHERE id = $2",
 			*body.Role, id); err != nil {
 			return apperrors.Internal("update user role", err)
 		}
+		payload["role"] = *body.Role
 	}
 	if body.IsActive != nil {
 		if _, err := db.Exec(c.Context(),
@@ -407,8 +430,10 @@ func handleUpdateUser(c fiber.Ctx) error {
 			*body.IsActive, id); err != nil {
 			return apperrors.Internal("update user active", err)
 		}
+		payload["is_active"] = *body.IsActive
 	}
 
+	publishAdminAudit(c, "admin.user_updated", id, payload)
 	return c.JSON(fiber.Map{"ok": true})
 }
 
@@ -429,6 +454,7 @@ func handleDeleteUser(c fiber.Ctx) error {
 	if tag.RowsAffected() == 0 {
 		return apperrors.NotFound("user not found")
 	}
+	publishAdminAudit(c, "admin.user_deleted", id, nil)
 	return c.JSON(fiber.Map{"ok": true})
 }
 
@@ -444,6 +470,7 @@ func handleUnlockUser(c fiber.Ctx) error {
 	if tag.RowsAffected() == 0 {
 		return apperrors.NotFound("user not found")
 	}
+	publishAdminAudit(c, "admin.user_unlocked", id, nil)
 	return c.JSON(fiber.Map{"ok": true})
 }
 
@@ -459,6 +486,61 @@ func handleVerifyEmail(c fiber.Ctx) error {
 	if tag.RowsAffected() == 0 {
 		return apperrors.NotFound("user not found")
 	}
+	publishAdminAudit(c, "admin.user_email_verified", id, nil)
+	return c.JSON(fiber.Map{"ok": true})
+}
+
+// POST /api/v1/admin/users/:id/reset-password — generate a random temp password and return it
+func handleResetPassword(c fiber.Ctx) error {
+	id := c.Params("id")
+	// Generate a 12-byte (16-char base64url) temp password
+	tempPw, err := crypto.RandomToken(12)
+	if err != nil {
+		return apperrors.Internal("generate temp password", err)
+	}
+	hash, err := crypto.HashPassword(tempPw, cfg.App.Pepper)
+	if err != nil {
+		return apperrors.Internal("hash temp password", err)
+	}
+	tag, err := db.Exec(c.Context(),
+		"UPDATE auth.users SET password_hash = $1, updated_at = now() WHERE id = $2",
+		hash, id)
+	if err != nil {
+		return apperrors.Internal("reset password", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperrors.NotFound("user not found")
+	}
+	publishAdminAudit(c, "admin.user_password_reset", id, map[string]any{"target_user_id": id})
+	return c.JSON(fiber.Map{"temp_password": tempPw})
+}
+
+// POST /api/v1/admin/users/:id/set-password  body: {password}
+func handleSetPassword(c fiber.Ctx) error {
+	id := c.Params("id")
+	var body struct {
+		Password string `json:"password"`
+	}
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return apperrors.BadRequest("invalid JSON body")
+	}
+	if len(body.Password) < 8 {
+		return apperrors.BadRequest("password must be at least 8 characters")
+	}
+	hash, err := crypto.HashPassword(body.Password, cfg.App.Pepper)
+	if err != nil {
+		return apperrors.Internal("hash password", err)
+	}
+	tag, err := db.Exec(c.Context(),
+		"UPDATE auth.users SET password_hash = $1, updated_at = now() WHERE id = $2",
+		hash, id)
+	if err != nil {
+		return apperrors.Internal("set password", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperrors.NotFound("user not found")
+	}
+	publishAdminAudit(c, "admin.user_password_set", id, map[string]any{"target_user_id": id})
 	return c.JSON(fiber.Map{"ok": true})
 }
 
@@ -570,6 +652,7 @@ type transferRow struct {
 	ExpiresAt      *string `json:"expires_at"`
 	DownloadCount  int     `json:"download_count"`
 	MaxDownloads   *int    `json:"max_downloads"`
+	ViewOnly       bool    `json:"view_only"`
 	CreatedAt      string  `json:"created_at"`
 	Status         string  `json:"status"`
 	HasPassword    bool    `json:"has_password"`
@@ -656,7 +739,7 @@ func handleListTransfers(c fiber.Ctx) error {
 		       COALESCE(t.description, '') AS description,
 		       COALESCE(t.recipient_email, '') AS recipient_email,
 		       t.slug, t.is_revoked, t.expires_at, t.download_count,
-		       t.max_downloads, t.created_at, t.password_hash,
+		       t.max_downloads, t.view_only, t.created_at, t.password_hash,
 		       (SELECT count(*) FROM transfer.transfer_files tf WHERE tf.transfer_id = t.id) AS file_count,
 		       COALESCE((SELECT sum(f.size_bytes)
 		                 FROM transfer.transfer_files tf
@@ -689,7 +772,7 @@ func handleListTransfers(c fiber.Ctx) error {
 		var passwordHash *string
 		if err := rows.Scan(&r.ID, &r.OwnerEmail, &r.Name, &r.Description,
 			&r.RecipientEmail, &r.Slug, &r.IsRevoked,
-			&expiresAt, &r.DownloadCount, &maxDownloads, &createdAt, &passwordHash, &r.FileCount, &r.TotalSizeBytes, &r.IsExhausted); err != nil {
+			&expiresAt, &r.DownloadCount, &maxDownloads, &r.ViewOnly, &createdAt, &passwordHash, &r.FileCount, &r.TotalSizeBytes, &r.IsExhausted); err != nil {
 			continue
 		}
 		scanTransferRow(&r, expiresAt, maxDownloads, createdAt, passwordHash)
@@ -717,7 +800,7 @@ func handleGetTransfer(c fiber.Ctx) error {
 		       COALESCE(t.description, '') AS description,
 		       COALESCE(t.recipient_email, '') AS recipient_email,
 		       t.slug, t.is_revoked, t.expires_at, t.download_count,
-		       t.max_downloads, t.created_at, t.password_hash,
+		       t.max_downloads, t.view_only, t.created_at, t.password_hash,
 		       (SELECT count(*) FROM transfer.transfer_files tf WHERE tf.transfer_id = t.id) AS file_count,
 		       COALESCE((SELECT sum(f.size_bytes)
 		                 FROM transfer.transfer_files tf
@@ -734,7 +817,7 @@ func handleGetTransfer(c fiber.Ctx) error {
 		WHERE t.id = $1`, id,
 	).Scan(&r.ID, &r.OwnerEmail, &r.Name, &r.Description,
 		&r.RecipientEmail, &r.Slug, &r.IsRevoked,
-		&expiresAt, &r.DownloadCount, &maxDownloads, &createdAt, &passwordHash, &r.FileCount, &r.TotalSizeBytes, &r.IsExhausted)
+		&expiresAt, &r.DownloadCount, &maxDownloads, &r.ViewOnly, &createdAt, &passwordHash, &r.FileCount, &r.TotalSizeBytes, &r.IsExhausted)
 	if err != nil {
 		return apperrors.NotFound("transfer not found")
 	}
@@ -775,6 +858,7 @@ func handleRevokeTransfer(c fiber.Ctx) error {
 	if tag.RowsAffected() == 0 {
 		return apperrors.NotFound("transfer not found")
 	}
+	publishAdminAudit(c, "admin.transfer_revoked", id, nil)
 	return c.JSON(fiber.Map{"ok": true})
 }
 
@@ -903,14 +987,17 @@ func handleSystemHealth(c fiber.Ctx) error {
 
 // StorageConfig is the singleton storage policy row.
 type StorageConfig struct {
-	QuotaEnabled        bool   `json:"quota_enabled"`
-	QuotaBytesPerUser   int64  `json:"quota_bytes_per_user"`
-	MaxUploadSizeBytes  int64  `json:"max_upload_size_bytes"`
-	RetentionEnabled    bool   `json:"retention_enabled"`
-	RetentionDays       int    `json:"retention_days"`
-	OrphanRetentionDays int    `json:"orphan_retention_days"`
-	UpdatedAt           string `json:"updated_at"`
-	UpdatedBy           string `json:"updated_by"`
+	QuotaEnabled        bool  `json:"quota_enabled"`
+	QuotaBytesPerUser   int64 `json:"quota_bytes_per_user"`
+	MaxUploadSizeBytes  int64 `json:"max_upload_size_bytes"`
+	RetentionEnabled    bool  `json:"retention_enabled"`
+	RetentionDays       int   `json:"retention_days"`
+	OrphanRetentionDays int   `json:"orphan_retention_days"`
+	// TestMode disables the HTTPS-only requirement for uploads.
+	// Must only be enabled in development / test environments.
+	TestMode  bool   `json:"test_mode"`
+	UpdatedAt string `json:"updated_at"`
+	UpdatedBy string `json:"updated_by"`
 }
 
 // GET /api/v1/admin/storage/config
@@ -920,11 +1007,11 @@ func handleGetStorageConfig(c fiber.Ctx) error {
 	err := db.QueryRow(c.Context(), `
 		SELECT quota_enabled, quota_bytes_per_user, max_upload_size_bytes,
 		       retention_enabled, retention_days, orphan_retention_days,
-		       updated_at, updated_by
+		       test_mode, updated_at, updated_by
 		FROM storage.storage_settings WHERE id = 1`,
 	).Scan(&sc.QuotaEnabled, &sc.QuotaBytesPerUser, &sc.MaxUploadSizeBytes,
 		&sc.RetentionEnabled, &sc.RetentionDays, &sc.OrphanRetentionDays,
-		&updatedAt, &sc.UpdatedBy)
+		&sc.TestMode, &updatedAt, &sc.UpdatedBy)
 	if err != nil {
 		return apperrors.Internal("get storage config", err)
 	}
@@ -941,6 +1028,7 @@ func handlePutStorageConfig(c fiber.Ctx) error {
 		RetentionEnabled    *bool  `json:"retention_enabled"`
 		RetentionDays       *int   `json:"retention_days"`
 		OrphanRetentionDays *int   `json:"orphan_retention_days"`
+		TestMode            *bool  `json:"test_mode"`
 	}
 	if err := json.Unmarshal(c.Body(), &body); err != nil {
 		return apperrors.BadRequest("invalid JSON body")
@@ -973,16 +1061,18 @@ func handlePutStorageConfig(c fiber.Ctx) error {
 		    retention_enabled      = COALESCE($4, retention_enabled),
 		    retention_days         = COALESCE($5, retention_days),
 		    orphan_retention_days  = COALESCE($6, orphan_retention_days),
+		    test_mode              = COALESCE($7, test_mode),
 		    updated_at             = now(),
-		    updated_by             = $7
+		    updated_by             = $8
 		WHERE id = 1`,
 		body.QuotaEnabled, body.QuotaBytesPerUser, body.MaxUploadSizeBytes,
 		body.RetentionEnabled, body.RetentionDays, body.OrphanRetentionDays,
-		callerEmail,
+		body.TestMode, callerEmail,
 	)
 	if err != nil {
 		return apperrors.Internal("update storage config", err)
 	}
+	publishAdminAudit(c, "admin.storage_config_updated", "storage_settings", nil)
 	return handleGetStorageConfig(c)
 }
 
@@ -1174,6 +1264,7 @@ func handleAdminDeleteFile(c fiber.Ctx) error {
 		id, ownerID, filename, sizeBytes, callerEmail,
 	)
 
+	publishAdminAudit(c, "admin.file_deleted", id, map[string]any{"filename": filename, "size_bytes": sizeBytes})
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
@@ -1271,6 +1362,7 @@ func handleTriggerPurge(c fiber.Ctx) error {
 		freedBytes += p.sizeBytes
 	}
 
+	publishAdminAudit(c, "admin.storage_purge", "storage_files", map[string]any{"deleted": deleted, "freed_bytes": freedBytes})
 	return c.JSON(fiber.Map{
 		"deleted":     deleted,
 		"freed_bytes": freedBytes,
@@ -1432,6 +1524,61 @@ func handleListPurgeLog(c fiber.Ctx) error {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// adminClientIP extracts the real client IP from proxy headers, falling back to the raw connection IP.
+func adminClientIP(c fiber.Ctx) string {
+	if ip := c.Get("X-Real-IP"); ip != "" {
+		return strings.TrimSpace(ip)
+	}
+	if xff := c.Get("X-Forwarded-For"); xff != "" {
+		if idx := strings.IndexByte(xff, ','); idx != -1 {
+			return strings.TrimSpace(xff[:idx])
+		}
+		return strings.TrimSpace(xff)
+	}
+	return c.IP()
+}
+
+// adminCallerEmail resolves the calling admin's email from the JWT claims or falls back to the user ID.
+func adminCallerEmail(c fiber.Ctx) string {
+	callerID, _ := c.Locals("userID").(string)
+	if callerID == "" {
+		return "system"
+	}
+	var email string
+	if err := db.QueryRow(c.Context(), "SELECT email FROM auth.users WHERE id = $1", callerID).Scan(&email); err == nil && email != "" {
+		return email
+	}
+	return callerID
+}
+
+// publishAdminAudit fires an AUDIT.admin event asynchronously; never blocks the request.
+func publishAdminAudit(c fiber.Ctx, action, subject string, payload map[string]any) {
+	if js == nil {
+		return
+	}
+	actor := adminCallerEmail(c)
+	ip := adminClientIP(c)
+	ev := map[string]any{
+		"action":    action,
+		"user_id":   c.Locals("userID"),
+		"email":     actor,
+		"client_ip": ip,
+		"subject":   subject,
+		"success":   true,
+		"timestamp": time.Now(),
+	}
+	for k, v := range payload {
+		ev[k] = v
+	}
+	ctx := c.Context()
+	go func() {
+		if err := js.Publish(ctx, "AUDIT.admin", ev); err != nil {
+			// Best-effort — don't pollute error logs for minor audit failures
+			_ = err
+		}
+	}()
+}
+
 // ── Audit config ─────────────────────────────────────────────────────────────
 
 type AuditConfig struct {
@@ -1487,6 +1634,7 @@ func handlePutAuditConfig(c fiber.Ctx) error {
 	if err != nil {
 		return apperrors.Internal("update audit config", err)
 	}
+	publishAdminAudit(c, "admin.audit_config_updated", "audit_settings", nil)
 	return handleGetAuditConfig(c)
 }
 
@@ -1551,12 +1699,13 @@ func handleTriggerAuditPurge(c fiber.Ctx) error {
 		retDays = 365
 	}
 	tag, err := db.Exec(c.Context(),
-		`DELETE FROM audit.audit_logs WHERE created_at < now() - ($1 || ' days')::interval`,
+		`DELETE FROM audit.audit_logs WHERE created_at < now() - make_interval(days => $1)`,
 		retDays,
 	)
 	if err != nil {
 		return apperrors.Internal("purge audit logs", err)
 	}
+	publishAdminAudit(c, "admin.audit_purge", "audit_logs", map[string]any{"deleted": tag.RowsAffected(), "retention_days": retDays})
 	return c.JSON(fiber.Map{"deleted": tag.RowsAffected(), "retention_days": retDays})
 }
 
@@ -1574,7 +1723,7 @@ func runAuditPurge(log *zap.Logger) {
 		return
 	}
 	tag, err := db.Exec(context.Background(),
-		`DELETE FROM audit.audit_logs WHERE created_at < now() - ($1 || ' days')::interval`,
+		`DELETE FROM audit.audit_logs WHERE created_at < now() - make_interval(days => $1)`,
 		retDays,
 	)
 	if err != nil {
@@ -1584,6 +1733,61 @@ func runAuditPurge(log *zap.Logger) {
 	if tag.RowsAffected() > 0 {
 		log.Info("audit purge complete", zap.Int64("deleted", tag.RowsAffected()), zap.Int("retention_days", retDays))
 	}
+}
+
+// ── Auth lockout config ───────────────────────────────────────────────────────
+
+// AuthLockoutConfig holds the account-lockout policy stored in auth.auth_settings.
+type AuthLockoutConfig struct {
+	MaxFailedAttempts      int    `json:"max_failed_attempts"`
+	LockoutDurationMinutes int    `json:"lockout_duration_minutes"`
+	UpdatedAt              string `json:"updated_at"`
+}
+
+// GET /api/v1/admin/auth/config
+func handleGetAuthConfig(c fiber.Ctx) error {
+	var cfg AuthLockoutConfig
+	var updatedAt time.Time
+	err := db.QueryRow(c.Context(), `
+		SELECT max_failed_attempts, lockout_duration_minutes, updated_at
+		FROM auth.auth_settings WHERE id = 1`,
+	).Scan(&cfg.MaxFailedAttempts, &cfg.LockoutDurationMinutes, &updatedAt)
+	if err != nil {
+		return apperrors.Internal("get auth config", err)
+	}
+	cfg.UpdatedAt = updatedAt.Format(time.RFC3339)
+	return c.JSON(cfg)
+}
+
+// PUT /api/v1/admin/auth/config
+func handlePutAuthConfig(c fiber.Ctx) error {
+	var body struct {
+		MaxFailedAttempts      *int `json:"max_failed_attempts"`
+		LockoutDurationMinutes *int `json:"lockout_duration_minutes"`
+	}
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return apperrors.BadRequest("invalid JSON body")
+	}
+	if body.MaxFailedAttempts != nil && *body.MaxFailedAttempts < 1 {
+		return apperrors.BadRequest("max_failed_attempts must be >= 1")
+	}
+	if body.LockoutDurationMinutes != nil && *body.LockoutDurationMinutes < 1 {
+		return apperrors.BadRequest("lockout_duration_minutes must be >= 1")
+	}
+
+	_, err := db.Exec(c.Context(), `
+		UPDATE auth.auth_settings SET
+		    max_failed_attempts      = COALESCE($1, max_failed_attempts),
+		    lockout_duration_minutes = COALESCE($2, lockout_duration_minutes),
+		    updated_at               = now()
+		WHERE id = 1`,
+		body.MaxFailedAttempts, body.LockoutDurationMinutes,
+	)
+	if err != nil {
+		return apperrors.Internal("update auth config", err)
+	}
+	publishAdminAudit(c, "admin.auth_config_updated", "auth_settings", nil)
+	return handleGetAuthConfig(c)
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }

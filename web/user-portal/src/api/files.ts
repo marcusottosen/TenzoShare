@@ -27,6 +27,8 @@ export interface StorageUsage {
   total_bytes: number;
   quota_enabled: boolean;
   quota_bytes_per_user: number;
+  /** Maximum allowed file size in bytes (0 = no limit). */
+  max_upload_size_bytes: number;
 }
 
 export async function getMyUsage(): Promise<StorageUsage> {
@@ -85,11 +87,21 @@ export async function uploadFile(
           reject(new Error('Invalid response'));
         }
       } else {
+        // Try to parse a structured JSON error from the Go backend first.
+        // If the response is not JSON (e.g. an nginx HTML error page), fall
+        // back to a human-readable message based on the status code.
         try {
           const err = JSON.parse(xhr.responseText);
           reject(new Error(err.error?.message ?? err.message ?? `HTTP ${xhr.status}`));
         } catch {
-          reject(new Error(`HTTP ${xhr.status}`));
+          if (xhr.status === 413) {
+            reject(new Error(
+              'File too large — the server rejected this upload. ' +
+              'Check the maximum upload size in your storage settings.',
+            ));
+          } else {
+            reject(new Error(`Upload failed (HTTP ${xhr.status})`));
+          }
         }
       }
     };

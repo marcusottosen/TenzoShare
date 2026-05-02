@@ -135,6 +135,7 @@ export default function StorageSettingsPage() {
   const [retentionEnabled, setRetentionEnabled] = useState(false);
   const [retentionDays, setRetentionDays] = useState(30);
   const [orphanDays, setOrphanDays] = useState(90);
+  const [testMode, setTestMode] = useState(false);
 
   useEffect(() => {
     getStorageConfig()
@@ -146,6 +147,7 @@ export default function StorageSettingsPage() {
         setRetentionEnabled(cfg.retention_enabled);
         setRetentionDays(cfg.retention_days || 30);
         setOrphanDays(cfg.orphan_retention_days || 90);
+        setTestMode(cfg.test_mode);
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
@@ -164,6 +166,7 @@ export default function StorageSettingsPage() {
         retention_enabled: retentionEnabled,
         retention_days: retentionDays,
         orphan_retention_days: orphanDays,
+        test_mode: testMode,
       });
       setConfig(updated);
       setSuccess('Storage settings saved.');
@@ -282,6 +285,58 @@ export default function StorageSettingsPage() {
                 share expires. Files that were never shared are deleted after{' '}
                 <strong>{orphanDays} day{orphanDays !== 1 ? 's' : ''}</strong>. All deletions are logged in the Purge Log on the
                 Storage Files page. You can also trigger a purge manually from there.
+              </div>
+            )}
+          </div>
+
+          {/* ── Test / Development Mode ──────────────────────────────── */}
+          <div className="card" style={{
+            marginBottom: 20,
+            borderColor: testMode ? 'var(--color-danger, #e53e3e)' : undefined,
+            borderWidth: testMode ? 2 : undefined,
+            borderStyle: testMode ? 'solid' : undefined,
+          }}>
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <h2 style={{ fontSize: 15, fontWeight: 600, margin: 0, color: testMode ? 'var(--color-danger, #e53e3e)' : 'var(--color-text-primary)' }}>
+                  Test Mode
+                </h2>
+                {testMode && (
+                  <span style={{
+                    fontSize: 11, fontWeight: 700, padding: '2px 8px',
+                    background: 'var(--color-danger, #e53e3e)', color: '#fff',
+                    borderRadius: 4, letterSpacing: '0.05em', textTransform: 'uppercase',
+                  }}>ACTIVE</span>
+                )}
+              </div>
+              <p className="text-sm" style={{ marginTop: 4, color: 'var(--color-text-muted)' }}>
+                Controls whether the server enforces HTTPS for file uploads.
+                Intended for test environments only.
+              </p>
+            </div>
+
+            <div className="form-group">
+              <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={testMode}
+                  onChange={(e) => setTestMode(e.target.checked)}
+                  style={{ width: 16, height: 16, cursor: 'pointer' }}
+                />
+                <span style={{ fontWeight: 500 }}>Allow uploads over plain HTTP (no TLS)</span>
+              </label>
+              <p className="text-sm" style={{ marginTop: 4, color: 'var(--color-text-muted)' }}>
+                When disabled (default), the storage service rejects any upload that did not
+                arrive over an HTTPS connection.
+                Enable this only on test instances where TLS is not configured.
+              </p>
+            </div>
+
+            {testMode && (
+              <div className="alert alert-warning" style={{ marginTop: 8 }}>
+                <strong>Security warning:</strong> Test Mode is active. File uploads are
+                accepted over plain HTTP — data is transmitted without transport encryption.
+                Do not enable this in production.
               </div>
             )}
           </div>

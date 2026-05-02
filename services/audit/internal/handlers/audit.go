@@ -49,13 +49,14 @@ func (h *Handler) ListEvents(c fiber.Ctx) error {
 	}
 
 	f := repository.ListFilter{
-		UserIDs: splitTrimmed(c.Query("user_id")),
-		Sources: splitTrimmed(c.Query("source")),
-		Action:  c.Query("action"),
-		Limit:   limit,
-		Offset:  offset,
-		SortBy:  c.Query("sort_by", "created_at"),
-		SortDir: c.Query("sort_dir", "desc"),
+		UserIDs:    splitTrimmed(c.Query("user_id")),
+		Sources:    splitTrimmed(c.Query("source")),
+		Severities: splitTrimmed(c.Query("severity")),
+		Action:     c.Query("action"),
+		Limit:      limit,
+		Offset:     offset,
+		SortBy:     c.Query("sort_by", "created_at"),
+		SortDir:    c.Query("sort_dir", "desc"),
 	}
 
 	if s := c.Query("start"); s != "" {

@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   listUsers, createUser, updateUser, deleteUser, unlockUser, verifyUserEmail,
+  resetUserPassword, setUserPassword,
   listStorageUsage,
   type AdminUser, type StorageUserUsage,
 } from '../api/admin';
 import { useSortState } from '../hooks/useSort';
 import { SortHeader } from '../components/SortHeader';
 
-type UserSortKey = 'email' | 'role' | 'is_active' | 'created_at';
+type UserSortKey = 'email' | 'role' | 'is_active' | 'created_at' | 'last_login_at';
 
 const PAGE_SIZE = 50;
 
@@ -109,50 +110,234 @@ function CreateUserModal({ onClose, onCreated }: CreateModalProps) {
   );
 }
 
-// ── Delete Confirm Modal ─────────────────────────────────────────────────────
+// ── User Detail Modal ─────────────────────────────────────────────────────────
 
-interface DeleteModalProps {
+type PwPanel = null | 'reset' | 'set';
+
+function UserDetailModal({
+  user: initial,
+  storage,
+  onClose,
+  onUpdated,
+  onDeleted,
+  flash,
+}: {
   user: AdminUser;
+  storage: StorageUserUsage | undefined;
   onClose: () => void;
+  onUpdated: (u: AdminUser) => void;
   onDeleted: (id: string) => void;
-}
+  flash: (msg: string) => void;
+}) {
+  const [user, setUser] = useState(initial);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState('');
+  const [pwPanel, setPwPanel] = useState<PwPanel>(null);
+  // set-pw fields
+  const [newPw, setNewPw] = useState('');
+  const [confirmPw, setConfirmPw] = useState('');
+  // reset-pw result
+  const [tempPw, setTempPw] = useState('');
+  const [copied, setCopied] = useState(false);
+  // delete confirm
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
-function DeleteUserModal({ user, onClose, onDeleted }: DeleteModalProps) {
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
+  function act<T>(fn: () => Promise<T>, onOk: (v: T) => void) {
+    setBusy(true);
+    setActionError('');
+    fn().then(onOk).catch((e: any) => setActionError(e.message)).finally(() => setBusy(false));
+  }
 
-  async function handleDelete() {
-    setSaving(true);
-    setError('');
-    try {
-      await deleteUser(user.id);
-      onDeleted(user.id);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setSaving(false);
-    }
+  function patch(changes: Partial<AdminUser>) {
+    const next = { ...user, ...changes };
+    setUser(next);
+    onUpdated(next);
+  }
+
+  function Row({ label, children }: { label: string; children: React.ReactNode }) {
+    return (
+      <div style={{ display: 'flex', gap: 12, padding: '9px 0', borderBottom: '1px solid var(--color-border)', alignItems: 'flex-start' }}>
+        <span style={{ minWidth: 130, fontSize: 12, color: 'var(--color-text-muted)', paddingTop: 2 }}>{label}</span>
+        <span style={{ flex: 1, fontSize: 13 }}>{children}</span>
+      </div>
+    );
   }
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
+      <div className="modal" style={{ maxWidth: 560, width: '95vw' }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <span>Delete User</span>
+          <span style={{ fontWeight: 700 }}>{user.email}</span>
           <button className="modal-close" onClick={onClose}>✕</button>
         </div>
-        <div className="modal-body">
-          {error && <div className="alert alert-error">{error}</div>}
-          <p>Permanently delete <strong>{user.email}</strong>?</p>
-          <p className="text-sm" style={{ marginTop: 6, color: '#888' }}>
-            This removes the account and all associated tokens. Transfers and files are preserved.
-          </p>
+
+        <div className="modal-body" style={{ padding: '0 24px 8px' }}>
+          {actionError && <div className="alert alert-error" style={{ marginBottom: 12 }}>{actionError}</div>}
+
+          {/* ── Info ── */}
+          <Row label="User ID">
+            <span className="mono" style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{user.id}</span>
+          </Row>
+          <Row label="Role">
+            <select
+              value={user.role}
+              disabled={busy}
+              onChange={(e) => {
+                const newRole = e.target.value;
+                act(() => updateUser(user.id, { role: newRole }), () => {
+                  patch({ role: newRole });
+                  flash(`Role changed to ${newRole}`);
+                });
+              }}
+              style={{ fontSize: 13, padding: '3px 8px' }}
+            >
+              <option value="user">user</option>
+              <option value="admin">admin</option>
+            </select>
+          </Row>
+          <Row label="Account status">
+            <span className={`badge ${user.is_active ? 'badge-green' : 'badge-red'}`} style={{ marginRight: 8 }}>
+              {user.is_active ? 'Active' : 'Disabled'}
+            </span>
+            <button
+              className={`btn btn-sm ${user.is_active ? 'btn-secondary' : 'btn-primary'}`}
+              disabled={busy}
+              onClick={() => act(
+                () => updateUser(user.id, { is_active: !user.is_active }),
+                () => { patch({ is_active: !user.is_active }); flash(`Account ${user.is_active ? 'disabled' : 'enabled'}`); }
+              )}
+            >
+              {user.is_active ? 'Disable' : 'Enable'}
+            </button>
+          </Row>
+          <Row label="Email verified">
+            <span className={`badge ${user.email_verified ? 'badge-green' : 'badge-gray'}`} style={{ marginRight: 8 }}>
+              {user.email_verified ? 'Verified' : 'Unverified'}
+            </span>
+            {!user.email_verified && (
+              <button
+                className="btn btn-sm btn-secondary"
+                disabled={busy}
+                onClick={() => act(() => verifyUserEmail(user.id), () => { patch({ email_verified: true }); flash('Email verified'); })}
+              >
+                Force verify
+              </button>
+            )}
+          </Row>
+          <Row label="Login attempts">
+            {user.failed_login_attempts > 0
+              ? <span className="badge badge-orange">{user.failed_login_attempts} failed</span>
+              : <span style={{ color: 'var(--color-text-muted)' }}>0</span>}
+            {isLocked(user) && (
+              <>
+                <span className="badge badge-red" style={{ marginLeft: 8 }}>Locked</span>
+                <button
+                  className="btn btn-sm btn-secondary"
+                  disabled={busy}
+                  style={{ marginLeft: 8 }}
+                  onClick={() => act(() => unlockUser(user.id), () => { patch({ failed_login_attempts: 0, locked_until: null }); flash('Account unlocked'); })}
+                >
+                  Unlock
+                </button>
+              </>
+            )}
+          </Row>
+          <Row label="Storage used">
+            {storage
+              ? <span title={`${storage.file_count} file${storage.file_count !== 1 ? 's' : ''}`}>{fmtBytes(storage.total_bytes)}</span>
+              : <span style={{ color: 'var(--color-text-muted)' }}>—</span>}
+          </Row>
+          <Row label="Joined">{new Date(user.created_at).toLocaleString()}</Row>
+          <Row label="Last login">
+            {user.last_login_at ? new Date(user.last_login_at).toLocaleString() : <span style={{ color: 'var(--color-text-muted)' }}>Never</span>}
+          </Row>
+
+          {/* ── Password section ── */}
+          <div style={{ marginTop: 18, marginBottom: 4 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Password</span>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: pwPanel ? 12 : 0 }}>
+            <button className={`btn btn-sm ${pwPanel === 'reset' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => { setPwPanel(pwPanel === 'reset' ? null : 'reset'); setTempPw(''); setActionError(''); }} disabled={busy}>
+              Reset (generate temp)
+            </button>
+            <button className={`btn btn-sm ${pwPanel === 'set' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => { setPwPanel(pwPanel === 'set' ? null : 'set'); setNewPw(''); setConfirmPw(''); setActionError(''); }} disabled={busy}>
+              Set password
+            </button>
+          </div>
+
+          {pwPanel === 'reset' && (
+            <div style={{ background: 'var(--color-nav-active)', border: '1px solid var(--color-border)', borderRadius: 8, padding: '14px 16px', marginBottom: 8 }}>
+              {!tempPw ? (
+                <>
+                  <p className="text-sm" style={{ margin: '0 0 10px', color: 'var(--color-text-muted)' }}>
+                    A random temporary password will be generated and shown once. The current password is replaced immediately.
+                  </p>
+                  <button className="btn btn-sm btn-primary" disabled={busy} onClick={() =>
+                    act(() => resetUserPassword(user.id), (res) => { setTempPw(res.temp_password); flash('Password reset'); })
+                  }>
+                    {busy ? 'Generating…' : 'Generate'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm" style={{ margin: '0 0 8px', color: 'var(--color-text-muted)' }}>Temporary password (shown once):</p>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <code style={{ flex: 1, background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 6, padding: '7px 12px', fontSize: 14, fontFamily: 'monospace', letterSpacing: '0.05em', userSelect: 'all' }}>
+                      {tempPw}
+                    </code>
+                    <button className="btn btn-sm btn-secondary" onClick={() => {
+                      navigator.clipboard.writeText(tempPw).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
+                    }}>
+                      {copied ? 'Copied!' : 'Copy'}
+                    </button>
+                  </div>
+                  <p className="text-sm" style={{ marginTop: 8, color: '#92400e', background: '#fef3c7', border: '1px solid #fbbf24', borderRadius: 5, padding: '5px 10px', display: 'inline-block' }}>⚠️ Not stored — copy before closing this panel.</p>
+                </>
+              )}
+            </div>
+          )}
+
+          {pwPanel === 'set' && (
+            <form style={{ background: 'var(--color-nav-active)', border: '1px solid var(--color-border)', borderRadius: 8, padding: '14px 16px', marginBottom: 8 }}
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (newPw !== confirmPw) { setActionError('Passwords do not match'); return; }
+                act(() => setUserPassword(user.id, newPw), () => { setPwPanel(null); setNewPw(''); setConfirmPw(''); flash('Password updated'); });
+              }}
+            >
+              <div className="form-group" style={{ margin: '0 0 10px' }}>
+                <label>New password</label>
+                <input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)} required minLength={8} placeholder="Min 8 characters" autoFocus />
+              </div>
+              <div className="form-group" style={{ margin: '0 0 12px' }}>
+                <label>Confirm</label>
+                <input type="password" value={confirmPw} onChange={(e) => setConfirmPw(e.target.value)} required placeholder="Repeat password" />
+              </div>
+              <button className="btn btn-sm btn-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Set password'}</button>
+            </form>
+          )}
+
+          {/* ── Danger zone ── */}
+          <div style={{ marginTop: 18, marginBottom: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Danger zone</span>
+          </div>
+          {!confirmDelete ? (
+            <button className="btn btn-sm btn-danger" onClick={() => setConfirmDelete(true)} disabled={busy}>Delete account</button>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--color-nav-active)', border: '1px solid var(--color-error-border)', borderRadius: 8, padding: '10px 14px' }}>
+              <span className="text-sm" style={{ flex: 1 }}>Permanently delete <strong>{user.email}</strong>? This cannot be undone.</span>
+              <button className="btn btn-sm btn-danger" disabled={busy} onClick={() =>
+                act(() => deleteUser(user.id), () => { onDeleted(user.id); onClose(); flash('User deleted'); })
+              }>
+                {busy ? 'Deleting…' : 'Confirm delete'}
+              </button>
+              <button className="btn btn-sm btn-secondary" onClick={() => setConfirmDelete(false)}>Cancel</button>
+            </div>
+          )}
         </div>
+
         <div className="modal-footer">
-          <button className="btn btn-secondary" onClick={onClose} disabled={saving}>Cancel</button>
-          <button className="btn btn-danger" onClick={handleDelete} disabled={saving}>
-            {saving ? 'Deleting…' : 'Delete'}
-          </button>
+          <button className="btn btn-secondary" onClick={onClose}>Close</button>
         </div>
       </div>
     </div>
@@ -170,10 +355,8 @@ export default function UsersPage() {
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState('');
-  const [editing, setEditing] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<AdminUser | null>(null);
+  const [viewTarget, setViewTarget] = useState<AdminUser | null>(null);
   const [storageMap, setStorageMap] = useState<Map<string, StorageUserUsage>>(new Map());
   const sort = useSortState<UserSortKey>('created_at', 'desc', () => setPage(0));
 
@@ -219,61 +402,6 @@ export default function UsersPage() {
     load(0);
   }
 
-  async function handleRoleChange(user: AdminUser, newRole: string) {
-    setSaving(true);
-    try {
-      await updateUser(user.id, { role: newRole });
-      setUsers((prev) => prev.map((u) => u.id === user.id ? { ...u, role: newRole } : u));
-      flash(`${user.email} promoted to ${newRole}`);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setSaving(false);
-      setEditing(null);
-    }
-  }
-
-  async function handleToggleActive(user: AdminUser) {
-    setSaving(true);
-    try {
-      await updateUser(user.id, { is_active: !user.is_active });
-      setUsers((prev) => prev.map((u) => u.id === user.id ? { ...u, is_active: !u.is_active } : u));
-      flash(`${user.email} ${user.is_active ? 'disabled' : 'enabled'}`);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handleUnlock(user: AdminUser) {
-    setSaving(true);
-    try {
-      await unlockUser(user.id);
-      setUsers((prev) => prev.map((u) =>
-        u.id === user.id ? { ...u, failed_login_attempts: 0, locked_until: null } : u));
-      flash(`${user.email} unlocked`);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handleVerify(user: AdminUser) {
-    setSaving(true);
-    try {
-      await verifyUserEmail(user.id);
-      setUsers((prev) => prev.map((u) =>
-        u.id === user.id ? { ...u, email_verified: true } : u));
-      flash(`${user.email} email verified`);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setSaving(false);
-    }
-  }
-
   function handleCreated(user: AdminUser) {
     setShowCreate(false);
     setTotal((t) => t + 1);
@@ -282,10 +410,13 @@ export default function UsersPage() {
   }
 
   function handleDeleted(id: string) {
-    setDeleteTarget(null);
     setUsers((prev) => prev.filter((u) => u.id !== id));
     setTotal((t) => t - 1);
-    flash('User deleted');
+  }
+
+  function handleUpdated(updated: AdminUser) {
+    setUsers((prev) => prev.map((u) => u.id === updated.id ? updated : u));
+    setViewTarget(updated);
   }
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
@@ -295,11 +426,14 @@ export default function UsersPage() {
       {showCreate && (
         <CreateUserModal onClose={() => setShowCreate(false)} onCreated={handleCreated} />
       )}
-      {deleteTarget && (
-        <DeleteUserModal
-          user={deleteTarget}
-          onClose={() => setDeleteTarget(null)}
-          onDeleted={handleDeleted}
+      {viewTarget && (
+        <UserDetailModal
+          user={viewTarget}
+          storage={storageMap.get(viewTarget.id)}
+          onClose={() => setViewTarget(null)}
+          onUpdated={handleUpdated}
+          onDeleted={(id) => { handleDeleted(id); setViewTarget(null); flash('User deleted'); }}
+          flash={flash}
         />
       )}
 
@@ -356,74 +490,38 @@ export default function UsersPage() {
                 <SortHeader label="User" sortKey="email" sort={sort} />
                 <SortHeader label="Role" sortKey="role" sort={sort} />
                 <SortHeader label="Status" sortKey="is_active" sort={sort} />
-                <th>Email</th>
-                <th>Logins</th>
                 <th>Storage</th>
                 <SortHeader label="Joined" sortKey="created_at" sort={sort} />
-                <th>Last Login</th>
-                <th>Actions</th>
+                <SortHeader label="Last Login" sortKey="last_login_at" sort={sort} />
+                <th></th>
               </tr>
             </thead>
             <tbody>
               {users.map((u) => (
-                <tr key={u.id}>
+                <tr key={u.id} style={{ cursor: 'default' }}>
                   <td>
                     <div style={{ fontWeight: 500 }}>{u.email}</div>
-                    <div className="text-sm mono" style={{ color: '#aaa' }}>{u.id.slice(0, 8)}…</div>
+                    <div className="text-sm mono" style={{ color: '#aaa' }}>{u.id}</div>
                   </td>
                   <td>
-                    {editing === u.id ? (
-                      <select
-                        defaultValue={u.role}
-                        disabled={saving}
-                        onChange={(e) => handleRoleChange(u, e.target.value)}
-                        onBlur={() => setEditing(null)}
-                        autoFocus
-                        style={{ width: 90 }}
-                      >
-                        <option value="user">user</option>
-                        <option value="admin">admin</option>
-                      </select>
-                    ) : (
-                      <span
-                        className={`badge ${u.role === 'admin' ? 'badge-orange' : 'badge-gray'}`}
-                        style={{ cursor: 'pointer' }}
-                        title="Click to change role"
-                        onClick={() => setEditing(u.id)}
-                      >
-                        {u.role}
+                    <span className={`badge ${u.role === 'admin' ? 'badge-orange' : 'badge-gray'}`}>{u.role}</span>
+                  </td>
+                  <td>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      <span className={`badge ${u.is_active ? 'badge-green' : 'badge-red'}`} style={{ width: 'fit-content' }}>
+                        {u.is_active ? 'Active' : 'Disabled'}
                       </span>
-                    )}
-                  </td>
-                  <td>
-                    <span className={`badge ${u.is_active ? 'badge-green' : 'badge-red'}`}>
-                      {u.is_active ? 'Active' : 'Disabled'}
-                    </span>
-                  </td>
-                  <td>
-                    <span className={`badge ${u.email_verified ? 'badge-green' : 'badge-gray'}`}>
-                      {u.email_verified ? 'Verified' : 'Unverified'}
-                    </span>
-                  </td>
-                  <td className="text-sm">
-                    {u.failed_login_attempts > 0 ? (
-                      <span className="badge badge-orange">{u.failed_login_attempts} failed</span>
-                    ) : (
-                      <span style={{ color: '#aaa' }}>—</span>
-                    )}
-                    {isLocked(u) && (
-                      <span className="badge badge-red" style={{ marginLeft: 4 }}>Locked</span>
-                    )}
+                      <span className={`badge ${u.email_verified ? 'badge-green' : 'badge-gray'}`} style={{ width: 'fit-content' }}>
+                        {u.email_verified ? '✓ Email' : 'Unverified'}
+                      </span>
+                      {isLocked(u) && <span className="badge badge-red" style={{ width: 'fit-content' }}>Locked</span>}
+                    </div>
                   </td>
                   <td className="text-sm">
                     {(() => {
                       const s = storageMap.get(u.id);
                       if (!s) return <span style={{ color: '#aaa' }}>—</span>;
-                      return (
-                        <span title={`${s.file_count} file${s.file_count !== 1 ? 's' : ''}`}>
-                          {fmtBytes(s.total_bytes)}
-                        </span>
-                      );
+                      return <span title={`${s.file_count} file${s.file_count !== 1 ? 's' : ''}`}>{fmtBytes(s.total_bytes)}</span>;
                     })()}
                   </td>
                   <td className="text-sm">{fmt(u.created_at)}</td>
@@ -432,45 +530,10 @@ export default function UsersPage() {
                       ? <span title={new Date(u.last_login_at).toLocaleString()}>{fmt(u.last_login_at)}</span>
                       : <span style={{ color: '#aaa' }}>Never</span>}
                   </td>
-                  <td>
-                    <div className="action-group">
-                      <button
-                        className={`btn btn-sm ${u.is_active ? 'btn-secondary' : 'btn-primary'}`}
-                        disabled={saving}
-                        onClick={() => handleToggleActive(u)}
-                        title={u.is_active ? 'Disable account' : 'Enable account'}
-                      >
-                        {u.is_active ? 'Disable' : 'Enable'}
-                      </button>
-                      {isLocked(u) && (
-                        <button
-                          className="btn btn-sm btn-secondary"
-                          disabled={saving}
-                          onClick={() => handleUnlock(u)}
-                          title="Clear lockout"
-                        >
-                          Unlock
-                        </button>
-                      )}
-                      {!u.email_verified && (
-                        <button
-                          className="btn btn-sm btn-secondary"
-                          disabled={saving}
-                          onClick={() => handleVerify(u)}
-                          title="Force verify email"
-                        >
-                          Verify
-                        </button>
-                      )}
-                      <button
-                        className="btn btn-sm btn-danger"
-                        disabled={saving}
-                        onClick={() => setDeleteTarget(u)}
-                        title="Delete user"
-                      >
-                        Delete
-                      </button>
-                    </div>
+                  <td style={{ textAlign: 'right' }}>
+                    <button className="btn btn-sm btn-secondary" onClick={() => setViewTarget(u)}>
+                      View
+                    </button>
                   </td>
                 </tr>
               ))}

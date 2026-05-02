@@ -4,6 +4,7 @@ export interface AuditEvent {
   id: string;
   source: string;
   action: string;
+  severity: 'info' | 'warning' | 'error';
   user_id: string | null;
   actor_email: string | null;
   client_ip: string | null;
@@ -23,6 +24,7 @@ export interface AuditListResponse {
 export interface AuditFilters {
   user_ids?: string[];
   sources?: string[];
+  severities?: string[];
   action?: string;
   start?: string;
   end?: string;
@@ -36,6 +38,7 @@ export async function listAuditEvents(filters: AuditFilters = {}): Promise<Audit
   const params = new URLSearchParams();
   if (filters.user_ids?.length) params.set('user_id', filters.user_ids.join(','));
   if (filters.sources?.length) params.set('source', filters.sources.join(','));
+  if (filters.severities?.length) params.set('severity', filters.severities.join(','));
   if (filters.action) params.set('action', filters.action);
   if (filters.start) params.set('start', filters.start);
   if (filters.end) params.set('end', filters.end);

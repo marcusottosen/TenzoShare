@@ -19,6 +19,7 @@ type AuditLog struct {
 	ID         string          `json:"id"`
 	Source     string          `json:"source"`
 	Action     string          `json:"action"`
+	Severity   string          `json:"severity"`
 	UserID     *string         `json:"user_id"`
 	ActorEmail *string         `json:"actor_email"`
 	ClientIP   *string         `json:"client_ip"`
@@ -30,15 +31,16 @@ type AuditLog struct {
 
 // ListFilter holds optional query filters for ListEvents.
 type ListFilter struct {
-	UserIDs   []string
-	Sources   []string
-	Action    string
-	StartTime *time.Time
-	EndTime   *time.Time
-	Limit     int
-	Offset    int
-	SortBy    string
-	SortDir   string
+	UserIDs    []string
+	Sources    []string
+	Severities []string
+	Action     string
+	StartTime  *time.Time
+	EndTime    *time.Time
+	Limit      int
+	Offset     int
+	SortBy     string
+	SortDir    string
 }
 
 // auditOrderClause returns a safe ORDER BY expression.
@@ -51,6 +53,8 @@ func auditOrderClause(sortBy, sortDir string) string {
 		return "source " + sortDir
 	case "action":
 		return "action " + sortDir
+	case "severity":
+		return "severity " + sortDir
 	default:
 		return "created_at " + sortDir
 	}
@@ -69,9 +73,9 @@ func New(db *pgxpool.Pool) *Repository {
 func (r *Repository) Insert(ctx context.Context, log AuditLog) error {
 	_, err := r.db.Exec(ctx, `
 		INSERT INTO audit.audit_logs
-		    (source, action, user_id, client_ip, subject, payload, success)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, log.Source, log.Action, log.UserID, log.ClientIP, log.Subject, log.Payload, log.Success)
+		    (source, action, severity, user_id, client_ip, subject, payload, success)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	`, log.Source, log.Action, log.Severity, log.UserID, log.ClientIP, log.Subject, log.Payload, log.Success)
 	if err != nil {
 		return apperrors.Internal("insert audit log", err)
 	}
@@ -110,6 +114,11 @@ func (r *Repository) List(ctx context.Context, f ListFilter) ([]AuditLog, int, e
 	} else if len(f.Sources) > 1 {
 		addCondition("al.source = ANY($"+itoa(argIdx)+")", f.Sources)
 	}
+	if len(f.Severities) == 1 {
+		addCondition("al.severity = $"+itoa(argIdx), f.Severities[0])
+	} else if len(f.Severities) > 1 {
+		addCondition("al.severity = ANY($"+itoa(argIdx)+")", f.Severities)
+	}
 	if f.Action != "" {
 		addCondition("al.action LIKE $"+itoa(argIdx), f.Action+"%")
 	}
@@ -130,7 +139,7 @@ func (r *Repository) List(ctx context.Context, f ListFilter) ([]AuditLog, int, e
 	}
 
 	// Data query
-	dataSQL := "SELECT al.id, al.source, al.action, al.user_id, u.email, al.client_ip, al.subject, al.payload, al.success, al.created_at " +
+	dataSQL := "SELECT al.id, al.source, al.action, al.severity, al.user_id, u.email, al.client_ip, al.subject, al.payload, al.success, al.created_at " +
 		fromClause + where +
 		" ORDER BY " + auditOrderClause(f.SortBy, f.SortDir) +
 		" LIMIT $" + itoa(argIdx) + " OFFSET $" + itoa(argIdx+1)
@@ -149,7 +158,7 @@ func (r *Repository) List(ctx context.Context, f ListFilter) ([]AuditLog, int, e
 	for rows.Next() {
 		var l AuditLog
 		if err := rows.Scan(
-			&l.ID, &l.Source, &l.Action, &l.UserID, &l.ActorEmail, &l.ClientIP,
+			&l.ID, &l.Source, &l.Action, &l.Severity, &l.UserID, &l.ActorEmail, &l.ClientIP,
 			&l.Subject, &l.Payload, &l.Success, &l.CreatedAt,
 		); err != nil {
 			return nil, 0, apperrors.Internal("scan audit log row", err)

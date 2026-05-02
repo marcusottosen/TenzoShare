@@ -159,37 +159,52 @@ export default function LogRetentionPage() {
         </div>
       ) : (
         <>
-          {/* ── Compliance reference ─────────────────────────────────────────── */}
-          <div className="card" style={{ marginBottom: 20, borderLeft: '3px solid var(--color-primary)' }}>
-            <h2 style={{ fontSize: 15, fontWeight: 600, margin: '0 0 10px', color: 'var(--color-text-primary)' }}>
-              Compliance Reference
-            </h2>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-              <thead>
-                <tr style={{ textAlign: 'left', color: 'var(--color-text-muted)', borderBottom: '1px solid var(--color-border)' }}>
-                  <th style={{ padding: '4px 12px 4px 0' }}>Framework</th>
-                  <th style={{ padding: '4px 12px 4px 0' }}>Minimum retention</th>
-                  <th style={{ padding: '4px 0' }}>Notes</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[
-                  { fw: 'GDPR', min: 'Organisation-defined', note: 'Must justify retention period; include in privacy notice' },
-                  { fw: 'SOC 2 Type II', min: '12 months (365 days)', note: 'Recommended default; 3 months online + rest archived' },
-                  { fw: 'PCI-DSS v4', min: '12 months (365 days)', note: '3 months must be immediately available' },
-                  { fw: 'HIPAA', min: '6 years (2 190 days)', note: 'From date of creation or last effective date' },
-                  { fw: 'NIS2', min: 'Organisation-defined', note: '"Appropriate" period; document your policy' },
-                  { fw: 'ISO 27001', min: 'Organisation-defined', note: 'Define retention in information security policy' },
-                ].map(({ fw, min, note }) => (
-                  <tr key={fw} style={{ borderBottom: '1px solid var(--color-border)' }}>
-                    <td style={{ padding: '6px 12px 6px 0', fontWeight: 500 }}>{fw}</td>
-                    <td style={{ padding: '6px 12px 6px 0' }}>{min}</td>
-                    <td style={{ padding: '6px 0', color: 'var(--color-text-muted)' }}>{note}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          {/* ── Current log statistics ─────────────────────────────────────── */}
+          {stats && (
+            <div className="card" style={{ marginBottom: 20 }}>
+              <div style={{ marginBottom: 16 }}>
+                <h2 style={{ fontSize: 15, fontWeight: 600, margin: 0, color: 'var(--color-text-primary)' }}>
+                  Current Log Statistics
+                </h2>
+                <p className="text-sm" style={{ marginTop: 4, color: 'var(--color-text-muted)' }}>
+                  Live snapshot of records currently in the audit log table.
+                </p>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16, marginBottom: 16 }}>
+                <div>
+                  <p className="text-sm" style={{ color: 'var(--color-text-muted)', margin: '0 0 2px' }}>Total entries</p>
+                  <p style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>{fmtNumber(stats.total_entries)}</p>
+                </div>
+                <div>
+                  <p className="text-sm" style={{ color: 'var(--color-text-muted)', margin: '0 0 2px' }}>Oldest entry</p>
+                  <p style={{ fontSize: 13, fontWeight: 500, margin: 0 }}>{fmtDate(stats.oldest_entry)}</p>
+                </div>
+                <div>
+                  <p className="text-sm" style={{ color: 'var(--color-text-muted)', margin: '0 0 2px' }}>Most recent</p>
+                  <p style={{ fontSize: 13, fontWeight: 500, margin: 0 }}>{fmtDate(stats.newest_entry)}</p>
+                </div>
+              </div>
+              {stats.by_source && stats.by_source.length > 0 && (
+                <div>
+                  <p className="text-sm" style={{ color: 'var(--color-text-muted)', marginBottom: 8 }}>By source service</p>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {stats.by_source.map(({ source, count }) => (
+                      <span key={source} style={{
+                        background: 'var(--color-bg-secondary)',
+                        border: '1px solid var(--color-border)',
+                        borderRadius: 6,
+                        padding: '3px 10px',
+                        fontSize: 13,
+                      }}>
+                        <strong>{source}</strong>&nbsp;
+                        <span style={{ color: 'var(--color-text-muted)' }}>{fmtNumber(count)}</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           <form onSubmit={handleSave}>
             {/* ── Automatic log purging ──────────────────────────────────────── */}
@@ -246,53 +261,6 @@ export default function LogRetentionPage() {
             </div>
           </form>
 
-          {/* ── Current log statistics ─────────────────────────────────────── */}
-          {stats && (
-            <div className="card" style={{ marginBottom: 20 }}>
-              <div style={{ marginBottom: 16 }}>
-                <h2 style={{ fontSize: 15, fontWeight: 600, margin: 0, color: 'var(--color-text-primary)' }}>
-                  Current Log Statistics
-                </h2>
-                <p className="text-sm" style={{ marginTop: 4, color: 'var(--color-text-muted)' }}>
-                  Live snapshot of records currently in the audit log table.
-                </p>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16, marginBottom: 16 }}>
-                <div>
-                  <p className="text-sm" style={{ color: 'var(--color-text-muted)', margin: '0 0 2px' }}>Total entries</p>
-                  <p style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>{fmtNumber(stats.total_entries)}</p>
-                </div>
-                <div>
-                  <p className="text-sm" style={{ color: 'var(--color-text-muted)', margin: '0 0 2px' }}>Oldest entry</p>
-                  <p style={{ fontSize: 13, fontWeight: 500, margin: 0 }}>{fmtDate(stats.oldest_entry)}</p>
-                </div>
-                <div>
-                  <p className="text-sm" style={{ color: 'var(--color-text-muted)', margin: '0 0 2px' }}>Most recent</p>
-                  <p style={{ fontSize: 13, fontWeight: 500, margin: 0 }}>{fmtDate(stats.newest_entry)}</p>
-                </div>
-              </div>
-              {stats.by_source && stats.by_source.length > 0 && (
-                <div>
-                  <p className="text-sm" style={{ color: 'var(--color-text-muted)', marginBottom: 8 }}>By source service</p>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    {stats.by_source.map(({ source, count }) => (
-                      <span key={source} style={{
-                        background: 'var(--color-bg-secondary)',
-                        border: '1px solid var(--color-border)',
-                        borderRadius: 6,
-                        padding: '3px 10px',
-                        fontSize: 13,
-                      }}>
-                        <strong>{source}</strong>&nbsp;
-                        <span style={{ color: 'var(--color-text-muted)' }}>{fmtNumber(count)}</span>
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
           {/* ── Manual purge ──────────────────────────────────────────────────── */}
           <div className="card" style={{ marginBottom: 20 }}>
             <div style={{ marginBottom: 16 }}>
@@ -339,6 +307,38 @@ export default function LogRetentionPage() {
                 {config.updated_by ? ` by ${config.updated_by}` : ''}
               </p>
             )}
+          </div>
+
+          {/* ── Compliance reference ─────────────────────────────────────────── */}
+          <div className="card" style={{ marginBottom: 20, borderLeft: '3px solid var(--color-primary)' }}>
+            <h2 style={{ fontSize: 15, fontWeight: 600, margin: '0 0 10px', color: 'var(--color-text-primary)' }}>
+              Compliance Reference
+            </h2>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr style={{ textAlign: 'left', color: 'var(--color-text-muted)', borderBottom: '1px solid var(--color-border)' }}>
+                  <th style={{ padding: '4px 12px 4px 0' }}>Framework</th>
+                  <th style={{ padding: '4px 12px 4px 0' }}>Minimum retention</th>
+                  <th style={{ padding: '4px 0' }}>Notes</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  { fw: 'GDPR', min: 'Organisation-defined', note: 'Must justify retention period; include in privacy notice' },
+                  { fw: 'SOC 2 Type II', min: '12 months (365 days)', note: 'Recommended default; 3 months online + rest archived' },
+                  { fw: 'PCI-DSS v4', min: '12 months (365 days)', note: '3 months must be immediately available' },
+                  { fw: 'HIPAA', min: '6 years (2 190 days)', note: 'From date of creation or last effective date' },
+                  { fw: 'NIS2', min: 'Organisation-defined', note: '"Appropriate" period; document your policy' },
+                  { fw: 'ISO 27001', min: 'Organisation-defined', note: 'Define retention in information security policy' },
+                ].map(({ fw, min, note }) => (
+                  <tr key={fw} style={{ borderBottom: '1px solid var(--color-border)' }}>
+                    <td style={{ padding: '6px 12px 6px 0', fontWeight: 500 }}>{fw}</td>
+                    <td style={{ padding: '6px 12px 6px 0' }}>{min}</td>
+                    <td style={{ padding: '6px 0', color: 'var(--color-text-muted)' }}>{note}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </>
       )}

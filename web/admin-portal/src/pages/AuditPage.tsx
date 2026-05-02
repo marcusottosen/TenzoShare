@@ -4,7 +4,7 @@ import { listUsers, type AdminUser } from '../api/admin';
 import { useSortState } from '../hooks/useSort';
 import { SortHeader } from '../components/SortHeader';
 
-type AuditSortKey = 'created_at' | 'source' | 'action';
+type AuditSortKey = 'created_at' | 'source' | 'action' | 'severity';
 
 function fmt(date: string) {
   return new Date(date).toLocaleString();
@@ -13,10 +13,165 @@ function fmt(date: string) {
 const PAGE_SIZE = 50;
 
 const ALL_SOURCES = ['auth', 'transfer', 'storage', 'upload', 'admin'] as const;
+const ALL_SEVERITIES = [
+  { value: 'info',    label: 'Info' },
+  { value: 'warning', label: 'Warning' },
+  { value: 'error',   label: 'Error' },
+] as const;
+
+function SeverityBadge({ severity }: { severity: string }) {
+  type SevKey = 'info' | 'warning' | 'error';
+  const cfg: Record<SevKey, { cls: string; icon: string }> = {
+    info:    { cls: 'badge badge-blue',   icon: '●' },
+    warning: { cls: 'badge badge-orange', icon: '▲' },
+    error:   { cls: 'badge badge-red',    icon: '✕' },
+  };
+  const { cls, icon } = cfg[(severity as SevKey)] ?? cfg.info;
+  return (
+    <span className={cls} style={{ fontWeight: 700, letterSpacing: '0.04em', fontSize: 11, gap: 5 }}>
+      <span style={{ fontSize: 8, lineHeight: 1 }}>{icon}</span>
+      {severity.toUpperCase()}
+    </span>
+  );
+}
+
+// Left-border accent colour per severity row
+function severityRowStyle(severity: string): React.CSSProperties {
+  const colors: Record<string, string> = {
+    error:   'var(--color-error-border, #ef4444)',
+    warning: 'var(--color-warn-border, #f59e0b)',
+  };
+  return colors[severity]
+    ? { borderLeft: `3px solid ${colors[severity]}` }
+    : { borderLeft: '3px solid transparent' };
+}
+
+// Compact truncated UUID chip — click to copy full UUID
+function UUIDChip({ id }: { id: string }) {
+  const [copied, setCopied] = React.useState(false);
+  const short = id.replace(/-/g, '').slice(0, 8);
+  return (
+    <span
+      title={id}
+      onClick={() => { navigator.clipboard.writeText(id).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }); }}
+      className="mono"
+      style={{ fontSize: 11, color: copied ? 'var(--color-secondary)' : 'var(--color-text-muted)', background: 'var(--color-nav-active)', padding: '2px 6px', borderRadius: 4, border: '1px solid var(--color-border)', cursor: 'pointer', userSelect: 'none' }}
+    >
+      {copied ? 'copied!' : short + '…'}
+    </span>
+  );
+}
+
+// ── Export modal ────────────────────────────────────────────────────────────
+function ExportModal({ users, onClose }: { users: AdminUser[]; onClose: () => void }) {
+  const [start, setStart] = useState('');
+  const [end, setEnd] = useState('');
+  const [exportUserIds, setExportUserIds] = useState<string[]>([]);
+  const [exportSources, setExportSources] = useState<string[]>([]);
+  const [exportSeverities, setExportSeverities] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
+
+  const userOptions = users.map((u) => ({ value: u.id, label: u.email }));
+  const sourceOptions = ALL_SOURCES.map((s) => ({ value: s, label: s }));
+  const severityOptions = ALL_SEVERITIES.map((s) => ({ value: s.value, label: s.label }));
+
+  async function handleExport() {
+    setErr('');
+    setLoading(true);
+    try {
+      const filters: AuditFilters = { limit: 10000, offset: 0, sort_by: 'created_at', sort_dir: 'asc' };
+      if (start) filters.start = new Date(start).toISOString();
+      if (end) filters.end = new Date(end).toISOString();
+      if (exportUserIds.length) filters.user_ids = exportUserIds;
+      if (exportSources.length) filters.sources = exportSources;
+      if (exportSeverities.length) filters.severities = exportSeverities;
+
+      const res = await listAuditEvents(filters);
+      const items = res.items ?? [];
+
+      const cols = ['id', 'created_at', 'source', 'severity', 'action', 'success', 'actor_email', 'user_id', 'client_ip', 'subject', 'payload'];
+      const escape = (v: string) => `"${v.replace(/"/g, '""')}"`;
+      const rows = items.map((e) => [
+        e.id, e.created_at, e.source, e.severity ?? '', e.action,
+        String(e.success), e.actor_email ?? '', e.user_id ?? '',
+        e.client_ip ?? '', e.subject ?? '',
+        e.payload ? JSON.stringify(e.payload) : '',
+      ].map((v) => escape(String(v))).join(','));
+
+      const csv = [cols.join(','), ...rows].join('\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `audit-logs-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      onClose();
+    } catch (e: unknown) {
+      setErr((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border-card)', borderRadius: 10, padding: 28, width: 500, maxWidth: '95vw', boxShadow: '0 8px 32px rgba(0,0,0,0.4)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: 'var(--color-text-primary)' }}>Export Audit Logs</h2>
+          <button type="button" onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: 'var(--color-text-muted)', lineHeight: 1, padding: '0 2px' }}>✕</button>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
+          <div className="form-group" style={{ margin: 0 }}>
+            <label>From</label>
+            <input type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} />
+          </div>
+          <div className="form-group" style={{ margin: 0 }}>
+            <label>To</label>
+            <input type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)} />
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
+          <div className="form-group" style={{ margin: 0 }}>
+            <label>User <span style={{ fontWeight: 400, color: 'var(--color-text-muted)' }}>(optional)</span></label>
+            <MultiPickDropdown label="Users" options={userOptions} selected={exportUserIds} onChange={setExportUserIds} searchable placeholder="All Users" />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label>Source <span style={{ fontWeight: 400, color: 'var(--color-text-muted)' }}>(optional)</span></label>
+              <MultiPickDropdown label="Sources" options={sourceOptions} selected={exportSources} onChange={setExportSources} placeholder="All Sources" />
+            </div>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label>Level <span style={{ fontWeight: 400, color: 'var(--color-text-muted)' }}>(optional)</span></label>
+              <MultiPickDropdown label="Levels" options={severityOptions} selected={exportSeverities} onChange={setExportSeverities} placeholder="All Levels" />
+            </div>
+          </div>
+        </div>
+
+        {err && <div className="alert alert-error" style={{ marginBottom: 12 }}>{err}</div>}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button type="button" className="btn btn-secondary" onClick={onClose} disabled={loading}>Cancel</button>
+          <button type="button" className="btn btn-primary" onClick={handleExport} disabled={loading}>
+            {loading ? 'Exporting…' : '↓ Download CSV'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ── Resizable table ──────────────────────────────────────────────────────────
 
-const DEFAULT_COL_WIDTHS = [160, 90, 130, 180, 130, 110, 200];
+const DEFAULT_COL_WIDTHS = [160, 90, 90, 130, 180, 130, 110, 200];
 
 function ResizableTable({ colWidths, onColWidthChange, children }: {
   colWidths: number[];
@@ -223,6 +378,7 @@ export default function AuditPage() {
 
   const [filterUserIds, setFilterUserIds] = useState<string[]>([]);
   const [filterSources, setFilterSources] = useState<string[]>([]);
+  const [filterSeverities, setFilterSeverities] = useState<string[]>([]);
   const [filterAction, setFilterAction] = useState('');
   const [filterStart, setFilterStart] = useState('');
   const [filterEnd, setFilterEnd] = useState('');
@@ -248,6 +404,7 @@ export default function AuditPage() {
     };
     if (filterUserIds.length) filters.user_ids = filterUserIds;
     if (filterSources.length) filters.sources = filterSources;
+    if (filterSeverities.length) filters.severities = filterSeverities;
     if (filterAction.trim()) filters.action = filterAction.trim();
     if (filterStart) filters.start = new Date(filterStart).toISOString();
     if (filterEnd) filters.end = new Date(filterEnd).toISOString();
@@ -276,6 +433,7 @@ export default function AuditPage() {
   function handleClear() {
     setFilterUserIds([]);
     setFilterSources([]);
+    setFilterSeverities([]);
     setFilterAction('');
     setFilterStart('');
     setFilterEnd('');
@@ -286,11 +444,14 @@ export default function AuditPage() {
 
   const userOptions: MultiPickOption[] = users.map((u) => ({ value: u.id, label: u.email }));
   const sourceOptions: MultiPickOption[] = ALL_SOURCES.map((s) => ({ value: s, label: s }));
+  const severityOptions: MultiPickOption[] = ALL_SEVERITIES.map((s) => ({ value: s.value, label: s.label }));
 
   const [colWidths, setColWidths] = useState<number[]>(DEFAULT_COL_WIDTHS);
   const handleColWidthChange = useCallback((idx: number, w: number) => {
     setColWidths((prev) => { const next = [...prev]; next[idx] = w; return next; });
   }, []);
+
+  const [showExport, setShowExport] = useState(false);
 
   return (
     <div className="page">
@@ -299,7 +460,12 @@ export default function AuditPage() {
           <h1 className="page-title">Audit Logs</h1>
           <p className="page-subtitle">Real-time security and operational event trail</p>
         </div>
+        <button className="btn btn-secondary" type="button" onClick={() => setShowExport(true)}>
+          ↓ Export CSV
+        </button>
       </div>
+
+      {showExport && <ExportModal users={users} onClose={() => setShowExport(false)} />}
 
       <form onSubmit={handleSearch}>
         <div className="filter-bar mb-16">
@@ -322,6 +488,16 @@ export default function AuditPage() {
               selected={filterSources}
               onChange={setFilterSources}
               placeholder="All Sources"
+            />
+          </div>
+          <div className="form-group">
+            <label>Level</label>
+            <MultiPickDropdown
+              label="Levels"
+              options={severityOptions}
+              selected={filterSeverities}
+              onChange={setFilterSeverities}
+              placeholder="All Levels"
             />
           </div>
           <div className="form-group">
@@ -381,6 +557,7 @@ export default function AuditPage() {
               <tr>
                 <SortHeader label="Time" sortKey="created_at" sort={sort} />
                 <SortHeader label="Source" sortKey="source" sort={sort} />
+                <SortHeader label="Level" sortKey="severity" sort={sort} />
                 <SortHeader label="Action" sortKey="action" sort={sort} />
                 <th>Email</th>
                 <th>User ID</th>
@@ -389,32 +566,52 @@ export default function AuditPage() {
               </tr>
             </thead>
             <tbody>
-              {events.map((e) => (
-                <tr key={e.id}>
-                  <td className="text-sm mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fmt(e.created_at)}</td>
-                  <td style={{ overflow: 'hidden' }}><span className="badge badge-blue">{e.source}</span></td>
-                  <td style={{ overflow: 'hidden' }}><span className={`badge ${e.success ? 'badge-green' : 'badge-red'}`}>{e.action}</span></td>
-                  <td className="text-sm" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {e.actor_email ?? '—'}
-                  </td>
-                  <td className="text-sm mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--color-text-muted)' }}>
-                    {e.user_id ?? '—'}
-                  </td>
-                  <td className="text-sm mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.client_ip ?? '—'}</td>
-                  <td className="text-sm" style={{ overflow: 'hidden' }}>
-                    {e.payload && Object.keys(e.payload).length > 0 ? (
-                      <details>
-                        <summary style={{ cursor: 'pointer' }}>view</summary>
-                        <pre style={{ fontSize: 11, marginTop: 4, whiteSpace: 'pre-wrap', maxWidth: 400 }}>
-                          {JSON.stringify(e.payload, null, 2)}
-                        </pre>
-                      </details>
-                    ) : (
-                      '—'
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {events.map((e) => {
+                const sev = e.severity ?? (e.success ? 'info' : 'error');
+                return (
+                  <tr key={e.id} style={severityRowStyle(sev)}>
+                    <td className="text-sm mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--color-text-muted)', paddingLeft: 13 }}>
+                      {fmt(e.created_at)}
+                    </td>
+                    <td style={{ overflow: 'hidden' }}>
+                      <span className="badge badge-blue" style={{ fontWeight: 600, fontSize: 11 }}>{e.source}</span>
+                    </td>
+                    <td style={{ overflow: 'hidden' }}>
+                      <SeverityBadge severity={sev} />
+                    </td>
+                    <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <span className="mono" style={{ fontSize: 12, color: 'var(--color-text-primary)', fontWeight: 500 }}>{e.action}</span>
+                    </td>
+                    <td className="text-sm" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {e.actor_email
+                        ? <span style={{ color: 'var(--color-text-primary)' }}>{e.actor_email}</span>
+                        : <span style={{ color: 'var(--color-text-muted)' }}>—</span>}
+                    </td>
+                    <td style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {e.user_id
+                        ? <UUIDChip id={e.user_id} />
+                        : <span style={{ color: 'var(--color-text-muted)' }}>—</span>}
+                    </td>
+                    <td className="text-sm mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--color-text-muted)' }}>
+                      {e.client_ip ?? '—'}
+                    </td>
+                    <td style={{ overflow: 'hidden' }}>
+                      {e.payload && Object.keys(e.payload).filter(k => !['action','user_id','client_ip','success','timestamp'].includes(k)).length > 0 ? (
+                        <details>
+                          <summary style={{ cursor: 'pointer', fontSize: 11, color: 'var(--color-secondary)', fontWeight: 600, listStyle: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            <span style={{ fontSize: 9 }}>▶</span> details
+                          </summary>
+                          <pre style={{ fontSize: 11, marginTop: 6, whiteSpace: 'pre-wrap', maxWidth: 380, background: 'var(--color-nav-active)', border: '1px solid var(--color-border)', borderRadius: 6, padding: '8px 10px', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>
+                            {JSON.stringify(e.payload, null, 2)}
+                          </pre>
+                        </details>
+                      ) : (
+                        <span style={{ color: 'var(--color-text-muted)' }}>—</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </ResizableTable>
         </div>

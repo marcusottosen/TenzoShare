@@ -90,6 +90,17 @@ export async function verifyUserEmail(id: string) {
   return request<{ ok: boolean }>(`/admin/users/${id}/verify`, { method: 'POST' });
 }
 
+export async function resetUserPassword(id: string): Promise<{ temp_password: string }> {
+  return request<{ temp_password: string }>(`/admin/users/${id}/reset-password`, { method: 'POST' });
+}
+
+export async function setUserPassword(id: string, password: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/admin/users/${id}/set-password`, {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+  });
+}
+
 export async function getStats(): Promise<SystemStats> {
   return request<SystemStats>('/admin/stats');
 }
@@ -191,6 +202,8 @@ export interface StorageConfig {
   retention_enabled: boolean;
   retention_days: number;
   orphan_retention_days: number;
+  /** When true, plain-HTTP uploads are accepted (dev/test only). */
+  test_mode: boolean;
   updated_at: string;
   updated_by: string;
 }
@@ -206,6 +219,7 @@ export async function updateStorageConfig(body: {
   retention_enabled?: boolean;
   retention_days?: number;
   orphan_retention_days?: number;
+  test_mode?: boolean;
 }): Promise<StorageConfig> {
   return request<StorageConfig>('/admin/storage/config', {
     method: 'PUT',
@@ -368,3 +382,26 @@ export async function getAuditStats(): Promise<AuditStats> {
 export async function triggerAuditPurge(): Promise<AuditPurgeResult> {
   return request<AuditPurgeResult>('/admin/audit/purge', { method: 'POST' });
 }
+
+// ── Auth lockout config ────────────────────────────────────────────────────────
+
+export interface AuthLockoutConfig {
+  max_failed_attempts: number;
+  lockout_duration_minutes: number;
+  updated_at: string;
+}
+
+export async function getAuthConfig(): Promise<AuthLockoutConfig> {
+  return request<AuthLockoutConfig>('/admin/auth/config');
+}
+
+export async function updateAuthConfig(body: {
+  max_failed_attempts?: number;
+  lockout_duration_minutes?: number;
+}): Promise<AuthLockoutConfig> {
+  return request<AuthLockoutConfig>('/admin/auth/config', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+}
+

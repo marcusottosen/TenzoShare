@@ -87,6 +87,14 @@ function IconClock() {
     </svg>
   );
 }
+function IconLock() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+      <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+    </svg>
+  );
+}
 
 const PAGE_TITLES: Record<string, string> = {
   '/': 'System Overview',
@@ -94,6 +102,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/transfers': 'Transfers',
   '/audit': 'Audit Logs',
   '/audit/settings': 'Log Retention',
+  '/security': 'Security Settings',
   '/apikeys': 'API Keys',
   '/storage': 'Storage Settings',
   '/storage/files': 'Storage Files',
@@ -167,8 +176,11 @@ export default function Layout() {
           <NavLink to="/audit" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             <IconAudit /> Audit Logs
           </NavLink>
-          <NavLink to="/audit/settings" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+          <NavLink to="/audit/settings" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'} style={{ paddingLeft: 28 }}>
             <IconClock /> Log Retention
+          </NavLink>
+          <NavLink to="/security" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'} style={{ paddingLeft: 28 }}>
+            <IconLock /> Lockout Policy
           </NavLink>
 
           <div className="sidebar-section-label">Configuration</div>

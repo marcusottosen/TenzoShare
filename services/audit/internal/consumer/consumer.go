@@ -67,6 +67,7 @@ func (c *Consumer) handle(subject string, data []byte) error {
 		Subject:  subject,
 		Payload:  json.RawMessage(data),
 		Success:  success,
+		Severity: deriveSeverity(action, success),
 	}
 
 	if err := c.repo.Insert(context.Background(), entry); err != nil {
@@ -82,4 +83,22 @@ func (c *Consumer) handle(subject string, data []byte) error {
 		zap.String("action", action),
 	)
 	return nil
+}
+
+// deriveSeverity maps an action + success flag to a severity level.
+// Levels: "info" | "warning" | "error"
+func deriveSeverity(action string, success bool) string {
+	if !success {
+		if strings.Contains(action, "_failed") || strings.Contains(action, "_error") {
+			return "error"
+		}
+		return "warning"
+	}
+	// Destructive/sensitive actions are "warning" even when they succeed.
+	for _, kw := range []string{"_deleted", "_purged", "_purge", "_revoked", "_terminated", "_banned", "_locked"} {
+		if strings.Contains(action, kw) {
+			return "warning"
+		}
+	}
+	return "info"
 }

@@ -1,15 +1,23 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
+	"net/http"
+	"path"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -52,74 +60,214 @@ func (h *Handler) Upload(c fiber.Ctx) error {
 		return apperrors.Unauthorized("unauthenticated")
 	}
 
-	fileHeader, err := c.FormFile("file")
-	if err != nil {
-		return apperrors.BadRequest("missing file field")
-	}
-
-	// ── Enforce storage policy (quota + max upload size) ─────────────────────
+	// ── Enforce storage policy (HTTPS, size cap) ──────────────────────────────
+	// All checks happen before the body is touched so that rejections are cheap.
 	cfg, cfgErr := h.repo.GetStorageConfig(c.Context())
 	if cfgErr == nil {
-		// Per-file size cap
-		if cfg.MaxUploadSizeBytes > 0 && fileHeader.Size > cfg.MaxUploadSizeBytes {
-			return apperrors.BadRequest(fmt.Sprintf(
-				"file exceeds maximum upload size of %s",
-				fmtBytes(cfg.MaxUploadSizeBytes),
-			))
+		// In production mode (test_mode disabled), reject uploads that arrive
+		// over plain HTTP. TLS may be terminated at the reverse proxy, so we
+		// check X-Forwarded-Proto in addition to the raw connection state.
+		if !cfg.TestMode {
+			isHTTPS := c.Secure() || strings.EqualFold(c.Get("X-Forwarded-Proto"), "https")
+			if !isHTTPS {
+				h.log.Warn("upload rejected: plain HTTP connection in production mode",
+					zap.String("owner_id", ownerID),
+				)
+				h.publishAuditFail(c.Context(), "storage.upload_rejected", ownerID, "http_not_allowed",
+					map[string]any{"owner_id": ownerID})
+				return fiber.NewError(fiber.StatusForbidden,
+					"uploads require a secure HTTPS connection — plain HTTP is not permitted. "+
+						"If you are a system administrator, enable Test Mode in Storage Settings to allow HTTP uploads.")
+			}
 		}
-		// Per-user quota
-		if cfg.QuotaEnabled && cfg.QuotaBytesPerUser > 0 {
+		// Cheap Content-Length pre-checks — reject before reading a single byte.
+		// The multipart framing adds at most ~1 KiB of boundary overhead, so
+		// Content-Length ≈ file size and is safe for these comparisons.
+		cl := int64(c.Request().Header.ContentLength())
+		if cfg.MaxUploadSizeBytes > 0 {
+			if cl > 0 && cl > cfg.MaxUploadSizeBytes+1024 {
+				return apperrors.BadRequest(fmt.Sprintf("file exceeds maximum upload size of %s", fmtBytes(cfg.MaxUploadSizeBytes)))
+			}
+		}
+		// Pre-quota check: if Content-Length is known, verify the upload would
+		// not immediately exceed quota. Prevents fully uploading a file to MinIO
+		// only to delete it after the post-upload quota check.
+		if cfg.QuotaEnabled && cfg.QuotaBytesPerUser > 0 && cl > 0 {
 			usage, uErr := h.repo.GetUsageByOwner(c.Context(), ownerID)
-			if uErr == nil && usage.TotalBytes+fileHeader.Size > cfg.QuotaBytesPerUser {
+			if uErr == nil && usage.TotalBytes+cl > cfg.QuotaBytesPerUser {
+				remaining := cfg.QuotaBytesPerUser - usage.TotalBytes
+				if remaining < 0 {
+					remaining = 0
+				}
 				return apperrors.BadRequest(fmt.Sprintf(
-					"storage quota exceeded: %s used of %s",
-					fmtBytes(usage.TotalBytes),
-					fmtBytes(cfg.QuotaBytesPerUser),
+					"storage quota would be exceeded: %s remaining of %s",
+					fmtBytes(remaining), fmtBytes(cfg.QuotaBytesPerUser),
 				))
 			}
 		}
 	}
 	// ─────────────────────────────────────────────────────────────────────────
 
-	f, err := fileHeader.Open()
-	if err != nil {
-		return apperrors.Internal("open uploaded file", err)
+	// Parse the multipart boundary from the Content-Type header.
+	// This is pure header inspection — the body is not read yet.
+	ct := string(c.Request().Header.ContentType())
+	mediaType, params, mimeErr := mime.ParseMediaType(ct)
+	if mimeErr != nil || mediaType != "multipart/form-data" {
+		return apperrors.BadRequest("expected multipart/form-data upload")
 	}
-	defer f.Close() //nolint:errcheck
-
-	objectKey := fmt.Sprintf("uploads/%s/%s/%s", ownerID, uuid.New().String(), fileHeader.Filename)
-	contentType := fileHeader.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = "application/octet-stream"
+	boundary := params["boundary"]
+	if boundary == "" {
+		return apperrors.BadRequest("missing multipart boundary")
 	}
 
-	// Stream the file to MinIO without loading it fully into memory.
-	// For encrypted uploads, chunked streaming AES-256-GCM is used.
+	// Stream the multipart body directly — no temp file, no double-buffering.
+	//
+	// c.FormFile() internally calls Request.MultipartForm() which writes the
+	// entire body to a temp file before returning — a 10 GB upload would require
+	// 10 GB of disk I/O before a single byte reaches MinIO (sequential).
+	// Instead, we drive a multipart.Reader directly on the live network stream
+	// so receiving from the browser and forwarding to MinIO happen concurrently.
+	mr := multipart.NewReader(c.Request().BodyStream(), boundary)
+
+	var filePart *multipart.Part
+	var origFilename, partCT string
+	for {
+		part, partErr := mr.NextPart()
+		if errors.Is(partErr, io.EOF) {
+			break
+		}
+		if partErr != nil {
+			return apperrors.BadRequest("failed to parse multipart upload")
+		}
+		if part.FormName() == "file" {
+			filePart = part
+			origFilename = part.FileName()
+			partCT = part.Header.Get("Content-Type")
+			break
+		}
+		// Drain and discard any non-file fields before the file part.
+		_, _ = io.Copy(io.Discard, part)
+	}
+	if filePart == nil {
+		return apperrors.BadRequest("missing file field")
+	}
+	// Note: we intentionally do NOT defer filePart.Close().
+	// Part.Close() drains all remaining bytes from the connection, which would
+	// cause the server to consume the rest of a 10 GB body just to send an error
+	// on size-limit violations. fasthttp closes the TCP connection cleanly when
+	// the handler returns with an error, discarding any unread body data.
+
+	filename := sanitizeFilename(origFilename)
+	objectKey := fmt.Sprintf("uploads/%s/%s/%s", ownerID, uuid.New().String(), filename)
+
+	// Wrap filePart in an uploadTracker to count plaintext bytes and abort
+	// mid-stream if the per-file size cap is exceeded.
+	tracker := &uploadTracker{r: filePart}
+	if cfgErr == nil && cfg.MaxUploadSizeBytes > 0 {
+		tracker.limit = cfg.MaxUploadSizeBytes
+	}
+
+	// Sniff the real content type from the first 512 bytes so we store an
+	// accurate MIME type even when the browser sends "application/octet-stream".
+	// We read through the tracker so that tracker.n reflects the total plaintext
+	// size (sniff bytes + remaining bytes = full file size).
+	sniffBuf := make([]byte, 512)
+	sniffN, _ := io.ReadFull(tracker, sniffBuf)
+	sniffBuf = sniffBuf[:sniffN]
+	contentType := partCT
+	if contentType == "" || contentType == "application/octet-stream" {
+		contentType = http.DetectContentType(sniffBuf)
+	}
+	// Re-prepend the sniffed bytes so the encryptor / MinIO sees the full stream.
+	fullSrc := io.MultiReader(bytes.NewReader(sniffBuf), tracker)
+
+	// ── Encryption setup ─────────────────────────────────────────────────────
 	var uploadReader io.Reader
-	var uploadSize int64
 	var encIV []byte
-
-	if h.encryptionKey != nil && fileHeader.Size > 0 {
+	if h.encryptionKey != nil {
 		baseIV := make([]byte, 12)
 		if _, err := io.ReadFull(rand.Reader, baseIV); err != nil {
 			return apperrors.Internal("generate encryption IV", err)
 		}
-		uploadReader = newStreamEncryptor(f, h.encryptionKey, baseIV)
-		uploadSize = chunkedCiphertextSize(fileHeader.Size)
-		encIV = makeChunkedIV(baseIV) // 20-byte marker stored in DB; 8-byte magic + 12-byte base IV
+		enc, encErr := newStreamEncryptor(fullSrc, h.encryptionKey, baseIV)
+		if encErr != nil {
+			return apperrors.Internal("init encryption", encErr)
+		}
+		uploadReader = enc
+		encIV = makeChunkedIV(baseIV)
 	} else {
-		// Unencrypted (or zero-length): stream the temp file directly to MinIO.
-		uploadReader = f
-		uploadSize = fileHeader.Size
+		uploadReader = fullSrc
 	}
+	// ─────────────────────────────────────────────────────────────────────────
 
-	if err := h.backend.Upload(c.Context(), objectKey, uploadReader, uploadSize, contentType); err != nil {
+	// Upload using size=-1 (chunked transfer encoding).
+	// We do not know the final encrypted size before the stream is consumed, and
+	// passing the wrong Content-Length would cause MinIO to reject the object.
+	if err := h.backend.Upload(c.Context(), objectKey, uploadReader, -1, contentType); err != nil {
+		if tracker.exceeded {
+			// Size limit was hit mid-stream; the MinIO PutObject was aborted.
+			// No object was committed, so no cleanup is needed.
+			msg := fmt.Sprintf("file exceeds maximum upload size of %s", fmtBytes(cfg.MaxUploadSizeBytes))
+			h.log.Warn("upload rejected: file too large mid-stream",
+				zap.String("owner_id", ownerID),
+				zap.String("filename", filename),
+				zap.Int64("limit", cfg.MaxUploadSizeBytes),
+			)
+			h.publishAuditFail(c.Context(), "storage.upload_rejected", ownerID, "file_too_large",
+				map[string]any{"filename": filename, "limit": cfg.MaxUploadSizeBytes})
+			return apperrors.BadRequest(msg)
+		}
+		h.log.Error("upload to object store failed",
+			zap.String("owner_id", ownerID),
+			zap.String("filename", filename),
+			zap.Error(err),
+		)
+		h.publishAuditFail(c.Context(), "storage.upload_failed", ownerID, "s3_error",
+			map[string]any{"filename": filename})
 		return apperrors.Internal("upload to object store", err)
 	}
 
-	record, err := h.repo.Create(c.Context(), ownerID, objectKey, fileHeader.Filename, contentType, fileHeader.Size, encIV)
+	// tracker.n is the total plaintext byte count:
+	//   initial 512-byte sniff (read through tracker) + all remaining bytes
+	//   consumed from filePart via the fullSrc → tracker pipeline.
+	plaintextSize := tracker.n
+
+	// ── Post-upload quota check (with rollback) ───────────────────────────────
+	// Quota is enforced after upload because we don't know the plaintext size
+	// before the stream is fully consumed. If the quota is violated we delete
+	// the just-uploaded object and return an error.
+	if cfgErr == nil && cfg.QuotaEnabled && cfg.QuotaBytesPerUser > 0 {
+		usage, uErr := h.repo.GetUsageByOwner(c.Context(), ownerID)
+		if uErr == nil && usage.TotalBytes+plaintextSize > cfg.QuotaBytesPerUser {
+			_ = h.backend.Delete(c.Context(), objectKey)
+			msg := fmt.Sprintf("storage quota exceeded: %s used of %s",
+				fmtBytes(usage.TotalBytes),
+				fmtBytes(cfg.QuotaBytesPerUser),
+			)
+			h.log.Warn("upload rejected: quota exceeded",
+				zap.String("owner_id", ownerID),
+				zap.String("filename", filename),
+				zap.Int64("size", plaintextSize),
+				zap.Int64("used", usage.TotalBytes),
+				zap.Int64("quota", cfg.QuotaBytesPerUser),
+			)
+			h.publishAuditFail(c.Context(), "storage.upload_rejected", ownerID, "quota_exceeded",
+				map[string]any{"filename": filename, "size": plaintextSize, "used": usage.TotalBytes, "quota": cfg.QuotaBytesPerUser})
+			return apperrors.BadRequest(msg)
+		}
+	}
+	// ─────────────────────────────────────────────────────────────────────────
+
+	record, err := h.repo.Create(c.Context(), ownerID, objectKey, filename, contentType, plaintextSize, encIV)
 	if err != nil {
 		_ = h.backend.Delete(c.Context(), objectKey) // best-effort cleanup
+		h.log.Error("failed to create file record",
+			zap.String("owner_id", ownerID),
+			zap.String("filename", filename),
+			zap.Error(err),
+		)
+		h.publishAuditFail(c.Context(), "storage.upload_failed", ownerID, "db_error",
+			map[string]any{"filename": filename, "size": plaintextSize})
 		return err
 	}
 
@@ -357,7 +505,14 @@ func (h *Handler) Download(c fiber.Ctx) error {
 	if err != nil {
 		return apperrors.Internal("download from object store", err)
 	}
-	defer rc.Close() //nolint:errcheck
+	// Do NOT use defer rc.Close() here.
+	// Fiber/fasthttp reads the response body stream AFTER the handler function
+	// returns. A deferred close would shut down the MinIO HTTP connection
+	// before fasthttp reads a single byte — causing an empty reply for any file
+	// large enough that Go's HTTP client hasn't fully buffered it (typically > ~32 KiB).
+	// FastHTTP calls Close() itself on the body stream when it implements io.Closer.
+	// For the chunked-encrypted path we wrap the decryptor in an io.ReadCloser
+	// so that rc is closed once fasthttp finishes streaming the plaintext.
 
 	disposition := "attachment"
 	if c.Query("inline") == "1" {
@@ -369,11 +524,21 @@ func (h *Handler) Download(c fiber.Ctx) error {
 	if file.IsEncrypted && len(file.EncryptionIV) > 0 && h.encryptionKey != nil {
 		if isChunkedEncryption(file.EncryptionIV) {
 			// New streaming chunked format — decrypt on the fly, no full-file buffering.
-			dec := newStreamDecryptor(rc, h.encryptionKey)
-			return c.SendStream(dec, int(file.SizeBytes))
+			dec, decErr := newStreamDecryptor(rc, h.encryptionKey)
+			if decErr != nil {
+				rc.Close() //nolint:errcheck
+				return apperrors.Internal("init decryption", decErr)
+			}
+			// Wrap dec+rc so fasthttp closes the MinIO body when streaming is done.
+			return c.SendStream(struct {
+				io.Reader
+				io.Closer
+			}{dec, rc}, int(file.SizeBytes))
 		}
-		// Legacy single-GCM block (files created before this fix; always < 4 MiB).
+		// Legacy single-GCM block (files created before chunked format; always < 4 MiB).
+		// io.ReadAll fully consumes rc before we return, so closing inline is correct.
 		raw, err := io.ReadAll(rc)
+		rc.Close() //nolint:errcheck
 		if err != nil {
 			return apperrors.Internal("read object data", err)
 		}
@@ -384,7 +549,7 @@ func (h *Handler) Download(c fiber.Ctx) error {
 		return c.Send(plain)
 	}
 
-	// Unencrypted — stream directly from object store without buffering.
+	// Unencrypted — rc is io.ReadCloser; fasthttp closes it after streaming.
 	return c.SendStream(rc, int(file.SizeBytes))
 }
 
@@ -414,21 +579,24 @@ func (h *Handler) GetMyUsage(c fiber.Ctx) error {
 		return err
 	}
 
-	// Include quota settings so the UI can show a progress bar.
+	// Include quota and upload-limit settings so the UI can show a progress bar
+	// and pre-validate file sizes client-side before sending them to the server.
 	cfg, cfgErr := h.repo.GetStorageConfig(c.Context())
 	quotaEnabled := false
-	var quotaBytes int64
+	var quotaBytes, maxUploadBytes int64
 	if cfgErr == nil {
 		quotaEnabled = cfg.QuotaEnabled
 		quotaBytes = cfg.QuotaBytesPerUser
+		maxUploadBytes = cfg.MaxUploadSizeBytes
 	}
 
 	return c.JSON(fiber.Map{
-		"user_id":              usage.UserID,
-		"file_count":           usage.FileCount,
-		"total_bytes":          usage.TotalBytes,
-		"quota_enabled":        quotaEnabled,
-		"quota_bytes_per_user": quotaBytes,
+		"user_id":               usage.UserID,
+		"file_count":            usage.FileCount,
+		"total_bytes":           usage.TotalBytes,
+		"quota_enabled":         quotaEnabled,
+		"quota_bytes_per_user":  quotaBytes,
+		"max_upload_size_bytes": maxUploadBytes,
 	})
 }
 
@@ -442,6 +610,28 @@ func (h *Handler) publishAudit(ctx context.Context, action, userID, fileID strin
 		"file_id":   fileID,
 		"success":   true,
 		"timestamp": time.Now(),
+	}
+	for k, v := range extra {
+		ev[k] = v
+	}
+	go func() {
+		if err := h.js.Publish(ctx, "AUDIT.storage", ev); err != nil {
+			h.log.Warn("failed to publish storage audit event", zap.String("action", action), zap.Error(err))
+		}
+	}()
+}
+
+// publishAuditFail publishes a failure audit event for storage operations.
+func (h *Handler) publishAuditFail(ctx context.Context, action, userID, reason string, extra map[string]any) {
+	if h.js == nil {
+		return
+	}
+	ev := map[string]any{
+		"action":    action,
+		"user_id":   userID,
+		"success":   false,
+		"timestamp": time.Now(),
+		"reason":    reason,
 	}
 	for k, v := range extra {
 		ev[k] = v
@@ -492,6 +682,39 @@ func decryptAESGCM(ciphertext, key, _ []byte) ([]byte, error) {
 	return gcm.Open(nil, iv, ct, nil)
 }
 
+// sanitizeFilename strips path-traversal components and unsafe characters from a
+// user-supplied filename so it is safe to use as an S3 object-key suffix and in
+// HTTP Content-Disposition headers.
+func sanitizeFilename(raw string) string {
+	// Normalise to forward slashes then take only the final component,
+	// eliminating "../", absolute paths, and Windows backslashes.
+	name := path.Base(filepath.ToSlash(raw))
+	// Strip ASCII control characters (null bytes, carriage returns, etc.).
+	name = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7F {
+			return -1
+		}
+		return r
+	}, name)
+	// Remove trailing dots and spaces (unsafe on some filesystems).
+	name = strings.TrimRight(name, ". ")
+	name = strings.TrimSpace(name)
+	// Enforce 255-byte maximum (common filesystem and S3 key-component limit).
+	for len(name) > 255 {
+		ext := filepath.Ext(name)
+		stem := name[:len(name)-len(ext)]
+		cutTo := max(1, 255-len(ext))
+		if len(stem) <= cutTo {
+			break
+		}
+		name = stem[:cutTo] + ext
+	}
+	if name == "" || name == "." || name == ".." {
+		name = "upload"
+	}
+	return name
+}
+
 // fmtBytes formats a byte count as a human-readable string (B/KB/MB/GB).
 func fmtBytes(b int64) string {
 	const k = 1024
@@ -507,6 +730,32 @@ func fmtBytes(b int64) string {
 	}
 }
 
+// ── Upload stream helpers ─────────────────────────────────────────────────────
+
+var errUploadTooLarge = errors.New("upload exceeds size limit")
+
+// uploadTracker wraps an io.Reader, counting every plaintext byte read and
+// aborting mid-stream if an optional per-file size cap is exceeded.
+type uploadTracker struct {
+	r        io.Reader
+	n        int64 // total bytes consumed so far
+	limit    int64 // 0 = no limit
+	exceeded bool
+}
+
+func (t *uploadTracker) Read(p []byte) (int, error) {
+	if t.exceeded {
+		return 0, errUploadTooLarge
+	}
+	n, err := t.r.Read(p)
+	t.n += int64(n)
+	if t.limit > 0 && t.n > t.limit {
+		t.exceeded = true
+		return n, errUploadTooLarge
+	}
+	return n, err
+}
+
 // ── Chunked streaming AES-256-GCM encryption ─────────────────────────────────
 //
 // Format stored in MinIO for each encrypted object:
@@ -518,7 +767,9 @@ func fmtBytes(b int64) string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // uploadChunkSize is the plaintext chunk size for streaming encryption.
-const uploadChunkSize = 64 * 1024 * 1024 // 64 MiB
+// 2 MiB balances RAM usage (≤2 MiB in-flight per upload/download) against
+// per-chunk overhead (32 bytes — negligible even for multi-GB files).
+const uploadChunkSize = 2 * 1024 * 1024 // 2 MiB
 
 // chunkMagic identifies the new streaming chunked encryption format.
 var chunkMagic = [8]byte{'T', 'Z', 'C', 'H', 'U', 'N', 'K', 0x01}
@@ -565,17 +816,27 @@ func chunkedCiphertextSize(plainSize int64) int64 {
 }
 
 // streamEncryptor wraps an io.Reader and encrypts each chunk on the fly.
+// The AES-GCM cipher is initialised once and reused across all chunks,
+// avoiding the expensive key-schedule setup on every chunk boundary.
 type streamEncryptor struct {
 	src      io.Reader
-	key      []byte
+	gcm      cipher.AEAD
 	baseIV   []byte
 	chunkIdx uint64
 	buf      []byte
 	eof      bool
 }
 
-func newStreamEncryptor(src io.Reader, key, baseIV []byte) *streamEncryptor {
-	return &streamEncryptor{src: src, key: key, baseIV: baseIV}
+func newStreamEncryptor(src io.Reader, key, baseIV []byte) (*streamEncryptor, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	return &streamEncryptor{src: src, gcm: gcm, baseIV: baseIV}, nil
 }
 
 func (e *streamEncryptor) fill() error {
@@ -597,16 +858,7 @@ func (e *streamEncryptor) fill() error {
 
 	iv := deriveChunkIV(e.baseIV, e.chunkIdx)
 	e.chunkIdx++
-
-	block, err := aes.NewCipher(e.key)
-	if err != nil {
-		return err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return err
-	}
-	ct := gcm.Seal(nil, iv, plain, nil) // len(ct) = len(plain) + 16
+	ct := e.gcm.Seal(nil, iv, plain, nil) // len(ct) = len(plain) + 16 (GCM auth tag)
 
 	var hdr [4]byte
 	binary.BigEndian.PutUint32(hdr[:], uint32(len(plain)))
@@ -631,15 +883,24 @@ func (e *streamEncryptor) Read(p []byte) (int, error) {
 }
 
 // streamDecryptor wraps an io.Reader and decrypts each chunk on the fly.
+// The AES-GCM cipher is initialised once and reused across all chunks.
 type streamDecryptor struct {
 	src io.Reader
-	key []byte
+	gcm cipher.AEAD
 	buf []byte
 	eof bool
 }
 
-func newStreamDecryptor(src io.Reader, key []byte) *streamDecryptor {
-	return &streamDecryptor{src: src, key: key}
+func newStreamDecryptor(src io.Reader, key []byte) (*streamDecryptor, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	return &streamDecryptor{src: src, gcm: gcm}, nil
 }
 
 func (d *streamDecryptor) fill() error {
@@ -666,15 +927,7 @@ func (d *streamDecryptor) fill() error {
 		return fmt.Errorf("read chunk ciphertext: %w", err)
 	}
 
-	block, err := aes.NewCipher(d.key)
-	if err != nil {
-		return err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return err
-	}
-	plain, err := gcm.Open(nil, iv, ct, nil)
+	plain, err := d.gcm.Open(nil, iv, ct, nil)
 	if err != nil {
 		return fmt.Errorf("decrypt chunk: %w", err)
 	}

@@ -39,6 +39,7 @@ export default function NewTransferPage() {
   const [recipientEmail, setRecipientEmail] = useState('');
   const [password, setPassword] = useState('');
   const [maxDownloads, setMaxDownloads] = useState(0);
+  const [viewOnly, setViewOnly] = useState(false);
   const [expiresInHours, setExpiresInHours] = useState(168);
 
   // Files staged for this transfer
@@ -180,6 +181,7 @@ export default function NewTransferPage() {
         recipient_email: recipientEmail || undefined,
         password: password || undefined,
         max_downloads: maxDownloads || undefined,
+        view_only: viewOnly || undefined,
         expires_in_hours: expiresInHours,
       });
       navigate(`/transfers/${t.id}`);
@@ -440,7 +442,7 @@ export default function NewTransferPage() {
             <div className="col">
               <div className="form-group">
                 <label>
-                  Max downloads{' '}
+                  {viewOnly ? 'Max views' : 'Max downloads'}{' '}
                   <span className="text-sm" style={{ color: 'var(--color-text-muted)' }}>(0 = unlimited)</span>
                 </label>
                 <input
@@ -450,6 +452,37 @@ export default function NewTransferPage() {
                   onChange={(e) => setMaxDownloads(parseInt(e.target.value) || 0)}
                 />
               </div>
+            </div>
+          </div>
+
+          {/* View-only toggle */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 12,
+            padding: '14px 16px',
+            background: viewOnly ? 'rgba(99,102,241,0.05)' : 'var(--color-bg-subtle, #f9fafb)',
+            border: `1px solid ${viewOnly ? 'var(--color-primary)' : 'var(--color-border)'}`,
+            borderRadius: 8,
+            marginTop: 4,
+            transition: 'all 0.15s',
+          }}>
+            <input
+              id="view-only"
+              type="checkbox"
+              checked={viewOnly}
+              onChange={(e) => setViewOnly(e.target.checked)}
+              style={{ marginTop: 2, flexShrink: 0, cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+            />
+            <div style={{ flex: 1 }}>
+              <label htmlFor="view-only" style={{ fontWeight: 600, fontSize: 13, cursor: 'pointer', display: 'block', marginBottom: 2 }}>
+                View only — no download
+              </label>
+              <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: 0, lineHeight: 1.5 }}>
+                Recipients can open and read files in the browser but will not see a download button.
+                The server enforces this by serving files inline.{' '}
+                <em>Note: determined users may still save via browser tools — this is a workflow and compliance aid, not DRM.</em>
+              </p>
             </div>
           </div>
         </div>

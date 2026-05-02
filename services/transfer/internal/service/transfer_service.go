@@ -55,7 +55,9 @@ type CreateParams struct {
 	RecipientEmail string
 	Password       string // empty = no password
 	MaxDownloads   int
+	ViewOnly       bool          // true = serve files inline; no download button for recipients
 	ExpiresIn      time.Duration // must be > 0 and <= 90 days
+	ClientIP       string        // for audit log
 }
 
 // CreateResult is returned to the handler after successful creation.
@@ -93,6 +95,7 @@ func (s *TransferService) Create(ctx context.Context, p CreateParams) (*CreateRe
 		RecipientEmail: p.RecipientEmail,
 		Slug:           slug,
 		MaxDownloads:   p.MaxDownloads,
+		ViewOnly:       p.ViewOnly,
 	}
 
 	if p.Password != "" {
@@ -113,14 +116,14 @@ func (s *TransferService) Create(ctx context.Context, p CreateParams) (*CreateRe
 		return nil, err
 	}
 
-	s.publishAudit(ctx, "transfer.created", p.OwnerID, created.ID)
+	s.publishAudit(ctx, "transfer.created", p.OwnerID, created.ID, p.ClientIP)
 	s.publishEmailNotification(ctx, created)
 
 	return &CreateResult{Transfer: created, FileIDs: p.FileIDs}, nil
 }
 
 // publishAudit publishes an audit event asynchronously; failure is logged, not returned.
-func (s *TransferService) publishAudit(ctx context.Context, action, ownerID, transferID string) {
+func (s *TransferService) publishAudit(ctx context.Context, action, ownerID, transferID, clientIP string) {
 	if s.js == nil {
 		return
 	}
@@ -128,6 +131,7 @@ func (s *TransferService) publishAudit(ctx context.Context, action, ownerID, tra
 		"action":      action,
 		"user_id":     ownerID,
 		"transfer_id": transferID,
+		"client_ip":   clientIP,
 		"success":     true,
 		"timestamp":   time.Now(),
 	}
@@ -189,6 +193,7 @@ type AttemptFileDownloadParams struct {
 	Slug     string
 	FileID   string
 	Password string
+	ClientIP string // for audit log
 }
 
 // AttemptFileDownload validates the transfer and atomically checks+increments the
@@ -257,6 +262,8 @@ func (s *TransferService) AttemptFileDownload(ctx context.Context, p AttemptFile
 		}
 	}()
 
+	s.publishAudit(ctx, "transfer.downloaded", t.OwnerID, t.ID, p.ClientIP)
+
 	return &AccessResult{Transfer: t, FileIDs: fileIDs}, nil
 }
 
@@ -314,7 +321,7 @@ func (s *TransferService) Validate(ctx context.Context, p AccessParams) (*Access
 func (s *TransferService) Revoke(ctx context.Context, id, ownerID string) error {
 	err := s.repo.Revoke(ctx, id, ownerID)
 	if err == nil {
-		s.publishAudit(ctx, "transfer.revoked", ownerID, id)
+		s.publishAudit(ctx, "transfer.revoked", ownerID, id, "")
 	}
 	return err
 }

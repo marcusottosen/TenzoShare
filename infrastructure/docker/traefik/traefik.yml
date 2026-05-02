@@ -9,6 +9,12 @@ api:
 entryPoints:
   web:
     address: ":80"
+    transport:
+      respondingTimeouts:
+        # 0 = no limit. Required for very large file uploads/downloads.
+        # Default (60s) kills connections at ~60 s regardless of body size.
+        readTimeout: 0
+        writeTimeout: 0
     # Forward X-Forwarded headers from Traefik itself
     forwardedHeaders:
       insecure: true

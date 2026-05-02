@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -28,14 +29,14 @@ import (
 const (
 	loginRateLimit       = 5
 	loginRateLimitWindow = 15 * time.Minute
-	maxFailedAttempts    = 10
-	lockoutDuration      = 15 * time.Minute
 
 	registerRateLimit       = 10
 	registerRateLimitWindow = 1 * time.Hour
 
 	passwordResetRateLimit       = 5
 	passwordResetRateLimitWindow = 1 * time.Hour
+
+	lockoutConfigTTL = 60 * time.Second
 )
 
 type TokenPair struct {
@@ -77,6 +78,7 @@ type userRepository interface {
 	UpdatePassword(ctx context.Context, userID, newHash string) error
 	RecordFailedLogin(ctx context.Context, userID string, maxAttempts int, lockDuration time.Duration) error
 	RecordSuccessfulLogin(ctx context.Context, userID string) error
+	GetLockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration, err error)
 	CreateAPIKey(ctx context.Context, userID, name, keyHash, keyPrefix string, expiresAt *time.Time) (*domain.APIKey, error)
 	ListAPIKeys(ctx context.Context, userID string) ([]*domain.APIKey, error)
 	DeleteAPIKey(ctx context.Context, id, userID string) error
@@ -91,6 +93,11 @@ type AuthService struct {
 	privateKey *rsa.PrivateKey
 	publicKey  *rsa.PublicKey
 	mfaKey     []byte // 32-byte AES key derived from PASSWORD_PEPPER
+
+	lockoutMu          sync.Mutex
+	cachedMaxAttempts  int
+	cachedLockDuration time.Duration
+	lockoutCachedAt    time.Time
 }
 
 func New(
@@ -158,6 +165,25 @@ func deriveMFAKey(pepper string) ([]byte, error) {
 	key := make([]byte, 32)
 	copy(key, []byte(pepper))
 	return key, nil
+}
+
+// lockoutConfig returns the current lockout policy, reading from DB if the
+// cached values are older than lockoutConfigTTL (60 s).
+func (s *AuthService) lockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration) {
+	s.lockoutMu.Lock()
+	defer s.lockoutMu.Unlock()
+	if time.Since(s.lockoutCachedAt) < lockoutConfigTTL && s.cachedMaxAttempts > 0 {
+		return s.cachedMaxAttempts, s.cachedLockDuration
+	}
+	ma, ld, err := s.repo.GetLockoutConfig(ctx)
+	if err != nil {
+		s.log.Warn("lockoutConfig: could not read auth_settings, using fallback", zap.Error(err))
+		return 10, 15 * time.Minute
+	}
+	s.cachedMaxAttempts = ma
+	s.cachedLockDuration = ld
+	s.lockoutCachedAt = time.Now()
+	return ma, ld
 }
 
 func (s *AuthService) EnsureBootstrapAdmin(ctx context.Context, email, password string) error {
@@ -229,7 +255,8 @@ func (s *AuthService) Login(ctx context.Context, email, password, clientIP strin
 
 	ok, err := crypto.VerifyPassword(password, user.PasswordHash, s.cfg.App.Pepper)
 	if err != nil || !ok {
-		_ = s.repo.RecordFailedLogin(ctx, user.ID, maxFailedAttempts, lockoutDuration)
+		maxAttempts, lockDur := s.lockoutConfig(ctx)
+		_ = s.repo.RecordFailedLogin(ctx, user.ID, maxAttempts, lockDur)
 		s.recordIPAttempt(ctx, clientIP)
 		s.publishAudit(ctx, AuditEvent{
 			Action: "login", UserID: user.ID, Email: email, ClientIP: clientIP,

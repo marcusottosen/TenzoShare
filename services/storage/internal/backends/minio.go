@@ -1,18 +1,26 @@
 package backends
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"github.com/tenzoshare/tenzoshare/shared/pkg/config"
 )
+
+// multipartPartSize is the size of each part in a multipart upload.
+// MinIO/S3 requires every non-final part to be ≥ 5 MiB; the last part may be any size.
+// 64 MiB per part × 10,000 parts (S3 maximum) = 640 GiB max object size.
+const multipartPartSize = 64 * 1024 * 1024 // 64 MiB
 
 // MinIOBackend implements shared/pkg/storage.Backend using the AWS SDK v2 against MinIO.
 type MinIOBackend struct {
@@ -36,11 +44,28 @@ func newS3Client(ctx context.Context, endpoint, region, accessKey, secretKey str
 		awsconfig.WithRegion(region),
 		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
 		awsconfig.WithEndpointResolverWithOptions(resolver),
+		// Disable proactive checksum calculation.
+		// AWS SDK v2 ≥ v1.32 defaults to RequestChecksumCalculationWhenSupported,
+		// which requires either a seekable reader (to pre-compute) or TLS (for
+		// trailing checksums sent after the body). MinIO is accessed over plain
+		// HTTP inside Docker and we pass unseekable streaming readers, so we
+		// must set WhenRequired so checksums are only added when the S3 API
+		// explicitly demands them (which PutObject does not).
+		awsconfig.WithRequestChecksumCalculation(aws.RequestChecksumCalculationWhenRequired),
+		awsconfig.WithResponseChecksumValidation(aws.ResponseChecksumValidationWhenRequired),
 	)
 	if err != nil {
 		return nil, err
 	}
-	return s3.NewFromConfig(awsCfg, func(o *s3.Options) { o.UsePathStyle = true }), nil
+	return s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		o.UsePathStyle = true
+		// PutObject over plain HTTP with a non-seekable streaming reader:
+		// the SDK's dynamic payload signer falls back to ComputePayloadSHA256
+		// which requires seeking the reader. Use UNSIGNED-PAYLOAD instead,
+		// which is what the SDK already does on HTTPS — this makes HTTP
+		// behaviour match and allows unbuffered streaming uploads.
+		o.APIOptions = append(o.APIOptions, v4.SwapComputePayloadSHA256ForUnsignedPayloadMiddleware)
+	}), nil
 }
 
 func NewMinIO(ctx context.Context, cfg *config.Config) (*MinIOBackend, error) {
@@ -73,18 +98,123 @@ func NewMinIO(ctx context.Context, cfg *config.Config) (*MinIOBackend, error) {
 }
 
 func (b *MinIOBackend) Upload(ctx context.Context, key string, data io.Reader, size int64, contentType string) error {
-	input := &s3.PutObjectInput{
+	if size >= 0 {
+		// Known size: direct PutObject (caller pre-computed the exact byte count).
+		input := &s3.PutObjectInput{
+			Bucket:        aws.String(b.bucket),
+			Key:           aws.String(key),
+			Body:          data,
+			ContentType:   aws.String(contentType),
+			ContentLength: aws.Int64(size),
+		}
+		_, err := b.client.PutObject(ctx, input)
+		if err != nil {
+			return fmt.Errorf("minio: upload %q: %w", key, err)
+		}
+		return nil
+	}
+	// Unknown size (streaming): use multipart upload.
+	// A single PutObject with no Content-Length keeps one HTTP connection open
+	// for the entire duration of the upload, which is fragile for large files
+	// (proxy timeouts, transient network errors restart the whole transfer).
+	// Multipart upload breaks the stream into 64 MiB parts, each its own short
+	// HTTP request, supporting up to 640 GiB with constant ~64 MiB RAM usage.
+	return b.multipartUpload(ctx, key, data, contentType)
+}
+
+// multipartUpload streams data to MinIO using the S3 multipart upload API.
+// Parts are read into a fixed-size in-memory buffer so the overall RAM usage
+// is bounded to multipartPartSize bytes regardless of the total object size.
+func (b *MinIOBackend) multipartUpload(ctx context.Context, key string, data io.Reader, contentType string) error {
+	create, err := b.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
 		Bucket:      aws.String(b.bucket),
 		Key:         aws.String(key),
-		Body:        data,
 		ContentType: aws.String(contentType),
-	}
-	if size >= 0 {
-		input.ContentLength = aws.Int64(size)
-	}
-	_, err := b.client.PutObject(ctx, input)
+	})
 	if err != nil {
-		return fmt.Errorf("minio: upload %q: %w", key, err)
+		return fmt.Errorf("minio: create multipart upload %q: %w", key, err)
+	}
+	uploadID := aws.ToString(create.UploadId)
+
+	abort := func() {
+		// Use a background context so the abort still fires even if ctx was cancelled.
+		_, _ = b.client.AbortMultipartUpload(context.Background(), &s3.AbortMultipartUploadInput{
+			Bucket:   aws.String(b.bucket),
+			Key:      aws.String(key),
+			UploadId: aws.String(uploadID),
+		})
+	}
+
+	buf := make([]byte, multipartPartSize)
+	var parts []s3types.CompletedPart
+	partNum := int32(1)
+
+	for {
+		// io.ReadFull fills buf completely, or returns:
+		//   (n>0, io.ErrUnexpectedEOF) — last partial chunk (end of stream)
+		//   (0,   io.EOF)               — stream was already exhausted
+		n, readErr := io.ReadFull(data, buf)
+		if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
+			abort()
+			return fmt.Errorf("minio: read part %d for %q: %w", partNum, key, readErr)
+		}
+		if n == 0 {
+			break // nothing left to upload
+		}
+
+		// bytes.NewReader is seekable, so the SDK can retry if needed,
+		// and ContentLength is explicit so MinIO never falls back to chunked TE.
+		up, err := b.client.UploadPart(ctx, &s3.UploadPartInput{
+			Bucket:        aws.String(b.bucket),
+			Key:           aws.String(key),
+			UploadId:      aws.String(uploadID),
+			PartNumber:    aws.Int32(partNum),
+			Body:          bytes.NewReader(buf[:n]),
+			ContentLength: aws.Int64(int64(n)),
+		})
+		if err != nil {
+			abort()
+			return fmt.Errorf("minio: upload part %d for %q: %w", partNum, key, err)
+		}
+
+		parts = append(parts, s3types.CompletedPart{
+			ETag:       up.ETag,
+			PartNumber: aws.Int32(partNum),
+		})
+		partNum++
+
+		if readErr == io.ErrUnexpectedEOF || readErr == io.EOF {
+			break // last chunk uploaded, done
+		}
+	}
+
+	if len(parts) == 0 {
+		// Empty body: multipart upload requires at least one part, so fall back
+		// to a zero-byte PutObject and clean up the abandoned upload ID.
+		abort()
+		_, err = b.client.PutObject(ctx, &s3.PutObjectInput{
+			Bucket:        aws.String(b.bucket),
+			Key:           aws.String(key),
+			ContentType:   aws.String(contentType),
+			ContentLength: aws.Int64(0),
+		})
+		if err != nil {
+			return fmt.Errorf("minio: upload empty object %q: %w", key, err)
+		}
+		return nil
+	}
+
+	_, err = b.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
+		Bucket:   aws.String(b.bucket),
+		Key:      aws.String(key),
+		UploadId: aws.String(uploadID),
+		MultipartUpload: &s3types.CompletedMultipartUpload{
+			Parts: parts,
+		},
+	})
+	if err != nil {
+		abort()
+		return fmt.Errorf("minio: complete multipart upload %q: %w", key, err)
 	}
 	return nil
 }
