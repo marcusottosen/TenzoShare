@@ -629,3 +629,106 @@ tbody tr:hover td { background: var(--color-page-bg); }
 }
 .tab-btn:hover { color: var(--color-text-primary); }
 .tab-btn.active { color: var(--color-secondary); border-bottom-color: var(--color-secondary); font-weight: 600; }
+
+/* ─── Sidebar transition (for mobile slide-in) ───────────────── */
+.sidebar { transition: transform 0.25s ease; }
+
+/* ─── Sidebar overlay (mobile backdrop) ─────────────────────── */
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 39;
+}
+
+/* ─── Hamburger button (hidden on desktop) ───────────────────── */
+.hamburger-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s;
+}
+.hamburger-btn:hover { background: var(--color-nav-active); color: var(--color-text-primary); }
+
+/* ─── Mobile responsive ──────────────────────────────────────── */
+@media (max-width: 768px) {
+  .hamburger-btn { display: flex; }
+
+  .sidebar {
+    transform: translateX(-100%);
+    z-index: 40;
+    box-shadow: none;
+  }
+  .sidebar.open {
+    transform: translateX(0);
+    box-shadow: 4px 0 32px rgba(0,0,0,0.3);
+  }
+  .sidebar-overlay { display: block; }
+
+  .navbar {
+    left: 0;
+    padding: 0 12px;
+  }
+
+  .main-content {
+    margin-left: 0;
+    width: 100%;
+    padding: 16px;
+  }
+
+  .page-header { flex-wrap: wrap; gap: 8px; }
+
+  .stat-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .health-grid { grid-template-columns: repeat(2, 1fr); }
+
+  .table-wrap { font-size: 12px; }
+  td, th { padding: 8px 10px; }
+
+  .auth-box { padding: 24px 20px; }
+
+  .modal { max-width: calc(100vw - 32px); }
+  .filter-bar { flex-direction: column; align-items: stretch; }
+  .filter-bar .form-group { min-width: unset; }
+
+  .navbar-search { display: none; }
+}
+
+@media (max-width: 480px) {
+  .stat-grid { grid-template-columns: 1fr; }
+  .health-grid { grid-template-columns: 1fr; }
+  .main-content { padding: 12px; }
+  .page-title { font-size: 18px; }
+  .card { padding: 16px; }
+  /* Prevent iOS auto-zoom on input focus */
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="number"],
+  input[type="datetime-local"],
+  select,
+  textarea { font-size: 16px; }
+}
+
+/* ─── Storage Insights chart grids ─────────────────────────── */
+.insights-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+.insights-row-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 16px; }
+.donut-inner { display: flex; align-items: center; gap: 16px; }
+
+@media (max-width: 900px) {
+  .insights-row-2 { grid-template-columns: 1fr; }
+  .insights-row-3 { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 600px) {
+  .insights-row-3 { grid-template-columns: 1fr; }
+  .donut-inner { flex-direction: column; align-items: flex-start; }
+}

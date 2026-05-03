@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { NavLink, useNavigate, Outlet, useLocation } from 'react-router';
 import { useAuth } from '../stores/auth';
 import { logout as apiLogout } from '../api/auth';
+import { getLogoUrl, getAppName } from '../branding';
 
 function IconGrid() {
   return (
@@ -57,13 +58,6 @@ function IconLogOut() {
     </svg>
   );
 }
-function IconTenz() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
-    </svg>
-  );
-}
 
 const PAGE_TITLES: Record<string, string> = {
   '/': 'Dashboard',
@@ -90,11 +84,21 @@ function getDisplayName(email?: string): string {
   return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
 }
 
+function IconMenu() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+    </svg>
+  );
+}
+
 export default function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
+  useEffect(() => { setSidebarOpen(false); }, [location.pathname]);
 
   const pageTitle = PAGE_TITLES[location.pathname]
     ?? (location.pathname.startsWith('/transfers/') ? 'Transfer Details' : 'TenzoShare');
@@ -110,11 +114,14 @@ export default function Layout() {
 
   return (
     <div className="app-shell">
+      {/* ── Sidebar overlay (mobile) ─────────────────────── */}
+      {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
+
       {/* ── Sidebar ─────────────────────────────────────────── */}
-      <nav className="sidebar">
+      <nav className={sidebarOpen ? 'sidebar open' : 'sidebar'}>
         <div className="sidebar-header">
           <div className="sidebar-logo">
-            <IconTenz />
+            <img src={getLogoUrl()} alt="TenzoShare" style={{ width: 32, height: 32, objectFit: 'contain' }} />
           </div>
           <div>
             <div className="sidebar-title">TenzoShare</div>
@@ -161,11 +168,19 @@ export default function Layout() {
           <button className="sidebar-logout-btn" onClick={handleLogout}>
             <IconLogOut /> Sign out
           </button>
+          {getAppName() !== 'TenzoShare' && (
+            <div style={{ fontSize: 10, opacity: 0.35, textAlign: 'center', padding: '6px 0 2px', letterSpacing: '0.02em' }}>
+              Powered by TenzoShare
+            </div>
+          )}
         </div>
       </nav>
 
       {/* ── Navbar ──────────────────────────────────────────── */}
       <header className="navbar">
+        <button className="hamburger-btn" onClick={() => setSidebarOpen(s => !s)} aria-label="Toggle menu">
+          <IconMenu />
+        </button>
         <div className="navbar-breadcrumb">{pageTitle}</div>
 
         <div className="navbar-avatar" onClick={() => navigate('/profile')} style={{ cursor: 'pointer' }}>{initials}</div>

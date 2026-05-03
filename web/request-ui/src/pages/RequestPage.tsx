@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import type { FileRequestPublic } from '../types';
 import { RequestApiError } from '../types';
 import { fetchRequest, uploadFile } from '../api/requests';
+import { getLogoUrl, getAppName } from '../branding';
 
 // ─── Slug resolution ───────────────────────────────────────────────────────
 function resolveSlug(): string | null {
@@ -34,14 +35,6 @@ interface FileEntry {
 }
 
 // ─── Icon components ───────────────────────────────────────────────────────
-
-function IconBolt() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
-    </svg>
-  );
-}
 
 function IconUpload() {
   return (
@@ -99,14 +92,6 @@ function IconAlert() {
   );
 }
 
-function IconShield() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-    </svg>
-  );
-}
-
 function IconClose() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -124,7 +109,7 @@ function Layout({ children }: { children: React.ReactNode }) {
       <div className="tenzo-card">
         <div className="tenzo-brand">
           <div className="tenzo-brand-icon">
-            <IconBolt />
+            <img src={getLogoUrl()} alt="TenzoShare" style={{ width: 32, height: 32, objectFit: 'contain' }} />
           </div>
           <span className="tenzo-brand-name">TenzoShare</span>
         </div>
@@ -137,10 +122,15 @@ function Layout({ children }: { children: React.ReactNode }) {
 // ─── Footer ────────────────────────────────────────────────────────────────
 
 function TenzoFooter() {
+  const appName = getAppName();
+  const branded = appName !== 'TenzoShare';
   return (
     <div className="tenzo-footer">
-      <IconShield />
-      Files are encrypted and delivered securely via TenzoShare
+      <img src={getLogoUrl()} alt="" style={{ width: 14, height: 14, objectFit: 'contain' }} />
+      {`Files are encrypted and delivered securely via ${appName}`}
+      {branded && (
+        <span style={{ marginLeft: 6, opacity: 0.45, fontSize: '0.8em' }}>· Powered by TenzoShare</span>
+      )}
     </div>
   );
 }

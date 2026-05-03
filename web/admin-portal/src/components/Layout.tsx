@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { NavLink, useNavigate, Outlet, useLocation } from 'react-router';
 import { useAuth } from '../stores/auth';
 import { logout as apiLogout } from '../api/auth';
@@ -63,13 +63,6 @@ function IconSearch() {
     </svg>
   );
 }
-function IconShield() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-    </svg>
-  );
-}
 function IconStorage() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -95,6 +88,17 @@ function IconLock() {
     </svg>
   );
 }
+function IconPalette() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/>
+      <circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/>
+      <circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/>
+      <circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/>
+      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10c.28 0 .5-.22.5-.5 0-.16-.08-.28-.14-.35-.41-.46-.63-1.05-.63-1.65 0-1.38 1.12-2.5 2.5-2.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8z"/>
+    </svg>
+  );
+}
 
 const PAGE_TITLES: Record<string, string> = {
   '/': 'System Overview',
@@ -107,6 +111,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/storage': 'Storage Settings',
   '/storage/files': 'Storage Files',
   '/storage/insights': 'Storage Insights',
+  '/branding': 'Branding',
 };
 
 function getInitials(email?: string): string {
@@ -124,11 +129,21 @@ function getDisplayName(email?: string): string {
   return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
 }
 
+function IconMenu() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+    </svg>
+  );
+}
+
 export default function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
+  useEffect(() => { setSidebarOpen(false); }, [location.pathname]);
 
   const pageTitle = PAGE_TITLES[location.pathname] ?? 'Admin';
 
@@ -143,11 +158,14 @@ export default function Layout() {
 
   return (
     <div className="app-shell">
+      {/* ── Sidebar overlay (mobile) ─────────────────────── */}
+      {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
+
       {/* ── Dark navy sidebar ────────────────────────────────── */}
-      <nav className="sidebar">
+      <nav className={sidebarOpen ? 'sidebar open' : 'sidebar'}>
         <div className="sidebar-header">
           <div className="sidebar-logo">
-            <IconShield />
+            <img src="/logo.png" alt="TenzoShare" style={{ width: 32, height: 32, objectFit: 'contain' }} />
           </div>
           <div>
             <div className="sidebar-title">TenzoAdmin</div>
@@ -184,6 +202,9 @@ export default function Layout() {
           </NavLink>
 
           <div className="sidebar-section-label">Configuration</div>
+          <NavLink to="/branding" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            <IconPalette /> Branding
+          </NavLink>
           <NavLink to="/storage" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             <IconStorage /> Storage Settings
           </NavLink>
@@ -211,6 +232,9 @@ export default function Layout() {
 
       {/* ── Navbar ──────────────────────────────────────────── */}
       <header className="navbar">
+        <button className="hamburger-btn" onClick={() => setSidebarOpen(s => !s)} aria-label="Toggle menu">
+          <IconMenu />
+        </button>
         <div className="navbar-breadcrumb">{pageTitle}</div>
 
         <div className="navbar-avatar">{initials}</div>

@@ -84,11 +84,12 @@ function SubmissionList({ subs, onDownload }: { subs: Submission[]; onDownload: 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       {subs.map((s) => (
-        <div key={s.id} style={{
+        <div key={s.id} className="submission-item" style={{
           display: 'flex', alignItems: 'flex-start', gap: 12,
           padding: '12px 14px', borderRadius: 8,
           background: 'var(--color-nav-active)',
           border: '1px solid var(--color-border)',
+          flexWrap: 'wrap',
         }}>
           {/* File icon */}
           <div style={{
@@ -127,7 +128,7 @@ function SubmissionList({ subs, onDownload }: { subs: Submission[]; onDownload: 
 
           {/* Download */}
           <button
-            className="btn btn-primary btn-sm"
+            className="btn btn-primary btn-sm submission-dl-btn"
             title="Download file"
             onClick={() => onDownload(s.file_id, s.filename)}
             style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 5, alignSelf: 'center' }}
@@ -212,7 +213,7 @@ function MySharesTab() {
   return (
     <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
       <div className="table-wrap" style={{ border: 'none', borderRadius: 0 }}>
-        <table>
+        <table className="shares-table">
           <thead>
             <tr>
               <th className="sort-th" onClick={() => toggleSort('name')}>
@@ -245,7 +246,7 @@ function MySharesTab() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <span style={{ fontWeight: 500, fontSize: 13, color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.name}</span>
                     {t.view_only && (
-                      <span title="View only — recipients cannot download" style={{ flexShrink: 0, fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 4, background: 'rgba(99,102,241,0.1)', color: 'var(--color-primary)', border: '1px solid rgba(99,102,241,0.25)', letterSpacing: 0.3 }}>VIEW ONLY</span>
+                      <span title="View only — recipients cannot download" className="badge-view-only">VIEW ONLY</span>
                     )}
                   </div>
                   {t.description && <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.description}</div>}

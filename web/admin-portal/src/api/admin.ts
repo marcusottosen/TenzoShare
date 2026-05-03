@@ -405,3 +405,54 @@ export async function updateAuthConfig(body: {
   });
 }
 
+// ── Branding ──────────────────────────────────────────────────────────────────
+
+export interface BrandingConfig {
+  primary_color: string;
+  secondary_color: string;
+  page_bg_color: string;
+  surface_color: string;
+  text_color: string;
+  border_radius: number;
+  app_name: string;
+  custom_css: string | null;
+  logo_data_url: string | null;
+  updated_at: string;
+  // Dark-mode overrides (null = use built-in dark defaults)
+  dm_primary_color: string | null;
+  dm_secondary_color: string | null;
+  dm_page_bg_color: string | null;
+  dm_surface_color: string | null;
+  dm_text_color: string | null;
+}
+
+export async function getBranding(): Promise<BrandingConfig> {
+  return request<BrandingConfig>('/admin/branding');
+}
+
+export async function updateBranding(body: {
+  primary_color?: string;
+  secondary_color?: string;
+  page_bg_color?: string;
+  surface_color?: string;
+  text_color?: string;
+  border_radius?: number;
+  app_name?: string;
+  custom_css?: string;
+  clear_custom_css?: boolean;
+  logo_data_url?: string;
+  clear_logo?: boolean;
+  // Dark-mode overrides
+  dm_primary_color?: string;
+  dm_secondary_color?: string;
+  dm_page_bg_color?: string;
+  dm_surface_color?: string;
+  dm_text_color?: string;
+  clear_dark_mode?: boolean;
+}): Promise<BrandingConfig> {
+  return request<BrandingConfig>('/admin/branding', {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+}
+

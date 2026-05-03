@@ -32,6 +32,9 @@
   --color-accent-teal-bg: #F0FDFA;
   --color-accent-teal-border: #99F6E4;
   --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
 }
 
 body {
@@ -57,7 +60,7 @@ body {
 .tenzo-card {
   background: var(--color-surface);
   border: 1px solid var(--color-border-card);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   padding: 36px;
   width: 100%;
   max-width: 520px;
@@ -75,7 +78,7 @@ body {
   width: 36px;
   height: 36px;
   background: var(--color-secondary);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -148,7 +151,7 @@ body {
   padding: 12px 14px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   transition: border-color 0.12s;
 }
 .file-item:hover { border-color: var(--color-border-card); }
@@ -157,7 +160,7 @@ body {
   height: 34px;
   background: var(--color-accent-teal-bg);
   border: 1px solid var(--color-accent-teal-border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -192,7 +195,7 @@ body {
   width: 100%;
   padding: 8px 12px;
   border: 1px solid var(--color-border-card);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   font-size: 14px;
   font-family: var(--font-sans);
   background: var(--color-surface);
@@ -215,7 +218,7 @@ body {
   padding: 0 16px;
   height: 36px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   font-size: 14px;
   font-family: var(--font-sans);
   font-weight: 500;
@@ -240,7 +243,7 @@ body {
 /* ─── Alerts ─────────────────────────────────────── */
 .alert {
   padding: 10px 14px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   margin-bottom: 20px;
   font-size: 13px;
   line-height: 1.5;
@@ -313,4 +316,29 @@ body {
   color: var(--color-warn-text);
   font-size: 13px;
   font-weight: 500;
+}
+
+/* ─── Mobile responsive ──────────────────────────── */
+@media (max-width: 600px) {
+  .tenzo-page {
+    padding: 24px 12px 60px;
+    justify-content: flex-start;
+  }
+
+  .tenzo-card {
+    padding: 24px 20px;
+    border-radius: var(--radius-md);
+  }
+
+  .tenzo-title { font-size: 17px; }
+  .tenzo-subtitle { font-size: 13px; }
+
+  .file-item { padding: 10px 12px; gap: 10px; }
+  .file-name { font-size: 12px; }
+
+  .btn { font-size: 13px; }
+  .btn-lg { height: 40px; }
+
+  .chips-row { gap: 4px; }
+  .chip { font-size: 11px; padding: 2px 8px; }
 }

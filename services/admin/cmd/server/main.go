@@ -205,6 +205,11 @@ func main() {
 	v1.Get("/audit/stats", handleGetAuditStats)
 	v1.Get("/auth/config", handleGetAuthConfig)
 	v1.Put("/auth/config", handlePutAuthConfig)
+	v1.Get("/branding", handleGetBranding)
+	v1.Put("/branding", handlePutBranding)
+
+	// Public branding endpoint — no auth required so user-facing sites can fetch it.
+	app.Get("/api/v1/branding", handleGetBrandingPublic)
 
 	go func() {
 		if err := app.Listen(":" + cfg.Server.Port); err != nil {
@@ -1800,6 +1805,171 @@ func getEnvOr(key, fallback string) string {
 }
 
 // isUniqueViolation checks for PostgreSQL unique constraint violation (SQLSTATE 23505).
+// ── Branding ─────────────────────────────────────────────────────────────────
+
+type BrandingConfig struct {
+	PrimaryColor   string  `json:"primary_color"`
+	SecondaryColor string  `json:"secondary_color"`
+	PageBgColor    string  `json:"page_bg_color"`
+	SurfaceColor   string  `json:"surface_color"`
+	TextColor      string  `json:"text_color"`
+	BorderRadius   int     `json:"border_radius"`
+	AppName        string  `json:"app_name"`
+	CustomCSS      *string `json:"custom_css"`
+	LogoDataURL    *string `json:"logo_data_url"`
+	UpdatedAt      string  `json:"updated_at"`
+	// Dark-mode colour overrides (nil = use built-in dark defaults)
+	DmPrimaryColor   *string `json:"dm_primary_color"`
+	DmSecondaryColor *string `json:"dm_secondary_color"`
+	DmPageBgColor    *string `json:"dm_page_bg_color"`
+	DmSurfaceColor   *string `json:"dm_surface_color"`
+	DmTextColor      *string `json:"dm_text_color"`
+}
+
+func scanBranding(c fiber.Ctx) (BrandingConfig, error) {
+	var bc BrandingConfig
+	var updatedAt time.Time
+	err := db.QueryRow(c.Context(), `
+		SELECT primary_color, secondary_color, page_bg_color, surface_color,
+		       text_color, border_radius, app_name, custom_css, logo_data_url, updated_at,
+		       dm_primary_color, dm_secondary_color, dm_page_bg_color, dm_surface_color, dm_text_color
+		FROM admin_svc.branding_settings WHERE id = 1`,
+	).Scan(&bc.PrimaryColor, &bc.SecondaryColor, &bc.PageBgColor, &bc.SurfaceColor,
+		&bc.TextColor, &bc.BorderRadius, &bc.AppName, &bc.CustomCSS, &bc.LogoDataURL, &updatedAt,
+		&bc.DmPrimaryColor, &bc.DmSecondaryColor, &bc.DmPageBgColor, &bc.DmSurfaceColor, &bc.DmTextColor)
+	if err != nil {
+		return bc, err
+	}
+	bc.UpdatedAt = updatedAt.Format(time.RFC3339)
+	return bc, nil
+}
+
+// GET /api/v1/branding  (public — no auth)
+func handleGetBrandingPublic(c fiber.Ctx) error {
+	bc, err := scanBranding(c)
+	if err != nil {
+		return apperrors.Internal("get branding", err)
+	}
+	return c.JSON(bc)
+}
+
+// GET /api/v1/admin/branding
+func handleGetBranding(c fiber.Ctx) error {
+	return handleGetBrandingPublic(c)
+}
+
+// PUT /api/v1/admin/branding
+func handlePutBranding(c fiber.Ctx) error {
+	var body struct {
+		PrimaryColor   *string `json:"primary_color"`
+		SecondaryColor *string `json:"secondary_color"`
+		PageBgColor    *string `json:"page_bg_color"`
+		SurfaceColor   *string `json:"surface_color"`
+		TextColor      *string `json:"text_color"`
+		BorderRadius   *int    `json:"border_radius"`
+		AppName        *string `json:"app_name"`
+		CustomCSS      *string `json:"custom_css"`
+		ClearCustomCSS *bool   `json:"clear_custom_css"`
+		LogoDataURL    *string `json:"logo_data_url"` // empty string = clear logo
+		ClearLogo      *bool   `json:"clear_logo"`
+		// Dark-mode overrides
+		DmPrimaryColor   *string `json:"dm_primary_color"`
+		DmSecondaryColor *string `json:"dm_secondary_color"`
+		DmPageBgColor    *string `json:"dm_page_bg_color"`
+		DmSurfaceColor   *string `json:"dm_surface_color"`
+		DmTextColor      *string `json:"dm_text_color"`
+		ClearDarkMode    *bool   `json:"clear_dark_mode"`
+	}
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return apperrors.BadRequest("invalid JSON body")
+	}
+	// Validate hex colors if provided.
+	for _, col := range []*string{body.PrimaryColor, body.SecondaryColor, body.PageBgColor, body.SurfaceColor, body.TextColor,
+		body.DmPrimaryColor, body.DmSecondaryColor, body.DmPageBgColor, body.DmSurfaceColor, body.DmTextColor} {
+		if col != nil && (len(*col) != 7 || (*col)[0] != '#') {
+			return apperrors.BadRequest("colors must be a 7-character hex value like #1E293B")
+		}
+	}
+	if body.BorderRadius != nil && (*body.BorderRadius < 0 || *body.BorderRadius > 32) {
+		return apperrors.BadRequest("border_radius must be between 0 and 32")
+	}
+	if body.AppName != nil && len(*body.AppName) == 0 {
+		return apperrors.BadRequest("app_name must not be empty")
+	}
+	// Validate logo size (base64 of 512 KB ≈ 700 KB string).
+	if body.LogoDataURL != nil && len(*body.LogoDataURL) > 800_000 {
+		return apperrors.BadRequest("logo must be under 512 KB")
+	}
+
+	// Determine new logo_data_url value.
+	clearLogo := (body.ClearLogo != nil && *body.ClearLogo) ||
+		(body.LogoDataURL != nil && *body.LogoDataURL == "")
+	var logoSQL *string
+	if !clearLogo && body.LogoDataURL != nil && *body.LogoDataURL != "" {
+		logoSQL = body.LogoDataURL
+	}
+
+	// Determine new custom_css value.
+	clearCSS := body.ClearCustomCSS != nil && *body.ClearCustomCSS
+	var cssSQL *string
+	if !clearCSS && body.CustomCSS != nil {
+		cssSQL = body.CustomCSS
+	}
+
+	// Determine dark-mode color values.
+	clearDM := body.ClearDarkMode != nil && *body.ClearDarkMode
+
+	_, err := db.Exec(c.Context(), `
+		UPDATE admin_svc.branding_settings SET
+		    primary_color   = COALESCE($1::text,    primary_color),
+		    secondary_color = COALESCE($2::text,    secondary_color),
+		    page_bg_color   = COALESCE($3::text,    page_bg_color),
+		    surface_color   = COALESCE($4::text,    surface_color),
+		    text_color      = COALESCE($5::text,    text_color),
+		    border_radius   = COALESCE($6::smallint, border_radius),
+		    app_name        = COALESCE($7::text,    app_name),
+		    custom_css      = CASE
+		                          WHEN $8::bool    THEN NULL
+		                          WHEN $9::text IS NOT NULL THEN $9::text
+		                          ELSE custom_css
+		                      END,
+		    logo_data_url   = CASE
+		                          WHEN $10::bool   THEN NULL
+		                          WHEN $11::text IS NOT NULL THEN $11::text
+		                          ELSE logo_data_url
+		                      END,
+		    dm_primary_color   = CASE WHEN $12::bool THEN NULL WHEN $13::text IS NOT NULL THEN $13::text ELSE dm_primary_color END,
+		    dm_secondary_color = CASE WHEN $12::bool THEN NULL WHEN $14::text IS NOT NULL THEN $14::text ELSE dm_secondary_color END,
+		    dm_page_bg_color   = CASE WHEN $12::bool THEN NULL WHEN $15::text IS NOT NULL THEN $15::text ELSE dm_page_bg_color END,
+		    dm_surface_color   = CASE WHEN $12::bool THEN NULL WHEN $16::text IS NOT NULL THEN $16::text ELSE dm_surface_color END,
+		    dm_text_color      = CASE WHEN $12::bool THEN NULL WHEN $17::text IS NOT NULL THEN $17::text ELSE dm_text_color END,
+		    updated_at      = now()
+		WHERE id = 1`,
+		body.PrimaryColor,
+		body.SecondaryColor,
+		body.PageBgColor,
+		body.SurfaceColor,
+		body.TextColor,
+		body.BorderRadius,
+		body.AppName,
+		clearCSS,
+		cssSQL,
+		clearLogo,
+		logoSQL,
+		clearDM,
+		body.DmPrimaryColor,
+		body.DmSecondaryColor,
+		body.DmPageBgColor,
+		body.DmSurfaceColor,
+		body.DmTextColor,
+	)
+	if err != nil {
+		return apperrors.Internal("update branding", err)
+	}
+	publishAdminAudit(c, "admin.branding_updated", "branding_settings", nil)
+	return handleGetBrandingPublic(c)
+}
+
 func isUniqueViolation(err error) bool {
 	if err == nil {
 		return false
