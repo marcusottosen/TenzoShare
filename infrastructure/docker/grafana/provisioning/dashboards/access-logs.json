@@ -29,22 +29,22 @@
       },
       "targets": [
         {
-          "expr": "sum(rate({service=\"tenzoshare-gateway\"} | json | DownstreamStatus >= 500 [5m]))",
+          "expr": "sum(count_over_time({service=\"tenzoshare-gateway\"} | json | DownstreamStatus >= 500 [$__interval]))",
           "legendFormat": "5xx",
           "refId": "A"
         },
         {
-          "expr": "sum(rate({service=\"tenzoshare-gateway\"} | json | DownstreamStatus >= 400 | DownstreamStatus < 500 [5m]))",
+          "expr": "sum(count_over_time({service=\"tenzoshare-gateway\"} | json | DownstreamStatus >= 400 | DownstreamStatus < 500 [$__interval]))",
           "legendFormat": "4xx",
           "refId": "B"
         },
         {
-          "expr": "sum(rate({service=\"tenzoshare-gateway\"} | json | DownstreamStatus >= 300 | DownstreamStatus < 400 [5m]))",
+          "expr": "sum(count_over_time({service=\"tenzoshare-gateway\"} | json | DownstreamStatus >= 300 | DownstreamStatus < 400 [$__interval]))",
           "legendFormat": "3xx",
           "refId": "C"
         },
         {
-          "expr": "sum(rate({service=\"tenzoshare-gateway\"} | json | DownstreamStatus >= 200 | DownstreamStatus < 300 [5m]))",
+          "expr": "sum(count_over_time({service=\"tenzoshare-gateway\"} | json | DownstreamStatus >= 200 | DownstreamStatus < 300 [$__interval]))",
           "legendFormat": "2xx",
           "refId": "D"
         }
@@ -65,7 +65,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (RequestMethod) (rate({service=\"tenzoshare-gateway\"} | json [5m]))",
+          "expr": "sum by (RequestMethod) (count_over_time({service=\"tenzoshare-gateway\"} | json [$__interval]))",
           "legendFormat": "{{RequestMethod}}",
           "refId": "A"
         }
@@ -86,8 +86,8 @@
       },
       "targets": [
         {
-          "expr": "sum (rate({service=\"tenzoshare-gateway\"} | json | Duration > 500000000 [5m]))",
-          "legendFormat": "slow requests/s",
+          "expr": "sum(count_over_time({service=\"tenzoshare-gateway\"} | json | Duration > 500000000 [$__interval]))",
+          "legendFormat": "slow requests",
           "refId": "A"
         }
       ]

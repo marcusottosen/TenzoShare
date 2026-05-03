@@ -66,6 +66,7 @@ func main() {
 	})
 
 	telemetry.Register(app, "notification")
+	app.Use(middleware.RequestLogger(log))
 	app.Get("/api/v1/notification/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "service": "notification"})
 	})

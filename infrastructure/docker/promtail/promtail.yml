@@ -7,6 +7,11 @@ positions:
 
 clients:
   - url: http://loki:3100/loki/api/v1/push
+    # Retry failed pushes with backoff so Loki restarts don't lose log lines.
+    backoff_config:
+      min_period: 500ms
+      max_period: 5m
+      max_retries: 20
 
 scrape_configs:
   # ── Docker service discovery ──────────────────────────────────────────────
@@ -27,20 +32,61 @@ scrape_configs:
         target_label: service
 
     pipeline_stages:
-      # ── Parse Go/Zap/Traefik JSON log lines ────────────────────────────────
+      # ── Drop health-check and metrics noise from ALL services ──────────────
+      # These endpoints are polled every few seconds and produce no useful signal.
+      - drop:
+          expression: '"path":"/health"'
+      - drop:
+          expression: '"path":"/metrics"'
+      # Drop Traefik's health/metrics access log lines (they use RequestPath not path)
+      - drop:
+          expression: '"RequestPath":"/metrics"'
+
+      # ── Parse JSON log lines (Zap production + RequestLogger output) ───────
+      # Fields extracted here are available to downstream stages.
+      # Silently no-ops on non-JSON lines (e.g. Fiber startup banner in dev mode).
       - json:
           expressions:
             level: level
-            ts: ts
+            ts: ts          # Zap production: float Unix epoch
+            msg: msg
+            caller: caller
+            user_id: user_id
+            request_id: request_id
+            email: email
+            # Traefik access log fields
+            traefik_time: time          # Traefik uses "time" (RFC3339), not "ts"
 
-      # Promote level to an indexed Loki stream label.
-      # 'service' is already a stream label set by relabel_configs above —
-      # do NOT include it here or it will overwrite the relabeled value with
-      # an empty extracted entry.
+      # ── Fallback: extract level from Zap dev-mode text format ─────────────
+      # Dev-mode format: "2006-01-02T15:04:05.000Z\tINFO\tcaller\tmessage\t{json}"
+      # The regex only matches those lines (starting with a timestamp, not "{"),
+      # so it is a no-op for JSON lines where json stage already set level.
+      - regex:
+          expression: '^\S+\t(?P<level>DEBUG|INFO|WARN|ERROR|DPANIC|PANIC|FATAL)\t'
+
+      # ── Stream labels (LOW cardinality only — every unique combo = new stream) ──
+      # 'service' is already set by relabel_configs; do NOT add it here.
       - labels:
           level:
 
-      # Parse Zap's float Unix timestamp; falls back to ingest time on failure
+      # ── Structured metadata for searchable-but-not-indexed fields ─────────
+      # Structured metadata avoids label cardinality explosion for high-cardinality
+      # values (UUIDs). They are stored per log line and fully queryable with
+      # {service=~"..."} | user_id="<uuid>" in Grafana Loki datasource.
+      - structured_metadata:
+          user_id:
+          request_id:
+          email:
+          msg:
+          caller:
+
+      # ── Timestamps ────────────────────────────────────────────────────────
+      # Handle Zap production float Unix timestamp.
+      # If 'ts' is empty (dev-mode or Traefik logs) the stage is a no-op and
+      # Promtail falls back to the Docker log stream timestamp.
       - timestamp:
           source: ts
           format: Unix
+          # If parsing fails (non-numeric), fall back gracefully to ingest time.
+          action_on_failure: skip
+
