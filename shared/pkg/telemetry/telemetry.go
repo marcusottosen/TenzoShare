@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/valyala/fasthttp/fasthttpadaptor"
 )
 
 var startTime = time.Now()
@@ -34,8 +35,13 @@ func init() {
 // endpoints are reachable by health-check scrapers without credentials.
 func Register(app *fiber.App, serviceName string) {
 	app.Get("/health", healthHandler(serviceName))
-	// Fiber v3 natively adapts net/http handlers — no wrapper needed.
-	app.Get("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
+	metricsHandler := fasthttpadaptor.NewFastHTTPHandler(
+		promhttp.HandlerFor(registry, promhttp.HandlerOpts{}),
+	)
+	app.Get("/metrics", func(c fiber.Ctx) error {
+		metricsHandler(c.RequestCtx())
+		return nil
+	})
 }
 
 func healthHandler(serviceName string) fiber.Handler {

@@ -80,7 +80,7 @@
     },
     {
       "type": "timeseries",
-      "title": "GC Pause Duration (p99)",
+      "title": "GC Pause Duration (max)",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -93,8 +93,8 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, rate(go_gc_duration_seconds_bucket{service=~\"$service\"}[5m]))",
-          "legendFormat": "{{service}} p99",
+          "expr": "go_gc_duration_seconds{quantile=\"1\", service=~\"$service\"}",
+          "legendFormat": "{{service}} max",
           "refId": "A"
         }
       ],

@@ -29,7 +29,7 @@
       },
       "targets": [
         {
-          "expr": "sum (rate({service=\"tenzoshare-transfer\"} | json | msg=\"transfer created\" [5m]))",
+          "expr": "sum(rate({service=\"tenzoshare-gateway\"} | json | RequestPath=\"/api/v1/transfers\" | RequestMethod=\"POST\" | DownstreamStatus = 201 [5m]))",
           "legendFormat": "created/s",
           "refId": "A"
         }
@@ -50,7 +50,7 @@
       },
       "targets": [
         {
-          "expr": "sum (rate({service=\"tenzoshare-transfer\"} | json | msg=~\"download url generated|file download\" [5m]))",
+          "expr": "sum(rate({service=\"tenzoshare-gateway\"} | json | RequestPath=~\"/api/v1/t/.+/files/.+/download\" [5m]))",
           "legendFormat": "downloads/s",
           "refId": "A"
         }
@@ -71,9 +71,19 @@
       },
       "targets": [
         {
-          "expr": "sum by (msg) (rate({service=\"tenzoshare-auth\"} | json | msg=~\"login success|login failed|logout\" [5m]))",
-          "legendFormat": "{{msg}}",
+          "expr": "sum(rate({service=\"tenzoshare-gateway\"} | json | RequestPath=\"/api/v1/auth/login\" | RequestMethod=\"POST\" | DownstreamStatus = 200 [5m]))",
+          "legendFormat": "login success",
           "refId": "A"
+        },
+        {
+          "expr": "sum(rate({service=\"tenzoshare-gateway\"} | json | RequestPath=\"/api/v1/auth/login\" | RequestMethod=\"POST\" | DownstreamStatus = 401 [5m]))",
+          "legendFormat": "login failed",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate({service=\"tenzoshare-gateway\"} | json | RequestPath=\"/api/v1/auth/logout\" | RequestMethod=\"POST\" [5m]))",
+          "legendFormat": "logout",
+          "refId": "C"
         }
       ]
     },
@@ -92,8 +102,8 @@
       },
       "targets": [
         {
-          "expr": "sum (rate({service=\"tenzoshare-upload\"} | json | level!=\"error\" [5m]))",
-          "legendFormat": "upload events/s",
+          "expr": "sum(rate({service=\"tenzoshare-gateway\"} | json | RequestPath=~\"/api/v1/(uploads|files).*\" | RequestMethod=\"POST\" | DownstreamStatus < 500 [5m]))",
+          "legendFormat": "uploads/s",
           "refId": "A"
         }
       ]
@@ -113,8 +123,8 @@
       },
       "targets": [
         {
-          "expr": "sum by (service) (rate({service=~\"tenzoshare-.+\"} | json | level=\"error\" [5m]))",
-          "legendFormat": "{{service}}",
+          "expr": "sum by (ServiceName) (rate({service=\"tenzoshare-gateway\"} | json | DownstreamStatus >= 500 [5m]))",
+          "legendFormat": "{{ServiceName}}",
           "refId": "A"
         }
       ],
@@ -142,7 +152,7 @@
       },
       "targets": [
         {
-          "expr": "{service=~\"tenzoshare-transfer|tenzoshare-auth|tenzoshare-upload\"} | json",
+          "expr": "{service=\"tenzoshare-gateway\"} | json | RequestPath=~\"/api/v1/(transfers|auth|uploads|t)/.*\"",
           "refId": "A"
         }
       ],

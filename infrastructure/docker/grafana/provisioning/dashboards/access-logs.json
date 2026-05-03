@@ -29,9 +29,24 @@
       },
       "targets": [
         {
-          "expr": "sum by (status_class) (rate({service=\"tenzoshare-gateway\"} | json | label_format status_class=\"{{if ge (int .DownstreamStatus) 500}}5xx{{else if ge (int .DownstreamStatus) 400}}4xx{{else if ge (int .DownstreamStatus) 300}}3xx{{else}}2xx{{end}}\" [5m]))",
-          "legendFormat": "{{status_class}}",
+          "expr": "sum(rate({service=\"tenzoshare-gateway\"} | json | DownstreamStatus >= 500 [5m]))",
+          "legendFormat": "5xx",
           "refId": "A"
+        },
+        {
+          "expr": "sum(rate({service=\"tenzoshare-gateway\"} | json | DownstreamStatus >= 400 | DownstreamStatus < 500 [5m]))",
+          "legendFormat": "4xx",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate({service=\"tenzoshare-gateway\"} | json | DownstreamStatus >= 300 | DownstreamStatus < 400 [5m]))",
+          "legendFormat": "3xx",
+          "refId": "C"
+        },
+        {
+          "expr": "sum(rate({service=\"tenzoshare-gateway\"} | json | DownstreamStatus >= 200 | DownstreamStatus < 300 [5m]))",
+          "legendFormat": "2xx",
+          "refId": "D"
         }
       ]
     },
