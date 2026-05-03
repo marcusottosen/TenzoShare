@@ -1,17 +1,32 @@
 {
   "title": "Access Logs (Gateway)",
   "uid": "tenzoshare-access-logs",
-  "tags": ["tenzoshare", "logs", "traefik"],
+  "tags": [
+    "tenzoshare",
+    "logs",
+    "traefik"
+  ],
   "timezone": "browser",
   "schemaVersion": 39,
   "refresh": "30s",
-  "time": { "from": "now-1h", "to": "now" },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
   "panels": [
     {
       "type": "timeseries",
       "title": "Request Rate by Status Class",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
-      "datasource": { "type": "loki", "uid": "${DS_LOKI}" },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
       "targets": [
         {
           "expr": "sum by (status_class) (rate({service=\"tenzoshare-gateway\"} | json | label_format status_class=\"{{if ge (int .DownstreamStatus) 500}}5xx{{else if ge (int .DownstreamStatus) 400}}4xx{{else if ge (int .DownstreamStatus) 300}}3xx{{else}}2xx{{end}}\" [5m]))",
@@ -23,8 +38,16 @@
     {
       "type": "timeseries",
       "title": "Request Rate by HTTP Method",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
-      "datasource": { "type": "loki", "uid": "${DS_LOKI}" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
       "targets": [
         {
           "expr": "sum by (RequestMethod) (rate({service=\"tenzoshare-gateway\"} | json [5m]))",
@@ -36,8 +59,16 @@
     {
       "type": "timeseries",
       "title": "Slow Requests (>500ms)",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
-      "datasource": { "type": "loki", "uid": "${DS_LOKI}" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
       "targets": [
         {
           "expr": "sum (rate({service=\"tenzoshare-gateway\"} | json | Duration > 500000000 [5m]))",
@@ -49,8 +80,16 @@
     {
       "type": "logs",
       "title": "Gateway Access Log Stream",
-      "gridPos": { "h": 20, "w": 24, "x": 0, "y": 16 },
-      "datasource": { "type": "loki", "uid": "${DS_LOKI}" },
+      "gridPos": {
+        "h": 20,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
       "targets": [
         {
           "expr": "{service=\"tenzoshare-gateway\"} | json",
@@ -65,7 +104,5 @@
         "sortOrder": "Descending"
       }
     }
-  ],
-  "__inputs": [{ "name": "DS_LOKI", "label": "Loki", "type": "datasource", "pluginId": "loki" }],
-  "__requires": [{ "type": "datasource", "id": "loki", "name": "Loki", "version": "1.0.0" }]
+  ]
 }

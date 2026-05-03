@@ -21,45 +21,26 @@ scrape_configs:
             values: ["tenzoshare-"]
 
     relabel_configs:
-      # Use the container name as the service label (strip leading /)
+      # Set service label from container name (strip leading /)
       - source_labels: [__meta_docker_container_name]
         regex: /(.*)
         target_label: service
 
-      # Also expose the container image for context
-      - source_labels: [__meta_docker_container_image_name]
-        target_label: image
-
-      # Drop containers that are stopped / have no log stream
-      - source_labels: [__meta_docker_container_state]
-        regex: running
-        action: keep
-
     pipeline_stages:
-      # ── Go services (Zap JSON) ─────────────────────────────────────────────
-      # Try to parse as Zap JSON. Fields: level, msg, ts, caller, error
+      # ── Parse Go/Zap/Traefik JSON log lines ────────────────────────────────
       - json:
           expressions:
             level: level
-            msg: msg
             ts: ts
-            caller: caller
-            error: error
 
-      # Promote level to a Loki label for fast filtering
+      # Promote level to an indexed Loki stream label.
+      # 'service' is already a stream label set by relabel_configs above —
+      # do NOT include it here or it will overwrite the relabeled value with
+      # an empty extracted entry.
       - labels:
           level:
 
-      # Parse the Zap float timestamp into a proper log timestamp
+      # Parse Zap's float Unix timestamp; falls back to ingest time on failure
       - timestamp:
           source: ts
           format: Unix
-
-      # ── nginx JSON (frontend containers) ──────────────────────────────────
-      # nginx containers emit: time, method, path, status, bytes_sent, request_time
-      # These are parsed by the json stage above too — status and method become
-      # queryable structured metadata (not Loki labels, to avoid high cardinality)
-
-      # ── Traefik JSON ───────────────────────────────────────────────────────
-      # Traefik access log JSON fields: level, msg, time, RequestMethod,
-      # RequestPath, DownstreamStatus, Duration
