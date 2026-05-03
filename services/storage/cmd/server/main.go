@@ -22,6 +22,7 @@ import (
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jwtkeys"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/logger"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/telemetry"
 )
 
 func main() {
@@ -104,10 +105,9 @@ func main() {
 	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
 	app.Use(middleware.SecurityHeaders())
 	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
+	app.Use(middleware.RequestLogger(log))
 
-	app.Get("/health", func(c fiber.Ctx) error {
-		return c.JSON(fiber.Map{"status": "ok", "service": "storage"})
-	})
+	telemetry.Register(app, "storage")
 	app.Get("/api/v1/files/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "service": "storage"})
 	})

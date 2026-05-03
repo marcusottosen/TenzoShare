@@ -6,6 +6,7 @@ COPY web/request-ui/ ./
 RUN npm run build
 
 FROM nginx:1.27-alpine
+COPY web/nginx.conf /etc/nginx/nginx.conf
 COPY web/nginx-spa.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/dist/ /usr/share/nginx/html/
 EXPOSE 80

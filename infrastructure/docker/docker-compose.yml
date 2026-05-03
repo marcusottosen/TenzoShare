@@ -1,5 +1,10 @@
-# TenzoShare — Full Stack (Phase 1)
+# TenzoShare — Full Stack
 # Brings up: infra (PostgreSQL, Redis, MinIO, NATS, Traefik) + all backend services
+# + optional observability stack (Grafana, Loki, Prometheus, Promtail)
+#
+# Observability mode is controlled by COMPOSE_PROFILES in your .env file:
+#   COMPOSE_PROFILES=              → core stack only (default)
+#   COMPOSE_PROFILES=observability → core + Grafana/Loki/Prometheus/Promtail
 #
 # Usage (from this directory):
 #   docker compose up -d                                          # start everything
@@ -20,8 +25,14 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
     networks:
       - tenzoshare-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       test: ["CMD", "traefik", "healthcheck"]
       interval: 15s
@@ -49,6 +60,11 @@ services:
       start_period: 20s
     networks:
       - tenzoshare-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ── Redis ────────────────────────────────────────────────────────────────────
   redis:
@@ -71,6 +87,11 @@ services:
       retries: 5
     networks:
       - tenzoshare-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ── MinIO ────────────────────────────────────────────────────────────────────
   minio:
@@ -100,6 +121,11 @@ services:
       - "traefik.http.routers.minio-console.middlewares=minio-strip"
       - "traefik.http.middlewares.minio-strip.stripprefix.prefixes=/minio-console"
       - "traefik.http.services.minio-console.loadbalancer.server.port=9001"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ── NATS JetStream ────────────────────────────────────────────────────────────
   nats:
@@ -121,6 +147,11 @@ services:
       start_period: 10s
     networks:
       - tenzoshare-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ── Migrations ───────────────────────────────────────────────────────────────
   migrate:
@@ -177,6 +208,11 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.auth.rule=PathPrefix(`/api/v1/auth`) || PathPrefix(`/api/v1/users`)"
       - "traefik.http.services.auth.loadbalancer.server.port=8081"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ── Transfer (8082) ───────────────────────────────────────────────────────────
   transfer:
@@ -202,6 +238,11 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.transfer.rule=PathPrefix(`/api/v1/transfers`) || PathPrefix(`/api/v1/t`) || PathPrefix(`/api/v1/requests`) || PathPrefix(`/api/v1/r`)"
       - "traefik.http.services.transfer.loadbalancer.server.port=8082"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ── Storage (8083) ────────────────────────────────────────────────────────────
   storage:
@@ -217,7 +258,7 @@ services:
       POSTGRES_HOST: db
       REDIS_HOST: redis
       S3_ENDPOINT: http://minio:9000
-      S3_PUBLIC_URL: http://192.168.10.150:9000
+      S3_PUBLIC_URL: ${S3_PUBLIC_URL:-http://localhost:9000}
       NATS_URL: nats://nats:4222
       SERVER_READ_TIMEOUT: "0s"   # unlimited — allows very large file uploads
       SERVER_WRITE_TIMEOUT: "0s"  # unlimited — allows very large file downloads
@@ -232,6 +273,11 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.storage.rule=PathPrefix(`/api/v1/files`)"
       - "traefik.http.services.storage.loadbalancer.server.port=8083"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ── Upload (8084) ─────────────────────────────────────────────────────────────
   upload:
@@ -255,6 +301,11 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.upload.rule=PathPrefix(`/api/v1/uploads`)"
       - "traefik.http.services.upload.loadbalancer.server.port=8084"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ── MailHog — local dev SMTP ─────────────────────────────────────────────────
   mailhog:
@@ -266,6 +317,11 @@ services:
       - "8025:8025"   # Web UI
     networks:
       - tenzoshare-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ── Notification (8085) ───────────────────────────────────────────────────────
   notification:
@@ -295,6 +351,11 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.notification.rule=PathPrefix(`/api/v1/notification`)"
       - "traefik.http.services.notification.loadbalancer.server.port=8085"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ── Audit (8086) ─────────────────────────────────────────────────────────────
   audit:
@@ -320,6 +381,11 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.audit.rule=PathPrefix(`/api/v1/audit`)"
       - "traefik.http.services.audit.loadbalancer.server.port=8086"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ── Admin (8087) — stub ───────────────────────────────────────────────────────
   admin:
@@ -343,6 +409,11 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.admin.rule=PathPrefix(`/api/v1/admin`) || PathPrefix(`/api/v1/branding`)"
       - "traefik.http.services.admin.loadbalancer.server.port=8087"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 # ── UI Applications ────────────────────────────────────────────────────────────
 
@@ -357,6 +428,11 @@ services:
       - "3000:80"
     networks:
       - tenzoshare-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   tenzoshare-admin-ui:
     image: tenzoshare/admin-portal:local
@@ -369,6 +445,11 @@ services:
       - "3001:80"
     networks:
       - tenzoshare-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   tenzoshare-download-ui:
     image: tenzoshare/download-ui:local
@@ -381,6 +462,11 @@ services:
       - "3003:80"
     networks:
       - tenzoshare-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   tenzoshare-request-ui:
     image: tenzoshare/request-ui:local
@@ -393,6 +479,101 @@ services:
       - "3002:80"
     networks:
       - tenzoshare-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# ── Observability (profile: observability) ─────────────────────────────────
+# Start with: COMPOSE_PROFILES=observability docker compose up -d
+# Or set COMPOSE_PROFILES=observability in your .env file
+
+  loki:
+    image: grafana/loki:3.4.3
+    container_name: tenzoshare-loki
+    restart: unless-stopped
+    profiles: [observability]
+    command:
+      - -config.file=/etc/loki/loki.yml
+      - -config.expand-env=true
+    volumes:
+      - loki-data:/loki
+      - ./loki/loki.yml:/etc/loki/loki.yml:ro
+    networks:
+      - tenzoshare-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  promtail:
+    image: grafana/promtail:3.4.3
+    container_name: tenzoshare-promtail
+    restart: unless-stopped
+    profiles: [observability]
+    command: -config.file=/etc/promtail/promtail.yml
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./promtail/promtail.yml:/etc/promtail/promtail.yml:ro
+    depends_on:
+      - loki
+    networks:
+      - tenzoshare-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  prometheus:
+    image: prom/prometheus:v3.4.1
+    container_name: tenzoshare-prometheus
+    restart: unless-stopped
+    profiles: [observability]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION_TIME:-15d}
+      - --storage.tsdb.retention.size=${PROMETHEUS_RETENTION_SIZE:-5GB}
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - tenzoshare-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  grafana:
+    image: grafana/grafana:12.0.2
+    container_name: tenzoshare-grafana
+    restart: unless-stopped
+    profiles: [observability]
+    ports:
+      - "3010:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-changeme}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: http://localhost:3010
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+      - loki
+    networks:
+      - tenzoshare-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 # ── Named Volumes ──────────────────────────────────────────────────────────────
 volumes:
@@ -400,6 +581,9 @@ volumes:
   redis-data:
   minio-data:
   nats-data:
+  prometheus-data:
+  loki-data:
+  grafana-data:
 
 # ── Networks ───────────────────────────────────────────────────────────────────
 networks:

@@ -7,12 +7,68 @@ import (
 	"crypto/rsa"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
+	"go.uber.org/zap"
 
 	apperrors "github.com/tenzoshare/tenzoshare/shared/pkg/errors"
 )
+
+// RequestLogger returns a Fiber middleware that logs every inbound request.
+// It generates (or propagates) an X-Request-ID header, stores it in
+// c.Locals("requestID"), and after the handler chain completes it logs:
+//
+//   - method, path, status, latency, ip, request_id
+//   - user_id — present only when a JWTAuth/OptionalJWTAuth middleware has
+//     already run and stored the user ID in c.Locals("userID").
+//
+// Place it early in the middleware chain, right after SecurityHeaders/CORS
+// but before route definitions so that it wraps the full request lifecycle.
+// Error-level logs are written for 5xx responses, warn for 4xx, info otherwise.
+func RequestLogger(log *zap.Logger) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		start := time.Now()
+
+		// Propagate an incoming X-Request-ID or generate a new one.
+		reqID := c.Get("X-Request-ID")
+		if reqID == "" {
+			reqID = uuid.New().String()
+		}
+		c.Set("X-Request-ID", reqID)
+		c.Locals("requestID", reqID)
+
+		err := c.Next()
+
+		status := c.Response().StatusCode()
+		fields := []zap.Field{
+			zap.String("method", c.Method()),
+			zap.String("path", c.Path()),
+			zap.Int("status", status),
+			zap.Duration("latency", time.Since(start)),
+			zap.String("request_id", reqID),
+			zap.String("ip", c.IP()),
+		}
+
+		// Include user_id only when JWTAuth has authenticated the request.
+		if userID, ok := c.Locals("userID").(string); ok && userID != "" {
+			fields = append(fields, zap.String("user_id", userID))
+		}
+
+		switch {
+		case status >= 500:
+			log.Error("request", fields...)
+		case status >= 400:
+			log.Warn("request", fields...)
+		default:
+			log.Info("request", fields...)
+		}
+
+		return err
+	}
+}
 
 // Claims is the JWT payload stored in each access token.
 type Claims struct {
