@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/tenzoshare/tenzoshare/services/transfer/internal/domain"
+	"github.com/tenzoshare/tenzoshare/services/transfer/internal/repository"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/config"
 	apperrors "github.com/tenzoshare/tenzoshare/shared/pkg/errors"
 )
@@ -146,6 +147,17 @@ func (r *stubTransferRepo) AttemptFileDownload(_ context.Context, transferID, fi
 	}
 	r.fileDlCounts[transferID][fileID] = current + 1
 	return true, nil
+}
+
+func (r *stubTransferRepo) GetFileInfos(_ context.Context, transferID string) ([]*repository.FileInfo, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	var infos []*repository.FileInfo
+	for _, fid := range r.fileIDs[transferID] {
+		infos = append(infos, &repository.FileInfo{ID: fid})
+	}
+	return infos, nil
 }
 
 func (r *stubTransferRepo) GetFileDownloadCounts(_ context.Context, transferID string) (map[string]int, error) {
