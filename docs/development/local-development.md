@@ -40,11 +40,11 @@ That starts Traefik, PostgreSQL, Redis, MinIO, and NATS.
 | http://localhost:9001 | MinIO console |
 | http://localhost:8222 | NATS monitor |
 
-Optional — observability stack (Prometheus, Grafana, Loki, Tempo):
+Optional — observability stack (Prometheus, Grafana, Loki, Promtail):
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
-# Grafana at http://localhost:3000
+docker compose --profile observability up -d
+# Grafana at http://localhost:3010
 ```
 
 ## Build and test
@@ -72,14 +72,14 @@ Each service is just a binary that reads env vars. Point it at the local infra:
 export DEV_MODE=true
 export LOG_LEVEL=debug
 export POSTGRES_HOST=localhost
-export POSTGRES_PASSWORD=tenzoshare    # from your .env
-export REDIS_PASSWORD=redis_password   # from your .env
+export POSTGRES_PASSWORD=<your POSTGRES_PASSWORD from .env>
+export REDIS_PASSWORD=<your REDIS_PASSWORD from .env>
 export NATS_URL=nats://localhost:4222
-export JWT_SECRET=<value from .env>
-export PASSWORD_PEPPER=<value from .env>
+export JWT_SECRET=<your JWT_SECRET from .env>
+export PASSWORD_PEPPER=<your PASSWORD_PEPPER from .env>
 export S3_ENDPOINT=localhost:9000
-export S3_ACCESS_KEY=minioadmin
-export S3_SECRET_KEY=minioadmin
+export S3_ACCESS_KEY=<your MINIO_ROOT_USER from .env>
+export S3_SECRET_KEY=<your MINIO_ROOT_PASSWORD from .env>
 export S3_BUCKET=tenzoshare
 export S3_USE_SSL=false
 

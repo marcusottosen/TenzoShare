@@ -258,7 +258,7 @@ services:
       POSTGRES_HOST: db
       REDIS_HOST: redis
       S3_ENDPOINT: http://minio:9000
-      S3_PUBLIC_URL: http://192.168.10.150:9000
+      S3_PUBLIC_URL: ${S3_PUBLIC_URL:-http://localhost:9000}
       NATS_URL: nats://nats:4222
       SERVER_READ_TIMEOUT: "0s"   # unlimited — allows very large file uploads
       SERVER_WRITE_TIMEOUT: "0s"  # unlimited — allows very large file downloads
