@@ -1,6 +1,6 @@
 # TenzoShare
 
-**Self-hosted, encrypted file transfer — open-source alternative to ShareFile and LinShare.**
+**Self-hosted, API- and Docker-based, encrypted file transfer**
 
 [![License: AGPL 3.0](https://img.shields.io/badge/license-AGPL%203.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/go-1.26-00ADD8.svg)](https://golang.org/)
