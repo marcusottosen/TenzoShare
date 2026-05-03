@@ -101,6 +101,7 @@ Default admin credentials are set via `ADMIN_EMAIL` / `ADMIN_PASSWORD` in `.env`
 | **Infrastructure** | PostgreSQL 17, Redis 7, MinIO, NATS 2.12, Traefik v3 |
 | **Auth** | golang-jwt (RS256), pquerna/otp (TOTP) |
 | **Uploads** | tusd v2 (Tus resumable upload protocol) |
+| **Observability** | Prometheus, Grafana Loki, Grafana — optional, toggle via `COMPOSE_PROFILES=observability` in `.env` |
 
 ---
 

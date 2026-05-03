@@ -1,0 +1,22 @@
+# Traefik Dynamic Configuration — Security Middlewares
+
+http:
+  middlewares:
+    # IP allowlist for the Traefik metrics endpoint.
+    # The Traefik API/dashboard port (8080) is not routed through Traefik itself —
+    # it is a raw TCP port on the Docker host. This middleware documents the
+    # pattern for any future Traefik-labelled routes that expose metrics or
+    # internal diagnostics through the web entrypoint (port 80).
+    #
+    # Prometheus (observability profile) scrapes Traefik at:
+    #   http://tenzoshare-gateway:8080/metrics (Docker-internal, never via port 80)
+    # So no allowlist is needed for the current scraping setup.
+    #
+    # Apply to any sensitive route with:
+    #   traefik.http.routers.<name>.middlewares=internal-only
+    internal-only:
+      ipAllowList:
+        sourceRange:
+          - "127.0.0.1/32"
+          - "172.16.0.0/12"   # Docker bridge networks (172.16–172.31)
+          - "192.168.0.0/16"  # LAN / host-mode networks

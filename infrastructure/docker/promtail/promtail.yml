@@ -1,0 +1,65 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # ── Docker service discovery ──────────────────────────────────────────────
+  # Discovers all containers on the Docker socket and collects their stdout/stderr.
+  # Only containers whose name starts with "tenzoshare-" are scraped.
+  - job_name: tenzoshare_containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 10s
+        filters:
+          - name: name
+            values: ["tenzoshare-"]
+
+    relabel_configs:
+      # Use the container name as the service label (strip leading /)
+      - source_labels: [__meta_docker_container_name]
+        regex: /(.*)
+        target_label: service
+
+      # Also expose the container image for context
+      - source_labels: [__meta_docker_container_image_name]
+        target_label: image
+
+      # Drop containers that are stopped / have no log stream
+      - source_labels: [__meta_docker_container_state]
+        regex: running
+        action: keep
+
+    pipeline_stages:
+      # ── Go services (Zap JSON) ─────────────────────────────────────────────
+      # Try to parse as Zap JSON. Fields: level, msg, ts, caller, error
+      - json:
+          expressions:
+            level: level
+            msg: msg
+            ts: ts
+            caller: caller
+            error: error
+
+      # Promote level to a Loki label for fast filtering
+      - labels:
+          level:
+
+      # Parse the Zap float timestamp into a proper log timestamp
+      - timestamp:
+          source: ts
+          format: Unix
+
+      # ── nginx JSON (frontend containers) ──────────────────────────────────
+      # nginx containers emit: time, method, path, status, bytes_sent, request_time
+      # These are parsed by the json stage above too — status and method become
+      # queryable structured metadata (not Loki labels, to avoid high cardinality)
+
+      # ── Traefik JSON ───────────────────────────────────────────────────────
+      # Traefik access log JSON fields: level, msg, time, RequestMethod,
+      # RequestPath, DownstreamStatus, Duration

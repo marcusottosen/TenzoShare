@@ -25,6 +25,7 @@ import (
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jwtkeys"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/logger"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/telemetry"
 )
 
 // ── Domain types ──────────────────────────────────────────────────────────────
@@ -170,9 +171,7 @@ func main() {
 	app.Use(middleware.SecurityHeaders())
 	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
 
-	app.Get("/health", func(c fiber.Ctx) error {
-		return c.JSON(fiber.Map{"status": "ok", "service": "admin"})
-	})
+	telemetry.Register(app, "admin")
 
 	v1 := app.Group("/api/v1/admin", middleware.JWTAuth(pubKey), middleware.RequireRole("admin"))
 	v1.Get("/health", func(c fiber.Ctx) error {

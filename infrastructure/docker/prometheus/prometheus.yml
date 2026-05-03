@@ -1,0 +1,39 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # ── TenzoShare backend services ───────────────────────────────────────────
+  # Each service exposes GET /metrics (Prometheus text format) on its own port.
+  # Scraping is direct within the Docker network — never through Traefik.
+  - job_name: tenzoshare_services
+    static_configs:
+      - targets:
+          - tenzoshare-auth:8081
+          - tenzoshare-transfer:8082
+          - tenzoshare-storage:8083
+          - tenzoshare-upload:8084
+          - tenzoshare-notification:8085
+          - tenzoshare-audit:8086
+          - tenzoshare-admin:8087
+    metrics_path: /metrics
+    relabel_configs:
+      # Derive a human-readable service label from the scrape target hostname
+      - source_labels: [__address__]
+        regex: tenzoshare-([^:]+):.*
+        target_label: service
+        replacement: $1
+
+  # ── Traefik gateway ───────────────────────────────────────────────────────
+  # Traefik exposes Prometheus metrics on its API port (8080 → traefik entryPoint).
+  - job_name: traefik
+    static_configs:
+      - targets:
+          - tenzoshare-gateway:8080
+    metrics_path: /metrics
+
+  # ── Prometheus self-monitoring ────────────────────────────────────────────
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090

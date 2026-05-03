@@ -25,11 +25,19 @@ providers:
     exposedByDefault: false
     network: tenzoshare-net
     watch: true
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
 
 log:
   level: INFO
 
-accessLog: {}
+accessLog:
+  format: json
+
+metrics:
+  prometheus:
+    entryPoint: traefik   # exposed on the :8080 dashboard port — internal only
 
 # Ping endpoint used by Docker healthcheck
 ping:
