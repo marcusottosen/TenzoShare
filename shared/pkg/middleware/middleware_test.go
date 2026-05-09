@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http/httptest"
 	"testing"
@@ -13,6 +15,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 
+	apperrors "github.com/tenzoshare/tenzoshare/shared/pkg/errors"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 )
 
@@ -374,5 +377,227 @@ func TestSecurityHeaders_Present(t *testing.T) {
 		if got != want {
 			t.Errorf("header %s = %q, want %q", h, got, want)
 		}
+	}
+}
+
+// ── ErrorHandler tests ────────────────────────────────────────────────────────
+
+func testErrorHandlerApp() *fiber.App {
+	return fiber.New(fiber.Config{ErrorHandler: middleware.ErrorHandler})
+}
+
+func getErrorBody(app *fiber.App, path string, causeErr error) (int, map[string]interface{}) {
+	app.Get(path, func(c fiber.Ctx) error {
+		return causeErr
+	})
+	req := httptest.NewRequest("GET", path, nil)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 5 * time.Second})
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var m map[string]interface{}
+	json.Unmarshal(body, &m) //nolint:errcheck
+	return resp.StatusCode, m
+}
+
+func TestErrorHandler_AppError_ReturnsCorrectStatus(t *testing.T) {
+	app := testErrorHandlerApp()
+	status, body := getErrorBody(app, "/not-found", apperrors.NotFound("thing not found"))
+	if status != 404 {
+		t.Errorf("expected 404, got %d", status)
+	}
+	errMap, _ := body["error"].(map[string]interface{})
+	if errMap == nil {
+		t.Fatal("expected 'error' key in response body")
+	}
+	if errMap["code"] != "NOT_FOUND" {
+		t.Errorf("expected code NOT_FOUND, got %v", errMap["code"])
+	}
+}
+
+func TestErrorHandler_UnauthorizedError_Returns401(t *testing.T) {
+	app := testErrorHandlerApp()
+	status, _ := getErrorBody(app, "/unauth", apperrors.Unauthorized("invalid token"))
+	if status != 401 {
+		t.Errorf("expected 401, got %d", status)
+	}
+}
+
+func TestErrorHandler_FiberError_ReturnsCorrectStatus(t *testing.T) {
+	app := testErrorHandlerApp()
+	status, body := getErrorBody(app, "/fiber-err", fiber.NewError(fiber.StatusMethodNotAllowed, "method not allowed"))
+	if status != 405 {
+		t.Errorf("expected 405, got %d", status)
+	}
+	errMap, _ := body["error"].(map[string]interface{})
+	if errMap == nil {
+		t.Fatal("expected 'error' key in response body")
+	}
+}
+
+func TestErrorHandler_UnknownError_Returns500(t *testing.T) {
+	app := testErrorHandlerApp()
+	status, body := getErrorBody(app, "/unknown", errors.New("something went wrong"))
+	if status != 500 {
+		t.Errorf("expected 500, got %d", status)
+	}
+	errMap, _ := body["error"].(map[string]interface{})
+	if errMap == nil {
+		t.Fatal("expected 'error' key in response body")
+	}
+	if errMap["code"] != "INTERNAL_ERROR" {
+		t.Errorf("expected code INTERNAL_ERROR, got %v", errMap["code"])
+	}
+}
+
+// ── CORS tests ────────────────────────────────────────────────────────────────
+
+func newCORSApp(devMode bool, origins []string) *fiber.App {
+	app := fiber.New()
+	app.Use(middleware.CORS(devMode, origins))
+	app.Get("/test", func(c fiber.Ctx) error { return c.SendStatus(200) })
+	app.Options("/test", func(c fiber.Ctx) error { return c.SendStatus(204) })
+	return app
+}
+
+func corsRequest(app *fiber.App, method, path, origin string) (int, string) {
+	req := httptest.NewRequest(method, path, nil)
+	if origin != "" {
+		req.Header.Set("Origin", origin)
+	}
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 5 * time.Second})
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+	io.ReadAll(resp.Body) //nolint:errcheck
+	return resp.StatusCode, resp.Header.Get("Access-Control-Allow-Origin")
+}
+
+func TestCORS_DevMode_ReflectsOrigin(t *testing.T) {
+	app := newCORSApp(true, nil)
+	_, allowOrigin := corsRequest(app, "GET", "/test", "https://example.com")
+	if allowOrigin != "https://example.com" {
+		t.Errorf("expected reflected origin in dev mode, got %q", allowOrigin)
+	}
+}
+
+func TestCORS_DevMode_NoOriginHeader_NoACHeader(t *testing.T) {
+	app := newCORSApp(true, nil)
+	_, allowOrigin := corsRequest(app, "GET", "/test", "")
+	if allowOrigin != "" {
+		t.Errorf("expected empty ACAO header with no Origin, got %q", allowOrigin)
+	}
+}
+
+func TestCORS_Prod_AllowedOrigin_SetsHeader(t *testing.T) {
+	app := newCORSApp(false, []string{"https://allowed.example.com"})
+	_, allowOrigin := corsRequest(app, "GET", "/test", "https://allowed.example.com")
+	if allowOrigin != "https://allowed.example.com" {
+		t.Errorf("expected allowed origin, got %q", allowOrigin)
+	}
+}
+
+func TestCORS_Prod_DisallowedOrigin_NoHeader(t *testing.T) {
+	app := newCORSApp(false, []string{"https://allowed.example.com"})
+	_, allowOrigin := corsRequest(app, "GET", "/test", "https://evil.example.com")
+	if allowOrigin != "" {
+		t.Errorf("expected no ACAO header for disallowed origin, got %q", allowOrigin)
+	}
+}
+
+func TestCORS_Preflight_Returns204(t *testing.T) {
+	app := newCORSApp(true, nil)
+	status, _ := corsRequest(app, "OPTIONS", "/test", "https://example.com")
+	if status != 204 {
+		t.Errorf("expected 204 for OPTIONS preflight, got %d", status)
+	}
+}
+
+// ── RequireRole multiple roles ────────────────────────────────────────────────
+
+func TestRequireRole_MultipleRoles_AdminAllowed(t *testing.T) {
+	key := generateRSAKey(t)
+	tok := validToken(t, key, "admin")
+
+	app := newTestApp(func(c fiber.Ctx) error {
+		return c.SendStatus(200)
+	}, middleware.JWTAuth(&key.PublicKey), middleware.RequireRole("user", "admin"))
+
+	code := get(app, "/test", "Bearer "+tok)
+	if code != 200 {
+		t.Errorf("expected 200 for admin with multi-role middleware, got %d", code)
+	}
+}
+
+func TestRequireRole_MultipleRoles_UserAllowed(t *testing.T) {
+	key := generateRSAKey(t)
+	tok := validToken(t, key, "user")
+
+	app := newTestApp(func(c fiber.Ctx) error {
+		return c.SendStatus(200)
+	}, middleware.JWTAuth(&key.PublicKey), middleware.RequireRole("user", "admin"))
+
+	code := get(app, "/test", "Bearer "+tok)
+	if code != 200 {
+		t.Errorf("expected 200 for user with multi-role middleware, got %d", code)
+	}
+}
+
+func TestRequireRole_MultipleRoles_GuestForbidden(t *testing.T) {
+	key := generateRSAKey(t)
+	tok := validToken(t, key, "guest")
+
+	app := newTestApp(func(c fiber.Ctx) error {
+		return c.SendStatus(200)
+	}, middleware.JWTAuth(&key.PublicKey), middleware.RequireRole("user", "admin"))
+
+	code := get(app, "/test", "Bearer "+tok)
+	if code != 403 {
+		t.Errorf("expected 403 for guest, got %d", code)
+	}
+}
+
+// ── JWTAuth sets Locals ───────────────────────────────────────────────────────
+
+func TestJWTAuth_ValidToken_SetsLocals(t *testing.T) {
+	key := generateRSAKey(t)
+	userID := uuid.NewString()
+	now := time.Now()
+	claims := &middleware.Claims{
+		UserID: userID,
+		Email:  "locals@example.com",
+		Role:   "user",
+		JTI:    uuid.NewString(),
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   userID,
+			ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
+			IssuedAt:  jwt.NewNumericDate(now),
+		},
+	}
+	tok := signRS256(t, key, claims)
+
+	app := newTestApp(func(c fiber.Ctx) error {
+		uid, _ := c.Locals("userID").(string)
+		role, _ := c.Locals("userRole").(string)
+		cl, _ := c.Locals("claims").(*middleware.Claims)
+		if uid != userID || role != "user" || cl == nil || cl.Email != "locals@example.com" {
+			return c.Status(400).SendString("locals mismatch: uid=" + uid + " role=" + role)
+		}
+		return c.SendStatus(200)
+	}, middleware.JWTAuth(&key.PublicKey))
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		t.Errorf("expected 200 and correct locals, got %d — body: %s", resp.StatusCode, string(body))
 	}
 }

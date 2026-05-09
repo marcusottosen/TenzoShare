@@ -11,9 +11,11 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/pquerna/otp/totp"
 	"go.uber.org/zap"
 
 	"github.com/tenzoshare/tenzoshare/services/auth/internal/domain"
@@ -28,7 +30,10 @@ type stubUserRepo struct {
 	users         map[string]*domain.User // keyed by email
 	usersByID     map[string]*domain.User // keyed by id
 	refreshTokens map[string]*domain.RefreshToken
-	err           error // if set, every method returns this error
+	mfaSecrets    map[string]*domain.MFASecret          // keyed by userID
+	resetTokens   map[string]*domain.PasswordResetToken // keyed by raw token
+	storedAPIKeys map[string][]*domain.APIKey           // keyed by userID
+	err           error                                 // if set, every method returns this error
 }
 
 func newStubRepo() *stubUserRepo {
@@ -36,6 +41,9 @@ func newStubRepo() *stubUserRepo {
 		users:         make(map[string]*domain.User),
 		usersByID:     make(map[string]*domain.User),
 		refreshTokens: make(map[string]*domain.RefreshToken),
+		mfaSecrets:    make(map[string]*domain.MFASecret),
+		resetTokens:   make(map[string]*domain.PasswordResetToken),
+		storedAPIKeys: make(map[string][]*domain.APIKey),
 	}
 }
 
@@ -115,14 +123,31 @@ func (r *stubUserRepo) ConsumeRefreshToken(_ context.Context, rawToken string) (
 
 func (r *stubUserRepo) RevokeAllRefreshTokens(_ context.Context, _ string) error { return r.err }
 
-func (r *stubUserRepo) GetMFASecret(_ context.Context, _ string) (*domain.MFASecret, error) {
+func (r *stubUserRepo) GetMFASecret(_ context.Context, userID string) (*domain.MFASecret, error) {
+	if s, ok := r.mfaSecrets[userID]; ok {
+		return s, nil
+	}
 	return nil, apperrors.NotFound("mfa not configured")
 }
 
-func (r *stubUserRepo) UpsertMFASecret(_ context.Context, _, _ string) error    { return r.err }
+func (r *stubUserRepo) UpsertMFASecret(_ context.Context, userID, encryptedSecret string) error {
+	if r.err != nil {
+		return r.err
+	}
+	r.mfaSecrets[userID] = &domain.MFASecret{UserID: userID, Secret: encryptedSecret}
+	return nil
+}
 func (r *stubUserRepo) EnableMFA(_ context.Context, _ string) error             { return r.err }
 func (r *stubUserRepo) RecordSuccessfulLogin(_ context.Context, _ string) error { return r.err }
-func (r *stubUserRepo) UpdatePassword(_ context.Context, _, _ string) error     { return r.err }
+func (r *stubUserRepo) UpdatePassword(_ context.Context, userID, newHash string) error {
+	if r.err != nil {
+		return r.err
+	}
+	if u, ok := r.usersByID[userID]; ok {
+		u.PasswordHash = newHash
+	}
+	return nil
+}
 
 func (r *stubUserRepo) RecordFailedLogin(_ context.Context, id string, _ int, _ time.Duration) error {
 	if u, ok := r.usersByID[id]; ok {
@@ -135,7 +160,14 @@ func (r *stubUserRepo) StorePasswordResetToken(_ context.Context, _, _ string, _
 	return r.err
 }
 
-func (r *stubUserRepo) ConsumePasswordResetToken(_ context.Context, _ string) (*domain.PasswordResetToken, error) {
+func (r *stubUserRepo) ConsumePasswordResetToken(_ context.Context, rawToken string) (*domain.PasswordResetToken, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	if rt, ok := r.resetTokens[rawToken]; ok {
+		delete(r.resetTokens, rawToken)
+		return rt, nil
+	}
 	return nil, apperrors.Unauthorized("invalid or expired reset token")
 }
 
@@ -146,8 +178,11 @@ func (r *stubUserRepo) CreateAPIKey(_ context.Context, userID, name, keyHash, pr
 	return &domain.APIKey{ID: "key-1", UserID: userID, Name: name, KeyPrefix: prefix, KeyHash: keyHash, ExpiresAt: expiresAt}, nil
 }
 
-func (r *stubUserRepo) ListAPIKeys(_ context.Context, _ string) ([]*domain.APIKey, error) {
-	return nil, r.err
+func (r *stubUserRepo) ListAPIKeys(_ context.Context, userID string) ([]*domain.APIKey, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.storedAPIKeys[userID], nil
 }
 
 func (r *stubUserRepo) DeleteAPIKey(_ context.Context, _, _ string) error { return r.err }
@@ -507,5 +542,510 @@ func TestParseRSAPrivateKey_PKCS8_Valid(t *testing.T) {
 	}
 	if parsed.N.Cmp(k.N) != 0 {
 		t.Fatal("parsed key modulus mismatch")
+	}
+}
+
+// ── EnsureBootstrapAdmin ──────────────────────────────────────────────────────
+
+func TestEnsureBootstrapAdmin_CreatesAdmin(t *testing.T) {
+	repo := newStubRepo()
+	svc := newTestAuthService(t, repo)
+
+	err := svc.EnsureBootstrapAdmin(context.Background(), "admin@example.com", "Str0ng!Pass")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	u, ok := repo.users["admin@example.com"]
+	if !ok {
+		t.Fatal("admin user was not stored in repo")
+	}
+	if u.Role != domain.RoleAdmin {
+		t.Errorf("expected role admin, got %s", u.Role)
+	}
+}
+
+func TestEnsureBootstrapAdmin_RepoError(t *testing.T) {
+	repo := newStubRepo()
+	repo.err = errors.New("db error")
+	svc := newTestAuthService(t, repo)
+
+	err := svc.EnsureBootstrapAdmin(context.Background(), "admin@example.com", "Str0ng!Pass")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// ── Login MFA-required path ───────────────────────────────────────────────────
+
+func TestLogin_MFAEnabled_ReturnsMFARequired(t *testing.T) {
+	repo := newStubRepo()
+	svc := newTestAuthService(t, repo)
+	ctx := context.Background()
+
+	_, err := svc.Register(ctx, "mfa@example.com", "password123", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Enable MFA on the user.
+	repo.users["mfa@example.com"].MFAEnabled = true
+
+	pair, user, err := svc.Login(ctx, "mfa@example.com", "password123", "")
+	if pair != nil {
+		t.Fatal("expected nil TokenPair when MFA is required")
+	}
+	if user == nil || user.Email != "mfa@example.com" {
+		t.Fatal("expected user returned for MFA step")
+	}
+	if !apperrors.IsUnauthorized(err) || err.Error() != "mfa_required" {
+		t.Errorf("expected 'mfa_required' unauthorized, got %v", err)
+	}
+}
+
+// ── RefreshTokens ─────────────────────────────────────────────────────────────
+
+func TestRefreshTokens_Success(t *testing.T) {
+	repo := newStubRepo()
+	svc := newTestAuthService(t, repo)
+	ctx := context.Background()
+
+	_, err := svc.Register(ctx, "user@example.com", "password123", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair, _, err := svc.Login(ctx, "user@example.com", "password123", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newPair, err := svc.RefreshTokens(ctx, pair.RefreshToken)
+	if err != nil {
+		t.Fatalf("RefreshTokens: %v", err)
+	}
+	if newPair.AccessToken == "" || newPair.RefreshToken == "" {
+		t.Fatal("expected new token pair")
+	}
+	// Old refresh token should be consumed — second use should fail.
+	_, err = svc.RefreshTokens(ctx, pair.RefreshToken)
+	if err == nil {
+		t.Fatal("expected error on second use of same refresh token")
+	}
+}
+
+func TestRefreshTokens_InvalidToken_ReturnsUnauthorized(t *testing.T) {
+	repo := newStubRepo()
+	svc := newTestAuthService(t, repo)
+
+	_, err := svc.RefreshTokens(context.Background(), "totally-invalid-token")
+	if err == nil {
+		t.Fatal("expected error for invalid refresh token")
+	}
+}
+
+func TestRefreshTokens_DisabledUser_ReturnsUnauthorized(t *testing.T) {
+	repo := newStubRepo()
+	svc := newTestAuthService(t, repo)
+	ctx := context.Background()
+
+	_, err := svc.Register(ctx, "disabled@example.com", "password123", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair, _, err := svc.Login(ctx, "disabled@example.com", "password123", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Disable the account after login.
+	repo.users["disabled@example.com"].IsActive = false
+
+	_, err = svc.RefreshTokens(ctx, pair.RefreshToken)
+	if !apperrors.IsUnauthorized(err) {
+		t.Fatalf("expected unauthorized error for disabled user, got %v", err)
+	}
+}
+
+// ── Logout ────────────────────────────────────────────────────────────────────
+
+func TestLogout_Success(t *testing.T) {
+	repo := newStubRepo()
+	svc := newTestAuthService(t, repo)
+	ctx := context.Background()
+
+	_, err := svc.Register(ctx, "logout@example.com", "password123", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = svc.Logout(ctx, "user-logout@example.com")
+	if err != nil {
+		t.Fatalf("Logout: %v", err)
+	}
+}
+
+func TestLogout_RepoError(t *testing.T) {
+	repo := newStubRepo()
+	repo.err = errors.New("db error")
+	svc := newTestAuthService(t, repo)
+
+	err := svc.Logout(context.Background(), "some-user-id")
+	if err == nil {
+		t.Fatal("expected error when repo fails")
+	}
+}
+
+// ── GetMe ─────────────────────────────────────────────────────────────────────
+
+func TestGetMe_Success(t *testing.T) {
+	repo := newStubRepo()
+	svc := newTestAuthService(t, repo)
+	ctx := context.Background()
+
+	registered, err := svc.Register(ctx, "me@example.com", "password123", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.GetMe(ctx, registered.ID)
+	if err != nil {
+		t.Fatalf("GetMe: %v", err)
+	}
+	if got.Email != "me@example.com" {
+		t.Errorf("expected email me@example.com, got %s", got.Email)
+	}
+}
+
+func TestGetMe_UserNotFound_ReturnsError(t *testing.T) {
+	repo := newStubRepo()
+	svc := newTestAuthService(t, repo)
+
+	_, err := svc.GetMe(context.Background(), "nonexistent-id")
+	if err == nil {
+		t.Fatal("expected error for nonexistent user")
+	}
+}
+
+// ── RevokeAccessToken / IsTokenRevoked (nil cache path) ──────────────────────
+
+func TestRevokeAccessToken_NilCache_ReturnsNil(t *testing.T) {
+	svc := newTestAuthService(t, newStubRepo()) // cache is nil by default
+	err := svc.RevokeAccessToken(context.Background(), "some-jti")
+	if err != nil {
+		t.Fatalf("expected no error with nil cache, got %v", err)
+	}
+}
+
+func TestRevokeAccessToken_EmptyJTI_ReturnsNil(t *testing.T) {
+	svc := newTestAuthService(t, newStubRepo())
+	err := svc.RevokeAccessToken(context.Background(), "")
+	if err != nil {
+		t.Fatalf("expected no error for empty JTI, got %v", err)
+	}
+}
+
+func TestIsTokenRevoked_NilCache_ReturnsFalse(t *testing.T) {
+	svc := newTestAuthService(t, newStubRepo())
+	revoked := svc.IsTokenRevoked(context.Background(), "some-jti")
+	if revoked {
+		t.Fatal("expected false with nil cache")
+	}
+}
+
+// ── ListAPIKeys / DeleteAPIKey ────────────────────────────────────────────────
+
+func TestListAPIKeys_ReturnsStoredKeys(t *testing.T) {
+	repo := newStubRepo()
+	repo.storedAPIKeys["user-1"] = []*domain.APIKey{
+		{ID: "key-1", Name: "CI key", UserID: "user-1"},
+		{ID: "key-2", Name: "Deploy key", UserID: "user-1"},
+	}
+	svc := newTestAuthService(t, repo)
+
+	keys, err := svc.ListAPIKeys(context.Background(), "user-1")
+	if err != nil {
+		t.Fatalf("ListAPIKeys: %v", err)
+	}
+	if len(keys) != 2 {
+		t.Errorf("expected 2 keys, got %d", len(keys))
+	}
+}
+
+func TestListAPIKeys_EmptyForUnknownUser(t *testing.T) {
+	svc := newTestAuthService(t, newStubRepo())
+
+	keys, err := svc.ListAPIKeys(context.Background(), "nobody")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(keys) != 0 {
+		t.Errorf("expected 0 keys, got %d", len(keys))
+	}
+}
+
+func TestDeleteAPIKey_Success(t *testing.T) {
+	svc := newTestAuthService(t, newStubRepo())
+	err := svc.DeleteAPIKey(context.Background(), "key-1", "user-1")
+	if err != nil {
+		t.Fatalf("DeleteAPIKey: %v", err)
+	}
+}
+
+func TestDeleteAPIKey_RepoError(t *testing.T) {
+	repo := newStubRepo()
+	repo.err = errors.New("not found")
+	svc := newTestAuthService(t, repo)
+
+	err := svc.DeleteAPIKey(context.Background(), "key-1", "user-1")
+	if err == nil {
+		t.Fatal("expected error when repo fails")
+	}
+}
+
+// ── RequestPasswordReset ──────────────────────────────────────────────────────
+
+func TestRequestPasswordReset_UnknownEmail_ReturnsNilSilently(t *testing.T) {
+	// Security: unknown email must NOT return an error (avoids user enumeration).
+	svc := newTestAuthService(t, newStubRepo())
+
+	uid, tok, err := svc.RequestPasswordReset(context.Background(), "nobody@example.com", "1.2.3.4")
+	if err != nil {
+		t.Fatalf("expected silent nil for unknown email, got %v", err)
+	}
+	if uid != "" || tok != "" {
+		t.Errorf("expected empty uid/token for unknown email, got uid=%q tok=%q", uid, tok)
+	}
+}
+
+func TestRequestPasswordReset_KnownUser_ReturnsToken(t *testing.T) {
+	repo := newStubRepo()
+	svc := newTestAuthService(t, repo)
+	ctx := context.Background()
+
+	_, err := svc.Register(ctx, "reset@example.com", "password123", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	uid, tok, err := svc.RequestPasswordReset(ctx, "reset@example.com", "")
+	if err != nil {
+		t.Fatalf("RequestPasswordReset: %v", err)
+	}
+	if uid == "" || tok == "" {
+		t.Error("expected non-empty uid and token")
+	}
+}
+
+// ── ConfirmPasswordReset ──────────────────────────────────────────────────────
+
+func TestConfirmPasswordReset_InvalidToken_ReturnsUnauthorized(t *testing.T) {
+	svc := newTestAuthService(t, newStubRepo())
+
+	err := svc.ConfirmPasswordReset(context.Background(), "bad-token", "newpassword1")
+	if !apperrors.IsUnauthorized(err) {
+		t.Fatalf("expected unauthorized error, got %v", err)
+	}
+}
+
+func TestConfirmPasswordReset_ValidToken_UpdatesPassword(t *testing.T) {
+	repo := newStubRepo()
+	svc := newTestAuthService(t, repo)
+	ctx := context.Background()
+
+	// Register user and request a reset.
+	_, err := svc.Register(ctx, "confirm@example.com", "oldpassword", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uid, tok, err := svc.RequestPasswordReset(ctx, "confirm@example.com", "")
+	if err != nil || tok == "" {
+		t.Fatalf("RequestPasswordReset failed: err=%v tok=%q", err, tok)
+	}
+
+	// Seed the stub's resetTokens so ConsumePasswordResetToken succeeds.
+	repo.resetTokens[tok] = &domain.PasswordResetToken{UserID: uid}
+
+	err = svc.ConfirmPasswordReset(ctx, tok, "Newpassword123!")
+	if err != nil {
+		t.Fatalf("ConfirmPasswordReset: %v", err)
+	}
+	// Confirm the old password no longer works.
+	_, _, loginErr := svc.Login(ctx, "confirm@example.com", "oldpassword", "")
+	if loginErr == nil {
+		t.Fatal("old password should have been invalidated")
+	}
+}
+
+// ── SetupMFA ──────────────────────────────────────────────────────────────────
+
+func TestSetupMFA_ValidUser_ReturnsProvisioningURL(t *testing.T) {
+	repo := newStubRepo()
+	svc := newTestAuthService(t, repo)
+	ctx := context.Background()
+
+	registered, err := svc.Register(ctx, "mfasetup@example.com", "password123", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := svc.SetupMFA(ctx, registered.ID)
+	if err != nil {
+		t.Fatalf("SetupMFA: %v", err)
+	}
+	if result.Secret == "" {
+		t.Error("expected non-empty TOTP secret")
+	}
+	if !strings.HasPrefix(result.ProvisioningURI, "otpauth://totp/") {
+		t.Errorf("expected otpauth URI, got %q", result.ProvisioningURI)
+	}
+	// Verify secret was persisted in stub.
+	if _, ok := repo.mfaSecrets[registered.ID]; !ok {
+		t.Error("MFA secret was not stored in repo")
+	}
+}
+
+func TestSetupMFA_UnknownUser_ReturnsError(t *testing.T) {
+	svc := newTestAuthService(t, newStubRepo())
+
+	_, err := svc.SetupMFA(context.Background(), "nonexistent-id")
+	if err == nil {
+		t.Fatal("expected error for nonexistent user")
+	}
+}
+
+// ── VerifyMFA ─────────────────────────────────────────────────────────────────
+
+func TestVerifyMFA_NoMFASecret_ReturnsError(t *testing.T) {
+	repo := newStubRepo()
+	svc := newTestAuthService(t, repo)
+	ctx := context.Background()
+
+	registered, err := svc.Register(ctx, "nomfa@example.com", "password123", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No SetupMFA called — GetMFASecret will return NotFound.
+	err = svc.VerifyMFA(ctx, registered.ID, "123456")
+	if err == nil {
+		t.Fatal("expected error when MFA not configured")
+	}
+}
+
+func TestVerifyMFA_WrongOTP_ReturnsUnauthorized(t *testing.T) {
+	repo := newStubRepo()
+	svc := newTestAuthService(t, repo)
+	ctx := context.Background()
+
+	registered, err := svc.Register(ctx, "verify@example.com", "password123", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Set up MFA first so a secret is stored.
+	_, err = svc.SetupMFA(ctx, registered.ID)
+	if err != nil {
+		t.Fatalf("SetupMFA: %v", err)
+	}
+
+	err = svc.VerifyMFA(ctx, registered.ID, "000000") // wrong code
+	if !apperrors.IsUnauthorized(err) {
+		t.Fatalf("expected unauthorized error for wrong OTP, got %v", err)
+	}
+}
+
+func TestVerifyMFA_ValidOTP_EnablesMFA(t *testing.T) {
+	repo := newStubRepo()
+	svc := newTestAuthService(t, repo)
+	ctx := context.Background()
+
+	registered, err := svc.Register(ctx, "validotp@example.com", "password123", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := svc.SetupMFA(ctx, registered.ID)
+	if err != nil {
+		t.Fatalf("SetupMFA: %v", err)
+	}
+
+	// Generate a valid code for the current time window.
+	code, err := totp.GenerateCode(result.Secret, time.Now())
+	if err != nil {
+		t.Fatalf("GenerateCode: %v", err)
+	}
+
+	err = svc.VerifyMFA(ctx, registered.ID, code)
+	if err != nil {
+		t.Fatalf("VerifyMFA with valid code: %v", err)
+	}
+}
+
+// ── LoginWithMFA ──────────────────────────────────────────────────────────────
+
+func TestLoginWithMFA_UnknownUser_ReturnsUnauthorized(t *testing.T) {
+	svc := newTestAuthService(t, newStubRepo())
+
+	_, err := svc.LoginWithMFA(context.Background(), "nonexistent-id", "123456")
+	if !apperrors.IsUnauthorized(err) {
+		t.Fatalf("expected unauthorized for unknown user, got %v", err)
+	}
+}
+
+func TestLoginWithMFA_NoMFASecret_ReturnsUnauthorized(t *testing.T) {
+	repo := newStubRepo()
+	svc := newTestAuthService(t, repo)
+	ctx := context.Background()
+
+	registered, err := svc.Register(ctx, "mfalogin@example.com", "password123", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No MFA setup — secret won't be in repo.
+	_, err = svc.LoginWithMFA(ctx, registered.ID, "123456")
+	if !apperrors.IsUnauthorized(err) {
+		t.Fatalf("expected unauthorized when MFA not configured, got %v", err)
+	}
+}
+
+func TestLoginWithMFA_ValidOTP_ReturnsTokenPair(t *testing.T) {
+	repo := newStubRepo()
+	svc := newTestAuthService(t, repo)
+	ctx := context.Background()
+
+	registered, err := svc.Register(ctx, "mfaok@example.com", "password123", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	setupResult, err := svc.SetupMFA(ctx, registered.ID)
+	if err != nil {
+		t.Fatalf("SetupMFA: %v", err)
+	}
+
+	code, err := totp.GenerateCode(setupResult.Secret, time.Now())
+	if err != nil {
+		t.Fatalf("GenerateCode: %v", err)
+	}
+
+	pair, err := svc.LoginWithMFA(ctx, registered.ID, code)
+	if err != nil {
+		t.Fatalf("LoginWithMFA: %v", err)
+	}
+	if pair.AccessToken == "" || pair.RefreshToken == "" {
+		t.Fatal("expected non-empty token pair")
+	}
+}
+
+func TestLoginWithMFA_WrongOTP_ReturnsUnauthorized(t *testing.T) {
+	repo := newStubRepo()
+	svc := newTestAuthService(t, repo)
+	ctx := context.Background()
+
+	registered, err := svc.Register(ctx, "mfabadotp@example.com", "password123", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.SetupMFA(ctx, registered.ID)
+	if err != nil {
+		t.Fatalf("SetupMFA: %v", err)
+	}
+
+	_, err = svc.LoginWithMFA(ctx, registered.ID, "000000") // wrong code
+	if !apperrors.IsUnauthorized(err) {
+		t.Fatalf("expected unauthorized for wrong OTP, got %v", err)
 	}
 }

@@ -34,6 +34,17 @@ function timeAgo(dateStr: string): string {
   return `${days} days ago`;
 }
 
+function timeUntil(dateStr: string): string {
+  const diff = new Date(dateStr).getTime() - Date.now();
+  if (diff <= 0) return 'Expired';
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d`;
+}
+
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
@@ -118,6 +129,21 @@ function IconCopy() {
     </svg>
   );
 }
+function IconClock() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+    </svg>
+  );
+}
+function IconMail() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+      <polyline points="22,6 12,13 2,6"/>
+    </svg>
+  );
+}
 function IconShare2() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -168,6 +194,14 @@ export default function DashboardPage() {
     ...transfers.map(t => ({ kind: 'transfer' as const, data: t })),
     ...requests.map(r => ({ kind: 'request' as const, data: r })),
   ].sort((a, b) => new Date(b.data.created_at).getTime() - new Date(a.data.created_at).getTime()).slice(0, 6);
+
+  const expiringSoon = transfers.filter(t => {
+    if (t.is_revoked) return false;
+    if (!t.expires_at) return false;
+    const exp = new Date(t.expires_at).getTime();
+    const now = Date.now();
+    return exp > now && exp - now <= 7 * 24 * 60 * 60 * 1000;
+  }).sort((a, b) => new Date(a.expires_at!).getTime() - new Date(b.expires_at!).getTime());
 
   function handleCopyLink(t: Transfer, e: React.MouseEvent) {
     e.stopPropagation();
@@ -310,26 +344,124 @@ export default function DashboardPage() {
             )}
           </div>
 
-          {/* Security Score */}
-          <div className="card widget-dark">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-              <div>
-                <div style={{ fontSize: 15, fontWeight: 600, color: '#fff', marginBottom: 4 }}>Security Score</div>
-                <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.55)', marginBottom: 14 }}>Your account is fully protected.</div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontSize: 28, fontWeight: 700, color: '#fff', letterSpacing: '-0.03em' }}>100%</span>
-                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 22, height: 22, background: '#22C55E', borderRadius: '50%', color: '#fff', flexShrink: 0 }}>
-                    <IconCheck />
-                  </span>
-                </div>
+          {/* Account Health */}
+          <div className="card widget-dark" style={{ flex: 1 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.45)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 14 }}>
+              Account Health
+            </div>
+            {/* MFA */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingBottom: 11, borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+              <div style={{ width: 30, height: 30, borderRadius: 6, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: user?.mfa_enabled ? 'rgba(34,197,94,0.15)' : 'rgba(245,158,11,0.15)', color: user?.mfa_enabled ? '#4ADE80' : '#FCD34D' }}>
+                <IconLock />
               </div>
-              <div style={{ color: '#fff', opacity: 0.15, marginTop: -8, marginRight: -8, flexShrink: 0 }}>
-                <IconShield />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 500, color: '#fff', marginBottom: 1 }}>Two-Factor Auth</div>
+                {user?.mfa_enabled
+                  ? <div style={{ fontSize: 11, color: '#4ADE80' }}>● Enabled</div>
+                  : <Link to="/settings" style={{ fontSize: 11, color: '#FCD34D', textDecoration: 'none' }}>Set up →</Link>}
+              </div>
+            </div>
+            {/* Email */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 11, paddingBottom: 11, borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+              <div style={{ width: 30, height: 30, borderRadius: 6, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: user?.email_verified ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)', color: user?.email_verified ? '#4ADE80' : '#F87171' }}>
+                <IconMail />
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 500, color: '#fff', marginBottom: 1 }}>Email Address</div>
+                {user?.email_verified
+                  ? <div style={{ fontSize: 11, color: '#4ADE80' }}>● Verified</div>
+                  : <Link to="/settings" style={{ fontSize: 11, color: '#F87171', textDecoration: 'none' }}>Verify email →</Link>}
+              </div>
+            </div>
+            {/* Member since */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 11 }}>
+              <div style={{ width: 30, height: 30, borderRadius: 6, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.07)', color: 'rgba(255,255,255,0.45)' }}>
+                <IconClock />
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 500, color: '#fff', marginBottom: 1 }}>Member since</div>
+                <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)' }}>
+                  {user?.created_at ? new Date(user.created_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : '—'}
+                </div>
               </div>
             </div>
           </div>
         </div>
       </div>
+
+      {/* ── Expiring Soon ─────────────────────────────────────── */}
+      {!loading && expiringSoon.length > 0 && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="card-header">
+            <h2 className="card-title">Expiring Soon</h2>
+            <span style={{ fontSize: 11, color: 'var(--color-text-muted)', fontWeight: 500 }}>next 7 days</span>
+          </div>
+          <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+            {expiringSoon.map((t, i) => {
+              const msLeft = new Date(t.expires_at!).getTime() - Date.now();
+              const hoursLeft = msLeft / 3600000;
+              const urgentColor = hoursLeft < 24 ? '#EF4444' : hoursLeft < 72 ? '#F59E0B' : '#64748B';
+              const urgentBg = hoursLeft < 24 ? '#FEF2F2' : hoursLeft < 72 ? '#FFFBEB' : '#F8FAFC';
+              const isCopied = copiedId === t.id;
+              return (
+                <li
+                  key={t.id}
+                  className="act-row"
+                  onClick={() => navigate(`/transfers/${t.id}`)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 12, padding: '11px 8px',
+                    borderBottom: i < expiringSoon.length - 1 ? '1px solid var(--color-border)' : 'none',
+                    borderRadius: 8, cursor: 'pointer', transition: 'background 0.12s', margin: '0 -8px',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--color-nav-active)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                >
+                  <div style={{
+                    width: 36, height: 36, borderRadius: 8, flexShrink: 0,
+                    background: urgentBg, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    color: urgentColor, position: 'relative',
+                  }}>
+                    <IconShare2 />
+                    <span style={{
+                      position: 'absolute', top: -2, right: -2,
+                      width: 9, height: 9, borderRadius: '50%',
+                      background: urgentColor, border: '2px solid var(--color-surface)',
+                    }} />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {t.name || t.slug}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 1, display: 'flex', gap: 6, alignItems: 'center' }}>
+                      {t.recipient_email ? <span>→ {t.recipient_email}</span> : <span>Public link</span>}
+                      {t.file_count != null && <><span style={{ opacity: 0.4 }}>·</span><span>{t.file_count} file{t.file_count !== 1 ? 's' : ''}</span></>}
+                      {t.download_count > 0 && <><span style={{ opacity: 0.4 }}>·</span><span>↓ {t.download_count}</span></>}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                    <span style={{
+                      fontSize: 11, fontWeight: 600, color: urgentColor,
+                      background: urgentBg, padding: '2px 8px', borderRadius: 99,
+                      border: `1px solid ${urgentColor}30`, whiteSpace: 'nowrap',
+                    }}>
+                      {timeUntil(t.expires_at!)}
+                    </span>
+                    <div style={{ width: 30, display: 'flex', justifyContent: 'center' }}>
+                      <button
+                        className="act-copy-btn"
+                        title={isCopied ? 'Copied!' : 'Copy link'}
+                        onClick={(e) => handleCopyLink(t, e)}
+                      >
+                        {isCopied ? '✓' : <IconCopy />}
+                      </button>
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
 
       {/* ── Recent Activity ───────────────────────────────────── */}
       <div className="card" style={{ marginBottom: 16 }}>
