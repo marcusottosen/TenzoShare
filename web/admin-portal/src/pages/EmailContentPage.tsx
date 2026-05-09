@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { getBranding, updateBranding, type BrandingConfig } from '../api/admin';
 
 // ── ColorPicker (local, same pattern as BrandingPage) ────────────────────────
@@ -130,6 +130,329 @@ const EMAIL_TYPES: EmailTypeMeta[] = [
   },
 ];
 
+// ── Live preview helpers ─────────────────────────────────────────────────────
+
+/** Minimal HTML escaping for user-controlled values injected into the preview. */
+function esc(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+interface PreviewVars {
+  appName: string;
+  primaryColor: string;
+  buttonColor: string;
+  buttonTextColor: string;
+  bodyBgColor: string;
+  cardBgColor: string;
+  cardBorderColor: string;
+  headingColor: string;
+  textColor: string;
+  headerLink: string;
+  footerText: string;
+  supportEmail: string;
+  ctaText: string;
+}
+
+function buildContent(type: string, v: PreviewVars): string {
+  const a = esc(v.appName);
+  const cta = esc(v.ctaText);
+  const btn = `display:inline-block;background-color:${v.buttonColor};color:${v.buttonTextColor};text-decoration:none;font-size:15px;font-weight:700;padding:13px 32px;border-radius:6px;font-family:Arial,Helvetica,sans-serif;`;
+
+  switch (type) {
+    case 'transfer_received':
+      return `
+        <p style="margin:0 0 20px;font-size:16px;font-weight:600;color:${v.headingColor};font-family:Arial,Helvetica,sans-serif;">You have received files</p>
+        <p style="margin:0 0 24px;font-size:15px;color:${v.textColor};line-height:1.7;font-family:Arial,Helvetica,sans-serif;">
+          <strong>Alex Johnson</strong> has shared files with you via <strong>${a}</strong>.
+        </p>
+        <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
+          <tr><td style="background-color:${v.cardBgColor};border:1px solid ${v.cardBorderColor};border-radius:8px;padding:20px 24px;">
+            <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;font-family:Arial,Helvetica,sans-serif;">Transfer</p>
+            <p style="margin:0 0 16px;font-size:18px;font-weight:700;color:${v.headingColor};font-family:Arial,Helvetica,sans-serif;">Q1 2026 Reports</p>
+            <p style="margin:0 0 16px;font-size:14px;color:${v.textColor};line-height:1.6;border-left:3px solid ${v.cardBorderColor};padding-left:12px;font-family:Arial,Helvetica,sans-serif;">Please review before our Monday meeting.</p>
+            <table width="100%" cellpadding="0" cellspacing="0">
+              <tr>
+                <td style="padding:4px 0;font-size:13px;color:#64748b;font-family:Arial,Helvetica,sans-serif;width:90px;">Expires</td>
+                <td style="padding:4px 0;font-size:13px;color:${v.headingColor};font-weight:600;font-family:Arial,Helvetica,sans-serif;">Dec 31, 2026</td>
+              </tr>
+              <tr>
+                <td style="padding:4px 0;font-size:13px;color:#64748b;font-family:Arial,Helvetica,sans-serif;">Access</td>
+                <td style="padding:4px 0;font-size:13px;color:${v.headingColor};font-weight:600;font-family:Arial,Helvetica,sans-serif;">Public link</td>
+              </tr>
+            </table>
+          </td></tr>
+        </table>
+        <table width="100%" cellpadding="0" cellspacing="0">
+          <tr><td align="center" style="padding:4px 0 24px;">
+            <a href="#" style="${btn}">${cta}</a>
+          </td></tr>
+        </table>`;
+
+    case 'password_reset':
+      return `
+        <p style="margin:0 0 20px;font-size:16px;font-weight:600;color:${v.headingColor};font-family:Arial,Helvetica,sans-serif;">Reset your password</p>
+        <p style="margin:0 0 24px;font-size:15px;color:${v.textColor};line-height:1.7;font-family:Arial,Helvetica,sans-serif;">
+          We received a request to reset the password for your <strong>${a}</strong> account. Click the button below to choose a new password.
+        </p>
+        <table width="100%" cellpadding="0" cellspacing="0">
+          <tr><td align="center" style="padding:4px 0 28px;">
+            <a href="#" style="${btn}">${cta}</a>
+          </td></tr>
+        </table>
+        <p style="margin:0 0 8px;font-size:13px;color:#94a3b8;font-family:Arial,Helvetica,sans-serif;">Button not working? Copy and paste this link:</p>
+        <p style="margin:0 0 24px;font-size:13px;word-break:break-all;font-family:Arial,Helvetica,sans-serif;">
+          <a href="#" style="color:#64748b;text-decoration:underline;">https://app.example.com/reset-password?token=preview</a>
+        </p>
+        <table width="100%" cellpadding="0" cellspacing="0">
+          <tr><td style="background-color:#fef9ee;border:1px solid #fcd34d;border-radius:6px;padding:14px 16px;">
+            <p style="margin:0;font-size:13px;color:#92400e;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">
+              ⚠️ This link expires in <strong>1 hour</strong>. If you did not request a password reset, please ignore this email.
+            </p>
+          </td></tr>
+        </table>`;
+
+    case 'email_verification':
+      return `
+        <p style="margin:0 0 20px;font-size:16px;font-weight:600;color:${v.headingColor};font-family:Arial,Helvetica,sans-serif;">Verify your email address</p>
+        <p style="margin:0 0 24px;font-size:15px;color:${v.textColor};line-height:1.7;font-family:Arial,Helvetica,sans-serif;">
+          Thank you for signing up for <strong>${a}</strong>. Please verify your email address to activate your account.
+        </p>
+        <table width="100%" cellpadding="0" cellspacing="0">
+          <tr><td align="center" style="padding:4px 0 28px;">
+            <a href="#" style="${btn}">${cta}</a>
+          </td></tr>
+        </table>
+        <p style="margin:0 0 8px;font-size:13px;color:#94a3b8;font-family:Arial,Helvetica,sans-serif;">Button not working? Copy and paste this link:</p>
+        <p style="margin:0 0 24px;font-size:13px;word-break:break-all;font-family:Arial,Helvetica,sans-serif;">
+          <a href="#" style="color:#64748b;text-decoration:underline;">https://app.example.com/verify?token=preview</a>
+        </p>
+        <p style="margin:0;font-size:13px;color:#94a3b8;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">
+          This link expires in <strong>24 hours</strong>. If you did not create an account, no action is needed.
+        </p>`;
+
+    case 'download_notification':
+      return `
+        <p style="margin:0 0 20px;font-size:16px;font-weight:600;color:${v.headingColor};font-family:Arial,Helvetica,sans-serif;">Your transfer was downloaded</p>
+        <p style="margin:0 0 24px;font-size:15px;color:${v.textColor};line-height:1.7;font-family:Arial,Helvetica,sans-serif;">
+          Someone has downloaded files from your transfer on <strong>${a}</strong>.
+        </p>
+        <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+          <tr><td style="background-color:${v.cardBgColor};border:1px solid ${v.cardBorderColor};border-radius:8px;padding:20px 24px;">
+            <table width="100%" cellpadding="0" cellspacing="0">
+              <tr>
+                <td style="padding:5px 0;font-size:13px;color:#64748b;font-family:Arial,Helvetica,sans-serif;width:110px;">Transfer</td>
+                <td style="padding:5px 0;font-size:13px;color:${v.headingColor};font-weight:600;font-family:Arial,Helvetica,sans-serif;">Q1 2026 Reports</td>
+              </tr>
+              <tr>
+                <td style="padding:5px 0;font-size:13px;color:#64748b;font-family:Arial,Helvetica,sans-serif;">Downloaded by</td>
+                <td style="padding:5px 0;font-size:13px;color:${v.headingColor};font-weight:600;font-family:Arial,Helvetica,sans-serif;">client@example.com</td>
+              </tr>
+              <tr>
+                <td style="padding:5px 0;font-size:13px;color:#64748b;font-family:Arial,Helvetica,sans-serif;">Downloaded at</td>
+                <td style="padding:5px 0;font-size:13px;color:${v.headingColor};font-weight:600;font-family:Arial,Helvetica,sans-serif;">May 9, 2026 at 14:32 UTC</td>
+              </tr>
+            </table>
+          </td></tr>
+        </table>
+        <table width="100%" cellpadding="0" cellspacing="0">
+          <tr><td align="center">
+            <a href="#" style="display:inline-block;background-color:${v.buttonColor};color:${v.buttonTextColor};text-decoration:none;font-size:14px;font-weight:700;padding:11px 28px;border-radius:6px;font-family:Arial,Helvetica,sans-serif;">${cta}</a>
+          </td></tr>
+        </table>`;
+
+    case 'transfer_expiry_reminder':
+      return `
+        <p style="margin:0 0 20px;font-size:16px;font-weight:600;color:${v.headingColor};font-family:Arial,Helvetica,sans-serif;">Your transfer expires soon</p>
+        <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
+          <tr><td style="background-color:#fff7ed;border:1px solid #fdba74;border-radius:8px;padding:16px 20px;">
+            <p style="margin:0;font-size:14px;color:#9a3412;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">
+              ⏱ This transfer will expire in less than <strong>24 hours</strong>. Download your files before the link becomes inactive.
+            </p>
+          </td></tr>
+        </table>
+        <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+          <tr><td style="background-color:${v.cardBgColor};border:1px solid ${v.cardBorderColor};border-radius:8px;padding:20px 24px;">
+            <table width="100%" cellpadding="0" cellspacing="0">
+              <tr>
+                <td style="padding:5px 0;font-size:13px;color:#64748b;font-family:Arial,Helvetica,sans-serif;width:90px;">Transfer</td>
+                <td style="padding:5px 0;font-size:13px;color:${v.headingColor};font-weight:600;font-family:Arial,Helvetica,sans-serif;">Q1 2026 Reports</td>
+              </tr>
+              <tr>
+                <td style="padding:5px 0;font-size:13px;color:#64748b;font-family:Arial,Helvetica,sans-serif;">Expires</td>
+                <td style="padding:5px 0;font-size:13px;color:#dc2626;font-weight:600;font-family:Arial,Helvetica,sans-serif;">May 10, 2026 at 09:00 UTC</td>
+              </tr>
+            </table>
+          </td></tr>
+        </table>
+        <table width="100%" cellpadding="0" cellspacing="0">
+          <tr><td align="center">
+            <a href="#" style="${btn}">${cta}</a>
+          </td></tr>
+        </table>`;
+
+    case 'transfer_revoked':
+      return `
+        <p style="margin:0 0 20px;font-size:16px;font-weight:600;color:${v.headingColor};font-family:Arial,Helvetica,sans-serif;">Transfer no longer available</p>
+        <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
+          <tr><td style="background-color:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:16px 20px;">
+            <p style="margin:0;font-size:14px;color:#991b1b;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">
+              🚫 The following transfer has been revoked by the sender and is <strong>no longer accessible</strong>.
+            </p>
+          </td></tr>
+        </table>
+        <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+          <tr><td style="background-color:${v.cardBgColor};border:1px solid ${v.cardBorderColor};border-radius:8px;padding:20px 24px;">
+            <table width="100%" cellpadding="0" cellspacing="0">
+              <tr>
+                <td style="padding:5px 0;font-size:13px;color:#64748b;font-family:Arial,Helvetica,sans-serif;width:90px;">Transfer</td>
+                <td style="padding:5px 0;font-size:13px;color:${v.headingColor};font-weight:600;font-family:Arial,Helvetica,sans-serif;">Q1 2026 Reports</td>
+              </tr>
+              <tr>
+                <td style="padding:5px 0;font-size:13px;color:#64748b;font-family:Arial,Helvetica,sans-serif;">Sender</td>
+                <td style="padding:5px 0;font-size:13px;color:${v.headingColor};font-weight:600;font-family:Arial,Helvetica,sans-serif;">alex@example.com</td>
+              </tr>
+            </table>
+          </td></tr>
+        </table>
+        <p style="margin:0;font-size:14px;color:${v.textColor};line-height:1.7;font-family:Arial,Helvetica,sans-serif;">
+          If you still need these files, please contact the sender directly.
+        </p>`;
+
+    case 'request_submission':
+      return `
+        <p style="margin:0 0 20px;font-size:16px;font-weight:600;color:${v.headingColor};font-family:Arial,Helvetica,sans-serif;">New file submission</p>
+        <p style="margin:0 0 24px;font-size:15px;color:${v.textColor};line-height:1.7;font-family:Arial,Helvetica,sans-serif;">
+          Someone has uploaded a file to your file request on <strong>${a}</strong>.
+        </p>
+        <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+          <tr><td style="background-color:${v.cardBgColor};border:1px solid ${v.cardBorderColor};border-radius:8px;padding:20px 24px;">
+            <table width="100%" cellpadding="0" cellspacing="0">
+              <tr>
+                <td style="padding:5px 0;font-size:13px;color:#64748b;font-family:Arial,Helvetica,sans-serif;width:110px;">Request</td>
+                <td style="padding:5px 0;font-size:13px;color:${v.headingColor};font-weight:600;font-family:Arial,Helvetica,sans-serif;">Marketing Assets Q2</td>
+              </tr>
+              <tr>
+                <td style="padding:5px 0;font-size:13px;color:#64748b;font-family:Arial,Helvetica,sans-serif;">File</td>
+                <td style="padding:5px 0;font-size:13px;color:${v.headingColor};font-weight:600;font-family:Arial,Helvetica,sans-serif;">campaign-brief.pdf</td>
+              </tr>
+              <tr>
+                <td style="padding:5px 0;font-size:13px;color:#64748b;font-family:Arial,Helvetica,sans-serif;">Submitted by</td>
+                <td style="padding:5px 0;font-size:13px;color:${v.headingColor};font-weight:600;font-family:Arial,Helvetica,sans-serif;">designer@agency.com</td>
+              </tr>
+            </table>
+          </td></tr>
+        </table>
+        <table width="100%" cellpadding="0" cellspacing="0">
+          <tr><td align="center">
+            <a href="#" style="${btn}">${cta}</a>
+          </td></tr>
+        </table>`;
+
+    default:
+      return '<p style="font-family:Arial,sans-serif;padding:8px;">Unknown email type.</p>';
+  }
+}
+
+function buildPreviewHTML(type: string, v: PreviewVars): string {
+  const a = esc(v.appName);
+  const headerInner = `<span style="color:#ffffff;font-size:24px;font-weight:700;letter-spacing:0.4px;font-family:Arial,Helvetica,sans-serif;">${a}</span>`;
+  const header = v.headerLink
+    ? `<a href="${esc(v.headerLink)}" style="text-decoration:none;">${headerInner}</a>`
+    : headerInner;
+  const footerBody = v.footerText
+    ? `<p style="margin:0;font-size:12px;color:#94a3b8;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">${esc(v.footerText)}</p>`
+    : `<p style="margin:0;font-size:12px;color:#94a3b8;line-height:1.6;font-family:Arial,Helvetica,sans-serif;">This email was sent by <strong style="color:#64748b;">${a}</strong>.<br>If you did not expect this email, you can safely ignore it.</p>`;
+  const supportLine = v.supportEmail
+    ? `<p style="margin:6px 0 0;font-size:12px;color:#94a3b8;font-family:Arial,Helvetica,sans-serif;">Questions? <a href="mailto:${esc(v.supportEmail)}" style="color:#64748b;text-decoration:underline;">${esc(v.supportEmail)}</a></p>`
+    : '';
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>${a}</title>
+</head>
+<body style="margin:0;padding:0;background-color:${v.bodyBgColor};font-family:Arial,Helvetica,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:${v.bodyBgColor};padding:32px 16px;">
+    <tr><td align="center" valign="top">
+      <table cellpadding="0" cellspacing="0" style="width:100%;max-width:540px;">
+        <tr>
+          <td style="background-color:${v.primaryColor};border-radius:10px 10px 0 0;padding:24px 28px;text-align:center;">
+            ${header}
+          </td>
+        </tr>
+        <tr>
+          <td style="background-color:#ffffff;padding:32px 28px;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0;">
+            ${buildContent(type, v)}
+          </td>
+        </tr>
+        <tr>
+          <td style="background-color:${v.cardBgColor};border:1px solid ${v.cardBorderColor};border-top:none;border-radius:0 0 10px 10px;padding:18px 28px;text-align:center;">
+            ${footerBody}
+            ${supportLine}
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+}
+
+// ── EmailPreviewPanel ─────────────────────────────────────────────────────────
+
+function EmailPreviewPanel({
+  previewType,
+  onPreviewTypeChange,
+  html,
+}: {
+  previewType: string;
+  onPreviewTypeChange: (t: string) => void;
+  html: string;
+}) {
+  return (
+    <div style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 10, overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,0.10)' }}>
+      {/* Fake browser chrome */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: '1px solid var(--color-border)', background: 'var(--color-surface)' }}>
+        <div style={{ display: 'flex', gap: 5, flexShrink: 0 }}>
+          <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#ff5f57', display: 'inline-block' }} />
+          <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#febc2e', display: 'inline-block' }} />
+          <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#28c840', display: 'inline-block' }} />
+        </div>
+        <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--color-text-muted)', textAlign: 'center' }}>Live Preview</span>
+        <select
+          value={previewType}
+          onChange={(e) => onPreviewTypeChange(e.target.value)}
+          style={{ fontSize: 12, padding: '3px 8px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-surface)', color: 'var(--color-text)', cursor: 'pointer' }}
+        >
+          {EMAIL_TYPES.map((t) => (
+            <option key={t.key} value={t.key}>{t.label}</option>
+          ))}
+        </select>
+      </div>
+      <iframe
+        title="Email preview"
+        srcDoc={html}
+        sandbox="allow-same-origin"
+        onLoad={(e) => {
+          // Auto-size to content height to avoid dead whitespace
+          const iframe = e.currentTarget;
+          try {
+            const h = iframe.contentDocument?.documentElement?.scrollHeight;
+            if (h && h > 100) iframe.style.height = h + 'px';
+          } catch { /* sandboxed — falls back to default height */ }
+        }}
+        style={{ width: '100%', height: 620, border: 'none', display: 'block', transition: 'height 0.15s' }}
+      />
+    </div>
+  );
+}
+
 // ── Tab type ──────────────────────────────────────────────────────────────────
 
 type Tab = 'delivery' | 'colors' | 'per-type';
@@ -142,6 +465,9 @@ export default function EmailContentPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>('delivery');
+
+  // --- App identity (for preview) ---
+  const [appName, setAppName] = useState('TenzoShare');
 
   // --- Delivery fields ---
   const [senderName, setSenderName] = useState('');
@@ -167,10 +493,16 @@ export default function EmailContentPage() {
   // primary color for button fallback hint
   const [primaryColor, setPrimaryColor] = useState('#1E293B');
 
+  // --- Preview ---
+  const [previewType, setPreviewType] = useState('transfer_received');
+  const [previewHtml, setPreviewHtml] = useState('');
+  const previewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     setLoading(true);
     getBranding()
       .then((c) => {
+        setAppName(c.app_name ?? 'TenzoShare');
         setPrimaryColor(c.primary_color ?? '#1E293B');
         // Delivery
         setSenderName(c.email_sender_name ?? '');
@@ -200,6 +532,46 @@ export default function EmailContentPage() {
       .catch(() => setError('Failed to load branding settings.'))
       .finally(() => setLoading(false));
   }, []);
+
+  // Debounced live preview: regenerates HTML 150 ms after any relevant state change
+  useEffect(() => {
+    if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
+    previewTimerRef.current = setTimeout(() => {
+      const typeMeta = EMAIL_TYPES.find((t) => t.key === previewType);
+      const resolvedCTA = perTypeCTAs[previewType] || typeMeta?.defaultCTA || 'View Details';
+      const vars: PreviewVars = {
+        appName: appName || 'TenzoShare',
+        primaryColor: primaryColor || '#1e293b',
+        buttonColor: buttonColor || primaryColor || '#1e293b',
+        buttonTextColor: buttonTextColor || '#ffffff',
+        bodyBgColor: bodyBgColor || '#f1f5f9',
+        cardBgColor: cardBgColor || '#f8fafc',
+        cardBorderColor: cardBorderColor || '#e2e8f0',
+        headingColor: headingColor || '#1e293b',
+        textColor: emailTextColor || '#475569',
+        headerLink,
+        footerText,
+        supportEmail,
+        ctaText: resolvedCTA,
+      };
+      try {
+        setPreviewHtml(buildPreviewHTML(previewType, vars));
+      } catch (err) {
+        // Failsafe: never let a preview error crash the page
+        setPreviewHtml('<p style="color:red;font-family:sans-serif;padding:20px">Preview render error.</p>');
+        console.error('Email preview error:', err);
+      }
+    }, 150);
+    return () => {
+      if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
+    };
+  }, [
+    previewType, appName, primaryColor,
+    buttonColor, buttonTextColor,
+    bodyBgColor, cardBgColor, cardBorderColor,
+    headingColor, emailTextColor,
+    headerLink, footerText, supportEmail, perTypeCTAs,
+  ]);
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -264,7 +636,9 @@ export default function EmailContentPage() {
   });
 
   return (
-    <div style={{ padding: 32, maxWidth: 780 }}>
+    <div style={{ padding: 32 }}>
+      <div style={{ display: 'flex', gap: 32, alignItems: 'flex-start' }}>
+      <div style={{ flex: '0 0 560px', minWidth: 0 }}>
       <h1 style={{ marginBottom: 6 }}>Email Content</h1>
       <p className="text-sm" style={{ color: 'var(--color-text-muted)', marginBottom: 28 }}>
         Configure how transactional emails are composed and branded. Changes apply to all newly sent emails.
@@ -514,6 +888,17 @@ export default function EmailContentPage() {
           </button>
         </div>
       </form>
+      </div>{/* end left panel */}
+
+      {/* ── Right: live preview ──────────────────────────────────────────── */}
+      <div style={{ flex: 1, minWidth: 380, position: 'sticky', top: 24, alignSelf: 'flex-start' }}>
+        <EmailPreviewPanel
+          previewType={previewType}
+          onPreviewTypeChange={setPreviewType}
+          html={previewHtml}
+        />
+      </div>
+      </div>{/* end two-pane */}
     </div>
   );
 }
