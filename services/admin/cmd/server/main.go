@@ -26,6 +26,8 @@ import (
 	"github.com/tenzoshare/tenzoshare/shared/pkg/logger"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/telemetry"
+
+	svcmigrations "github.com/tenzoshare/tenzoshare/services/admin/migrations"
 )
 
 // ── Domain types ──────────────────────────────────────────────────────────────
@@ -119,6 +121,7 @@ var js *jetstream.Client
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
+
 func main() {
 	var err error
 	cfg, err = config.Load()
@@ -141,6 +144,10 @@ func main() {
 		log.Fatal("failed to connect to database", zap.Error(err))
 	}
 	defer db.Close()
+
+	if err := database.RunMigrations(ctx, db, svcmigrations.Migrations, "admin_svc"); err != nil {
+		log.Fatal("database migrations failed", zap.Error(err))
+	}
 
 	// NATS JetStream — optional; admin service publishes audit events but never blocks on it.
 	if cfg.NATS.URL != "" {

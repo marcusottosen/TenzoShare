@@ -22,7 +22,10 @@ import (
 	"github.com/tenzoshare/tenzoshare/shared/pkg/logger"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/telemetry"
+
+	svcmigrations "github.com/tenzoshare/tenzoshare/services/auth/migrations"
 )
+
 
 func main() {
 	cfg, err := config.Load()
@@ -44,6 +47,10 @@ func main() {
 		log.Fatal("failed to connect to database", zap.Error(err))
 	}
 	defer pool.Close()
+
+	if err := database.RunMigrations(ctx, pool, svcmigrations.Migrations, "auth"); err != nil {
+		log.Fatal("database migrations failed", zap.Error(err))
+	}
 
 	// Redis — used for IP rate limiting; non-fatal if unavailable at startup
 	cacheClient, err := cache.New(cfg.Redis)

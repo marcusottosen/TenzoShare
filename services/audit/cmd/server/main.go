@@ -21,7 +21,10 @@ import (
 	"github.com/tenzoshare/tenzoshare/shared/pkg/logger"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/telemetry"
+
+	svcmigrations "github.com/tenzoshare/tenzoshare/services/audit/migrations"
 )
+
 
 func main() {
 	cfg, err := config.Load()
@@ -45,6 +48,10 @@ func main() {
 		log.Fatal("failed to connect to database", zap.Error(err))
 	}
 	defer pool.Close()
+
+	if err := database.RunMigrations(ctx, pool, svcmigrations.Migrations, "audit"); err != nil {
+		log.Fatal("database migrations failed", zap.Error(err))
+	}
 
 	// NATS JetStream
 	jsClient, err := jetstream.New(cfg.NATS.URL)
