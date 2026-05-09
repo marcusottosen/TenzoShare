@@ -56,4 +56,7 @@ acme.json
 # Security Tools
 trivy-results.json
 gosec-results.json
+
+# AI agent reference (local only)
+CLAUDE.md
 .snyk
