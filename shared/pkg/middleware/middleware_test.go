@@ -462,7 +462,21 @@ func newCORSApp(devMode bool, origins []string) *fiber.App {
 	return app
 }
 
+// corsResponse captures all CORS-relevant response headers.
+type corsResponse struct {
+	status      int
+	allowOrigin string
+	credentials string
+	expose      string
+	vary        string
+}
+
 func corsRequest(app *fiber.App, method, path, origin string) (int, string) {
+	r, _ := doCORSRequest(app, method, path, origin)
+	return r.status, r.allowOrigin
+}
+
+func doCORSRequest(app *fiber.App, method, path, origin string) (corsResponse, map[string][]string) {
 	req := httptest.NewRequest(method, path, nil)
 	if origin != "" {
 		req.Header.Set("Origin", origin)
@@ -473,14 +487,44 @@ func corsRequest(app *fiber.App, method, path, origin string) (int, string) {
 	}
 	defer resp.Body.Close()
 	io.ReadAll(resp.Body) //nolint:errcheck
-	return resp.StatusCode, resp.Header.Get("Access-Control-Allow-Origin")
+	return corsResponse{
+		status:      resp.StatusCode,
+		allowOrigin: resp.Header.Get("Access-Control-Allow-Origin"),
+		credentials: resp.Header.Get("Access-Control-Allow-Credentials"),
+		expose:      resp.Header.Get("Access-Control-Expose-Headers"),
+		vary:        resp.Header.Get("Vary"),
+	}, map[string][]string(resp.Header)
 }
 
 func TestCORS_DevMode_ReflectsOrigin(t *testing.T) {
 	app := newCORSApp(true, nil)
-	_, allowOrigin := corsRequest(app, "GET", "/test", "https://example.com")
-	if allowOrigin != "https://example.com" {
-		t.Errorf("expected reflected origin in dev mode, got %q", allowOrigin)
+	r, _ := doCORSRequest(app, "GET", "/test", "https://example.com")
+	if r.allowOrigin != "https://example.com" {
+		t.Errorf("expected reflected origin in dev mode, got %q", r.allowOrigin)
+	}
+}
+
+func TestCORS_DevMode_SetsCredentials(t *testing.T) {
+	app := newCORSApp(true, nil)
+	r, _ := doCORSRequest(app, "GET", "/test", "https://example.com")
+	if r.credentials != "true" {
+		t.Errorf("expected Access-Control-Allow-Credentials: true in dev mode, got %q", r.credentials)
+	}
+}
+
+func TestCORS_DevMode_SetsExposeHeaders(t *testing.T) {
+	app := newCORSApp(true, nil)
+	r, _ := doCORSRequest(app, "GET", "/test", "https://example.com")
+	if r.expose == "" {
+		t.Errorf("expected Access-Control-Expose-Headers to be set, got empty")
+	}
+}
+
+func TestCORS_DevMode_SetsVary(t *testing.T) {
+	app := newCORSApp(true, nil)
+	r, _ := doCORSRequest(app, "GET", "/test", "https://example.com")
+	if r.vary != "Origin" {
+		t.Errorf("expected Vary: Origin in dev mode, got %q", r.vary)
 	}
 }
 
@@ -500,6 +544,22 @@ func TestCORS_Prod_AllowedOrigin_SetsHeader(t *testing.T) {
 	}
 }
 
+func TestCORS_Prod_AllowedOrigin_SetsCredentials(t *testing.T) {
+	app := newCORSApp(false, []string{"https://allowed.example.com"})
+	r, _ := doCORSRequest(app, "GET", "/test", "https://allowed.example.com")
+	if r.credentials != "true" {
+		t.Errorf("expected Access-Control-Allow-Credentials: true for allowed origin, got %q", r.credentials)
+	}
+}
+
+func TestCORS_Prod_AllowedOrigin_SetsVary(t *testing.T) {
+	app := newCORSApp(false, []string{"https://allowed.example.com"})
+	r, _ := doCORSRequest(app, "GET", "/test", "https://allowed.example.com")
+	if r.vary != "Origin" {
+		t.Errorf("expected Vary: Origin for non-wildcard origin, got %q", r.vary)
+	}
+}
+
 func TestCORS_Prod_DisallowedOrigin_NoHeader(t *testing.T) {
 	app := newCORSApp(false, []string{"https://allowed.example.com"})
 	_, allowOrigin := corsRequest(app, "GET", "/test", "https://evil.example.com")
@@ -508,11 +568,82 @@ func TestCORS_Prod_DisallowedOrigin_NoHeader(t *testing.T) {
 	}
 }
 
+func TestCORS_Prod_DisallowedOrigin_NoCredentials(t *testing.T) {
+	app := newCORSApp(false, []string{"https://allowed.example.com"})
+	r, _ := doCORSRequest(app, "GET", "/test", "https://evil.example.com")
+	if r.credentials != "" {
+		t.Errorf("expected no Credentials header for disallowed origin, got %q", r.credentials)
+	}
+}
+
+func TestCORS_Prod_EmptyOriginsList_NoHeaders(t *testing.T) {
+	// CORS_ALLOWED_ORIGINS="" → parsed as [""] → should block all origins in prod.
+	app := newCORSApp(false, []string{""})
+	r, _ := doCORSRequest(app, "GET", "/test", "https://example.com")
+	if r.allowOrigin != "" {
+		t.Errorf("expected no ACAO header when origins list is empty, got %q", r.allowOrigin)
+	}
+}
+
+func TestCORS_Prod_SpacesAroundOrigin_Matched(t *testing.T) {
+	// Commas with spaces: "https://a.com, https://b.com" should both work.
+	app := newCORSApp(false, []string{"  https://a.example.com  "})
+	_, allowOrigin := corsRequest(app, "GET", "/test", "https://a.example.com")
+	if allowOrigin != "https://a.example.com" {
+		t.Errorf("expected origin matched after TrimSpace, got %q", allowOrigin)
+	}
+}
+
+func TestCORS_Wildcard_SendsStar(t *testing.T) {
+	app := newCORSApp(false, []string{"*"})
+	r, _ := doCORSRequest(app, "GET", "/test", "https://any.example.com")
+	if r.allowOrigin != "*" {
+		t.Errorf("expected Access-Control-Allow-Origin: * for wildcard, got %q", r.allowOrigin)
+	}
+}
+
+func TestCORS_Wildcard_NoCredentialsHeader(t *testing.T) {
+	// Wildcard + credentials is spec-invalid; we must NOT send the header.
+	app := newCORSApp(false, []string{"*"})
+	r, _ := doCORSRequest(app, "GET", "/test", "https://any.example.com")
+	if r.credentials != "" {
+		t.Errorf("expected no Credentials header with wildcard, got %q", r.credentials)
+	}
+}
+
+func TestCORS_Wildcard_NoVaryHeader(t *testing.T) {
+	// When sending *, Vary: Origin must NOT be set (response doesn't vary by origin).
+	app := newCORSApp(false, []string{"*"})
+	r, _ := doCORSRequest(app, "GET", "/test", "https://any.example.com")
+	if r.vary != "" {
+		t.Errorf("expected no Vary header with wildcard, got %q", r.vary)
+	}
+}
+
 func TestCORS_Preflight_Returns204(t *testing.T) {
 	app := newCORSApp(true, nil)
 	status, _ := corsRequest(app, "OPTIONS", "/test", "https://example.com")
 	if status != 204 {
 		t.Errorf("expected 204 for OPTIONS preflight, got %d", status)
+	}
+}
+
+func TestCORS_Preflight_Prod_AllowedOriginHasHeaders(t *testing.T) {
+	app := newCORSApp(false, []string{"https://allowed.example.com"})
+	r, _ := doCORSRequest(app, "OPTIONS", "/test", "https://allowed.example.com")
+	if r.status != 204 {
+		t.Errorf("expected 204, got %d", r.status)
+	}
+	if r.allowOrigin != "https://allowed.example.com" {
+		t.Errorf("expected allow-origin header on preflight, got %q", r.allowOrigin)
+	}
+}
+
+func TestCORS_Preflight_Prod_DisallowedOriginNoCORSHeaders(t *testing.T) {
+	app := newCORSApp(false, []string{"https://allowed.example.com"})
+	r, _ := doCORSRequest(app, "OPTIONS", "/test", "https://evil.example.com")
+	if r.allowOrigin != "" {
+		t.Errorf("expected no allow-origin on disallowed preflight, got %q", r.allowOrigin)
 	}
 }
 

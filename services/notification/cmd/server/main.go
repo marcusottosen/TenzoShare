@@ -5,6 +5,7 @@ import (
 	stdlog "log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/gofiber/fiber/v3"
@@ -65,6 +66,9 @@ func main() {
 		ErrorHandler: middleware.ErrorHandler,
 	})
 
+	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
+	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
 	telemetry.Register(app, "notification")
 	app.Use(middleware.RequestLogger(log))
 	app.Get("/api/v1/notification/health", func(c fiber.Ctx) error {
