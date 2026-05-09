@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { fmt } from '../utils/dateFormat';
 import {
   listAPIKeys,
   createAPIKey,
@@ -6,9 +7,7 @@ import {
   type APIKey,
 } from '../api/auth';
 
-function fmt(date: string) {
-  return new Date(date).toLocaleString();
-}
+// fmt imported from utils/dateFormat
 
 // Clipboard helper — works on plain HTTP (no HTTPS required)
 function copyText(text: string, onSuccess: () => void) {

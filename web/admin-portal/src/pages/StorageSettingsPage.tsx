@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { fmt } from '../utils/dateFormat';
 import { getStorageConfig, updateStorageConfig, type StorageConfig } from '../api/admin';
 
 // ── Unit helpers ─────────────────────────────────────────────────────────────
@@ -351,7 +352,7 @@ export default function StorageSettingsPage() {
               </button>
               {config && (
                 <span className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
-                  Last updated {new Date(config.updated_at).toLocaleString()} by {config.updated_by}
+                  Last updated {fmt(config.updated_at)} by {config.updated_by}
                 </span>
               )}
             </div>

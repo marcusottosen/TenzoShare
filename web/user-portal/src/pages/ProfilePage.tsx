@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { fmt } from '../utils/dateFormat';
 import {
   getMe,
   setupMFA,
@@ -6,10 +7,6 @@ import {
   changePassword,
   type MeResponse,
 } from '../api/auth';
-
-function fmt(date: string) {
-  return new Date(date).toLocaleString();
-}
 
 export default function ProfilePage() {
   const [profile, setProfile] = useState<MeResponse | null>(null);

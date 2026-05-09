@@ -25,6 +25,10 @@ export interface MeResponse {
   email_verified?: boolean;
   mfa_enabled?: boolean;
   created_at?: string;
+  // per-user format prefs (null = use system default)
+  date_format?: string | null;
+  time_format?: string | null;
+  timezone?: string | null;
 }
 
 export interface APIKey {
@@ -116,4 +120,17 @@ export async function deleteAPIKey(id: string): Promise<void> {
 
 export function storeTokens(res: TokenResponse) {
   setTokens(res.access_token, res.refresh_token);
+}
+
+export interface DatePrefsPayload {
+  date_format: string | null;
+  time_format: string | null;
+  timezone: string | null;
+}
+
+export async function updatePreferences(prefs: DatePrefsPayload): Promise<MeResponse> {
+  return request<MeResponse>('/auth/me/preferences', {
+    method: 'PATCH',
+    body: JSON.stringify(prefs),
+  });
 }

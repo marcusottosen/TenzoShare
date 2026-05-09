@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router';
+import { fmtDate, fmt } from '../utils/dateFormat';
 import {
   listFiles,
   uploadFile,
@@ -32,7 +33,7 @@ function timeAgo(dateStr: string): string {
   const days = Math.floor(hrs / 24);
   if (days === 1) return 'Yesterday';
   if (days < 7) return `${days} days ago`;
-  return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return fmtDate(dateStr);
 }
 
 function fileTypeInfo(contentType: string): { icon: string; color: string } {
@@ -150,15 +151,15 @@ function RetentionBadge({ file }: { file: FileRecord }) {
   const isWarning = daysLeft <= 30;
 
   let color = 'var(--color-text-muted)';
-  let label = `Expires ${deleteDate.toLocaleDateString()}`;
+  let label = `Expires ${fmtDate(auto_delete_at)}`;
   if (isPast) { color = '#ef4444'; label = 'Eligible for deletion'; }
   else if (isSoon) { color = '#ef4444'; label = `Deletes in ${daysLeft}d`; }
   else if (isWarning) { color = '#f59e0b'; label = `Deletes in ${daysLeft}d`; }
-  else { label = `Deletes ${deleteDate.toLocaleDateString()}`; }
+  else { label = `Deletes ${fmtDate(auto_delete_at)}`; }
 
   const tooltip = (share_count ?? 0) === 0
-    ? `Orphan file — no shares. Will be deleted ${deleteDate.toLocaleDateString()}.`
-    : `All shares expired. Will be deleted ${deleteDate.toLocaleDateString()}.`;
+    ? `Orphan file — no shares. Will be deleted ${fmtDate(auto_delete_at)}.`
+    : `All shares expired. Will be deleted ${fmtDate(auto_delete_at)}.`;
 
   return (
     <span title={tooltip} style={{ fontSize: 11, color, whiteSpace: 'nowrap', fontWeight: isSoon ? 600 : 400 }}>
@@ -457,7 +458,7 @@ export default function FilesPage() {
                     <span style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>{fmtBytes(f.size_bytes)}</span>
                     <span className="aes-badge"><IconLock /> AES-256</span>
                     <RetentionBadge file={f} />
-                    <span style={{ fontSize: 12, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }} title={new Date(f.created_at).toLocaleString()}>{timeAgo(f.created_at)}</span>
+                    <span style={{ fontSize: 12, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }} title={fmt(f.created_at)}>{timeAgo(f.created_at)}</span>
                     <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
                       {isPreviewable(f.content_type) && (
                         <button className="files-icon-btn" title="Preview" onClick={() => setPreviewTarget(f)}>

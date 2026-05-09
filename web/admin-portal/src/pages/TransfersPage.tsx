@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useLocation } from 'react-router';
+import { fmt, fmtDate } from '../utils/dateFormat';
 import {
   listTransfers, getTransfer, revokeTransfer,
   type AdminTransfer, type AdminTransferDetail, type TransferFile,
@@ -11,13 +12,7 @@ type TransferSortKey = 'owner_email' | 'name' | 'status' | 'file_count' | 'total
 
 const PAGE_SIZE = 50;
 
-function fmtDate(date: string) {
-  return new Date(date).toLocaleString();
-}
-
-function fmtDateShort(date: string) {
-  return new Date(date).toLocaleDateString();
-}
+// fmt / fmtDate imported from utils/dateFormat
 
 function fmtBytes(bytes: number): string {
   if (!bytes) return '0 B';
@@ -356,9 +351,9 @@ export default function TransfersPage() {
                         : <span style={{ color: 'var(--color-text-muted)', fontSize: 12 }}>—</span>}
                     </td>
                     <td className="text-sm">
-                      {t.expires_at ? fmtDateShort(t.expires_at) : '—'}
+                      {t.expires_at ? fmtDate(t.expires_at) : '—'}
                     </td>
-                    <td className="text-sm">{fmtDateShort(t.created_at)}</td>
+                    <td className="text-sm">{fmtDate(t.created_at)}</td>
                     <td onClick={(e) => e.stopPropagation()}>
                       <div className="action-group">
                         <button

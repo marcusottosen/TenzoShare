@@ -26,7 +26,6 @@ import (
 	svcmigrations "github.com/tenzoshare/tenzoshare/services/auth/migrations"
 )
 
-
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -133,6 +132,7 @@ func main() {
 	protected.Post("/logout", h.Logout)
 	protected.Get("/me", h.Me)
 	protected.Patch("/me", h.UpdateMe)
+	protected.Patch("/me/preferences", h.UpdatePreferences)
 	protected.Post("/mfa/setup", h.MFASetup)
 	protected.Post("/mfa/verify", h.MFAVerify)
 

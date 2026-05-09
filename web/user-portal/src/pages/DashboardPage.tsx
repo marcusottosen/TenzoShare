@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { fmtDate } from '../utils/dateFormat';
 import { Link, useNavigate } from 'react-router';
 import { listTransfers, type Transfer } from '../api/transfers';
 import { listFileRequests, type FileRequest } from '../api/requests';
@@ -381,7 +382,7 @@ export default function DashboardPage() {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 12, fontWeight: 500, color: '#fff', marginBottom: 1 }}>Member since</div>
                 <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)' }}>
-                  {user?.created_at ? new Date(user.created_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : '—'}
+                  {user?.created_at ? fmtDate(user.created_at) : '—'}
                 </div>
               </div>
             </div>

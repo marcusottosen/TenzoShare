@@ -21,6 +21,10 @@ type User struct {
 	LockedUntil         *time.Time
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+	// Per-user format prefs; nil = use system default from platform_settings.
+	DateFormat *string
+	TimeFormat *string
+	Timezone   *string
 }
 
 // IsLocked reports whether the account is currently locked out.

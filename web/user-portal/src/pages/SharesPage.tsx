@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
+import { fmt, fmtDate } from '../utils/dateFormat';
 import { listTransfers, revokeTransfer, type Transfer } from '../api/transfers';
 import { presignFile } from '../api/files';
 import {
@@ -37,8 +38,6 @@ function buildTransferUrl(slug: string) {
     ?? `${window.location.protocol}//${window.location.hostname}:3003`;
   return `${base}/t/${slug}`;
 }
-function fmt(d: string) { return new Date(d).toLocaleString(); }
-function fmtDate(d: string) { return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
 function fmtBytes(b: number) {
   if (b === 0) return '0 B';
   const k = 1024; const u = ['B','KB','MB','GB']; const i = Math.floor(Math.log(b)/Math.log(k));

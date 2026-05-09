@@ -82,6 +82,7 @@ type userRepository interface {
 	CreateAPIKey(ctx context.Context, userID, name, keyHash, keyPrefix string, expiresAt *time.Time) (*domain.APIKey, error)
 	ListAPIKeys(ctx context.Context, userID string) ([]*domain.APIKey, error)
 	DeleteAPIKey(ctx context.Context, id, userID string) error
+	UpdatePreferences(ctx context.Context, userID string, dateFormat, timeFormat, timezone *string) error
 }
 
 type AuthService struct {
@@ -572,6 +573,19 @@ func (s *AuthService) publishAudit(ctx context.Context, ev AuditEvent) {
 // GetMe returns the full profile for the authenticated user.
 func (s *AuthService) GetMe(ctx context.Context, userID string) (*domain.User, error) {
 	return s.repo.GetByID(ctx, userID)
+}
+
+// UpdatePreferences stores per-user date/time formatting preferences.
+// Pass nil for a field to reset it to the system default.
+func (s *AuthService) UpdatePreferences(ctx context.Context, userID string, dateFormat, timeFormat, timezone *string) error {
+	validDateFormats := map[string]bool{"ISO": true, "EU": true, "US": true, "DE": true, "LONG": true}
+	if dateFormat != nil && !validDateFormats[*dateFormat] {
+		return apperrors.Validation("date_format must be one of: ISO, EU, US, DE, LONG")
+	}
+	if timeFormat != nil && *timeFormat != "12h" && *timeFormat != "24h" {
+		return apperrors.Validation("time_format must be '12h' or '24h'")
+	}
+	return s.repo.UpdatePreferences(ctx, userID, dateFormat, timeFormat, timezone)
 }
 
 // RevokeAccessToken places a token's JTI on the Redis blacklist so it cannot

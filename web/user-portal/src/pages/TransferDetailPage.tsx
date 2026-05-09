@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router';
+import { fmt } from '../utils/dateFormat';
 import { getTransfer, revokeTransfer, type Transfer } from '../api/transfers';
 import { getFile, presignFile, type FileRecord } from '../api/files';
 import { getToken } from '../api/client';
@@ -212,10 +213,6 @@ function FileCard({ fileId }: { fileId: string }) {
 }
 
 
-
-function fmt(date: string) {
-  return new Date(date).toLocaleString();
-}
 
 function fmtBytes(b: number): string {
   if (b === 0) return '0 B';

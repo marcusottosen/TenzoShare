@@ -121,7 +121,6 @@ var js *jetstream.Client
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
-
 func main() {
 	var err error
 	cfg, err = config.Load()
@@ -214,9 +213,12 @@ func main() {
 	v1.Put("/auth/config", handlePutAuthConfig)
 	v1.Get("/branding", handleGetBranding)
 	v1.Put("/branding", handlePutBranding)
+	v1.Get("/platform/config", handleGetPlatformConfig)
+	v1.Put("/platform/config", handlePutPlatformConfig)
 
-	// Public branding endpoint — no auth required so user-facing sites can fetch it.
+	// Public endpoints — no auth required so user-facing sites can fetch them.
 	app.Get("/api/v1/branding", handleGetBrandingPublic)
+	app.Get("/api/v1/platform/config", handleGetPlatformConfigPublic)
 
 	go func() {
 		if err := app.Listen(":" + cfg.Server.Port); err != nil {
@@ -1975,6 +1977,63 @@ func handlePutBranding(c fiber.Ctx) error {
 	}
 	publishAdminAudit(c, "admin.branding_updated", "branding_settings", nil)
 	return handleGetBrandingPublic(c)
+}
+
+// ── Platform settings ────────────────────────────────────────────────────────
+
+type PlatformConfig struct {
+	DateFormat string `json:"date_format"`
+	TimeFormat string `json:"time_format"`
+	Timezone   string `json:"timezone"`
+	UpdatedAt  string `json:"updated_at"`
+}
+
+func handleGetPlatformConfig(c fiber.Ctx) error { return handleGetPlatformConfigPublic(c) }
+
+func handleGetPlatformConfigPublic(c fiber.Ctx) error {
+	var p PlatformConfig
+	var updatedAt time.Time
+	err := db.QueryRow(c.Context(), `
+		SELECT date_format, time_format, timezone, updated_at
+		FROM admin_svc.platform_settings WHERE id = 1`,
+	).Scan(&p.DateFormat, &p.TimeFormat, &p.Timezone, &updatedAt)
+	if err != nil {
+		return apperrors.Internal("get platform config", err)
+	}
+	p.UpdatedAt = updatedAt.Format(time.RFC3339)
+	return c.JSON(p)
+}
+
+func handlePutPlatformConfig(c fiber.Ctx) error {
+	var body struct {
+		DateFormat *string `json:"date_format"`
+		TimeFormat *string `json:"time_format"`
+		Timezone   *string `json:"timezone"`
+	}
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return apperrors.BadRequest("invalid JSON body")
+	}
+	validDateFormats := map[string]bool{"ISO": true, "EU": true, "US": true, "DE": true, "LONG": true}
+	if body.DateFormat != nil && !validDateFormats[*body.DateFormat] {
+		return apperrors.BadRequest("date_format must be one of: ISO, EU, US, DE, LONG")
+	}
+	if body.TimeFormat != nil && *body.TimeFormat != "12h" && *body.TimeFormat != "24h" {
+		return apperrors.BadRequest("time_format must be '12h' or '24h'")
+	}
+	_, err := db.Exec(c.Context(), `
+		UPDATE admin_svc.platform_settings SET
+		    date_format = COALESCE($1, date_format),
+		    time_format = COALESCE($2, time_format),
+		    timezone    = COALESCE($3, timezone),
+		    updated_at  = now()
+		WHERE id = 1`,
+		body.DateFormat, body.TimeFormat, body.Timezone,
+	)
+	if err != nil {
+		return apperrors.Internal("update platform config", err)
+	}
+	publishAdminAudit(c, "admin.platform_config_updated", "platform_settings", nil)
+	return handleGetPlatformConfigPublic(c)
 }
 
 func isUniqueViolation(err error) bool {

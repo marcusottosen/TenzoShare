@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { fmt } from '../utils/dateFormat';
 import {
   listUsers, createUser, updateUser, deleteUser, unlockUser, verifyUserEmail,
   resetUserPassword, setUserPassword,
@@ -11,10 +12,6 @@ import { SortHeader } from '../components/SortHeader';
 type UserSortKey = 'email' | 'role' | 'is_active' | 'created_at' | 'last_login_at';
 
 const PAGE_SIZE = 50;
-
-function fmt(date: string) {
-  return new Date(date).toLocaleDateString();
-}
 
 function fmtBytes(n: number): string {
   if (n === 0) return '0 B';
@@ -247,9 +244,9 @@ function UserDetailModal({
               ? <span title={`${storage.file_count} file${storage.file_count !== 1 ? 's' : ''}`}>{fmtBytes(storage.total_bytes)}</span>
               : <span style={{ color: 'var(--color-text-muted)' }}>—</span>}
           </Row>
-          <Row label="Joined">{new Date(user.created_at).toLocaleString()}</Row>
+          <Row label="Joined">{fmt(user.created_at)}</Row>
           <Row label="Last login">
-            {user.last_login_at ? new Date(user.last_login_at).toLocaleString() : <span style={{ color: 'var(--color-text-muted)' }}>Never</span>}
+            {user.last_login_at ? fmt(user.last_login_at) : <span style={{ color: 'var(--color-text-muted)' }}>Never</span>}
           </Row>
 
           {/* ── Password section ── */}
@@ -527,7 +524,7 @@ export default function UsersPage() {
                   <td className="text-sm">{fmt(u.created_at)}</td>
                   <td className="text-sm">
                     {u.last_login_at
-                      ? <span title={new Date(u.last_login_at).toLocaleString()}>{fmt(u.last_login_at)}</span>
+                      ? <span title={fmt(u.last_login_at)}>{fmt(u.last_login_at)}</span>
                       : <span style={{ color: '#aaa' }}>Never</span>}
                   </td>
                   <td style={{ textAlign: 'right' }}>

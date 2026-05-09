@@ -99,6 +99,15 @@ function IconPalette() {
     </svg>
   );
 }
+function IconGlobe() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10"/>
+      <line x1="2" y1="12" x2="22" y2="12"/>
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+    </svg>
+  );
+}
 
 const PAGE_TITLES: Record<string, string> = {
   '/': 'System Overview',
@@ -112,6 +121,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/storage/files': 'Storage Files',
   '/storage/insights': 'Storage Insights',
   '/branding': 'Branding',
+  '/general': 'General Settings',
 };
 
 function getInitials(email?: string): string {
@@ -202,6 +212,9 @@ export default function Layout() {
           </NavLink>
 
           <div className="sidebar-section-label">Configuration</div>
+          <NavLink to="/general" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            <IconGlobe /> General Settings
+          </NavLink>
           <NavLink to="/branding" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             <IconPalette /> Branding
           </NavLink>

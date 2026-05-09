@@ -187,6 +187,10 @@ func (r *stubUserRepo) ListAPIKeys(_ context.Context, userID string) ([]*domain.
 
 func (r *stubUserRepo) DeleteAPIKey(_ context.Context, _, _ string) error { return r.err }
 
+func (r *stubUserRepo) UpdatePreferences(_ context.Context, _ string, _, _, _ *string) error {
+	return r.err
+}
+
 func (r *stubUserRepo) GetLockoutConfig(_ context.Context) (int, time.Duration, error) {
 	return 10, 15 * time.Minute, nil
 }

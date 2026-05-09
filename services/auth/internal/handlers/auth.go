@@ -293,11 +293,38 @@ func profileResponse(u *domain.User) fiber.Map {
 		"mfa_enabled":    u.MFAEnabled,
 		"created_at":     u.CreatedAt,
 		"updated_at":     u.UpdatedAt,
+		"date_format":    u.DateFormat,
+		"time_format":    u.TimeFormat,
+		"timezone":       u.Timezone,
 	}
 	if u.LockedUntil != nil && u.LockedUntil.After(time.Now()) {
 		m["locked_until"] = u.LockedUntil
 	}
 	return m
+}
+
+// UpdatePreferences PATCH /me/preferences — stores per-user date/time prefs.
+func (h *Handler) UpdatePreferences(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	var req struct {
+		DateFormat *string `json:"date_format"`
+		TimeFormat *string `json:"time_format"`
+		Timezone   *string `json:"timezone"`
+	}
+	if err := c.Bind().JSON(&req); err != nil {
+		return apperrors.BadRequest("invalid JSON")
+	}
+	if err := h.svc.UpdatePreferences(c.Context(), userID, req.DateFormat, req.TimeFormat, req.Timezone); err != nil {
+		return err
+	}
+	user, err := h.svc.GetMe(c.Context(), userID)
+	if err != nil {
+		return err
+	}
+	return c.JSON(profileResponse(user))
 }
 
 // ── API key management ────────────────────────────────────────────────────────

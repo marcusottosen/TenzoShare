@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { fmt } from '../utils/dateFormat';
 import {
   getAuthConfig,
   updateAuthConfig,
@@ -179,7 +180,7 @@ export default function SecuritySettingsPage() {
 
           {config && (
             <p className="text-sm" style={{ marginTop: 16, color: 'var(--color-text-muted)' }}>
-              Last updated: {config.updated_at ? new Date(config.updated_at).toLocaleString() : '—'}
+              Last updated: {config.updated_at ? fmt(config.updated_at) : '—'}
             </p>
           )}
         </div>

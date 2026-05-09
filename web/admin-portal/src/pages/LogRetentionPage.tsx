@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { fmt, fmtDate } from '../utils/dateFormat';
 import {
   getAuditConfig,
   updateAuditConfig,
@@ -65,13 +66,10 @@ function DaysInput({
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// fmtDate imported from utils/dateFormat
+
 function fmtNumber(n: number): string {
   return n.toLocaleString();
-}
-
-function fmtDate(iso: string | null): string {
-  if (!iso) return '—';
-  return new Date(iso).toLocaleString();
 }
 
 // ── Page ─────────────────────────────────────────────────────────────────────
@@ -177,11 +175,11 @@ export default function LogRetentionPage() {
                 </div>
                 <div>
                   <p className="text-sm" style={{ color: 'var(--color-text-muted)', margin: '0 0 2px' }}>Oldest entry</p>
-                  <p style={{ fontSize: 13, fontWeight: 500, margin: 0 }}>{fmtDate(stats.oldest_entry)}</p>
+                  <p style={{ fontSize: 13, fontWeight: 500, margin: 0 }}>{stats.oldest_entry ? fmtDate(stats.oldest_entry) : '—'}</p>
                 </div>
                 <div>
                   <p className="text-sm" style={{ color: 'var(--color-text-muted)', margin: '0 0 2px' }}>Most recent</p>
-                  <p style={{ fontSize: 13, fontWeight: 500, margin: 0 }}>{fmtDate(stats.newest_entry)}</p>
+                  <p style={{ fontSize: 13, fontWeight: 500, margin: 0 }}>{stats.newest_entry ? fmtDate(stats.newest_entry) : '—'}</p>
                 </div>
               </div>
               {stats.by_source && stats.by_source.length > 0 && (

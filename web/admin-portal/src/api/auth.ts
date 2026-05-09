@@ -18,6 +18,10 @@ export interface MeResponse {
   user_id: string;
   email: string;
   role: string;
+  // per-user format prefs (null = use system default)
+  date_format?: string | null;
+  time_format?: string | null;
+  timezone?: string | null;
 }
 
 export async function login(email: string, password: string): Promise<LoginResult> {

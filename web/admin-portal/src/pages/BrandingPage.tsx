@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { fmt } from '../utils/dateFormat';
 import { getBranding, updateBranding, type BrandingConfig } from '../api/admin';
 
 const DEFAULTS = {
@@ -506,7 +507,7 @@ export default function BrandingPage() {
             </button>
             {config?.updated_at && (
               <span className="text-sm" style={{ color: 'var(--color-text-muted)' }}>
-                Last updated: {new Date(config.updated_at).toLocaleString()}
+                Last updated: {fmt(config.updated_at)}
               </span>
             )}
           </div>

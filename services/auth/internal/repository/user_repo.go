@@ -94,7 +94,8 @@ func (r *UserRepository) GetByID(ctx context.Context, id string) (*domain.User, 
 		SELECT u.id, u.email, u.password_hash, u.role, u.is_active, u.email_verified,
 		       u.created_at, u.updated_at,
 		       COALESCE(m.is_enabled, false) AS mfa_enabled,
-		       u.failed_login_attempts, u.locked_until
+		       u.failed_login_attempts, u.locked_until,
+		       u.date_format, u.time_format, u.timezone
 		FROM auth.users u
 		LEFT JOIN auth.mfa_secrets m ON m.user_id = u.id
 		WHERE u.id = $1
@@ -102,6 +103,7 @@ func (r *UserRepository) GetByID(ctx context.Context, id string) (*domain.User, 
 		&u.ID, &u.Email, &u.PasswordHash, &u.Role,
 		&u.IsActive, &u.EmailVerified, &u.CreatedAt, &u.UpdatedAt,
 		&u.MFAEnabled, &u.FailedLoginAttempts, &u.LockedUntil,
+		&u.DateFormat, &u.TimeFormat, &u.Timezone,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -325,6 +327,23 @@ func (r *UserRepository) DeleteAPIKey(ctx context.Context, id, userID string) er
 	}
 	if tag.RowsAffected() == 0 {
 		return apperrors.NotFound("api key not found")
+	}
+	return nil
+}
+
+// UpdatePreferences stores per-user date/time formatting preferences.
+// Pass nil for any field to leave it unchanged (NULL = use system default).
+func (r *UserRepository) UpdatePreferences(ctx context.Context, userID string, dateFormat, timeFormat, timezone *string) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE auth.users SET
+		    date_format = $2,
+		    time_format = $3,
+		    timezone    = $4,
+		    updated_at  = now()
+		WHERE id = $1
+	`, userID, dateFormat, timeFormat, timezone)
+	if err != nil {
+		return apperrors.Internal("update user preferences", err)
 	}
 	return nil
 }
