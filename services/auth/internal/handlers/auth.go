@@ -257,6 +257,40 @@ func (h *Handler) PasswordResetRequest(c fiber.Ctx) error {
 	})
 }
 
+// ── Email verification ────────────────────────────────────────────────────────
+
+// VerifyEmail GET /auth/verify-email?token=... (public)
+func (h *Handler) VerifyEmail(c fiber.Ctx) error {
+	token := c.Query("token")
+	if token == "" {
+		return apperrors.BadRequest("token is required")
+	}
+	if err := h.svc.VerifyEmail(c.Context(), token); err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"message": "email verified successfully"})
+}
+
+type resendVerificationBody struct {
+	Email string `json:"email" validate:"required,email"`
+}
+
+// ResendVerification POST /auth/resend-verification (public — always 202)
+func (h *Handler) ResendVerification(c fiber.Ctx) error {
+	var req resendVerificationBody
+	if err := c.Bind().JSON(&req); err != nil {
+		return apperrors.BadRequest("invalid request body")
+	}
+	if err := validate.Struct(req); err != nil {
+		return apperrors.Validation(err.Error())
+	}
+	// Always 202 regardless of whether the email exists or is already verified.
+	_ = h.svc.ResendVerificationEmail(c.Context(), req.Email)
+	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
+		"message": "if that email is registered and unverified, a verification link has been sent",
+	})
+}
+
 type passwordResetConfirmBody struct {
 	Token       string `json:"token"        validate:"required"`
 	NewPassword string `json:"new_password" validate:"required,min=8,max=128"`
@@ -466,4 +500,121 @@ func tokenResponse(p *service.TokenPair) fiber.Map {
 		"expires_in":    p.ExpiresIn,
 		"token_type":    "Bearer",
 	}
+}
+
+// ── Notification preferences & unsubscribe ────────────────────────────────────
+
+// Unsubscribe GET /auth/unsubscribe?token=:token (public — no JWT required)
+// Validates the HMAC-signed token, sets notifications_opt_out=true for the user.
+func (h *Handler) Unsubscribe(c fiber.Ctx) error {
+	token := c.Query("token")
+	if token == "" {
+		return apperrors.BadRequest("missing token")
+	}
+	email, ok := h.svc.ValidateUnsubscribeToken(token)
+	if !ok {
+		return apperrors.BadRequest("invalid or tampered unsubscribe token")
+	}
+	if err := h.svc.Unsubscribe(c.Context(), email); err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"message": "You have been unsubscribed from email notifications."})
+}
+
+// GetNotificationPrefs GET /auth/me/notification-prefs (authenticated)
+func (h *Handler) GetNotificationPrefs(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	user, err := h.svc.GetMe(c.Context(), userID)
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{
+		"notifications_opt_out": user.NotificationsOptOut,
+		"transfer_received":     user.NotificationPrefs.TransferReceived,
+		"download_notification": user.NotificationPrefs.DownloadNotification,
+		"expiry_reminders":      user.NotificationPrefs.ExpiryReminders,
+	})
+}
+
+// UpdateNotificationPrefs PATCH /auth/me/notification-prefs (authenticated)
+func (h *Handler) UpdateNotificationPrefs(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	var req struct {
+		TransferReceived     *bool `json:"transfer_received"`
+		DownloadNotification *bool `json:"download_notification"`
+		ExpiryReminders      *bool `json:"expiry_reminders"`
+		NotificationsOptOut  *bool `json:"notifications_opt_out"`
+	}
+	if err := c.Bind().JSON(&req); err != nil {
+		return apperrors.BadRequest("invalid JSON")
+	}
+	// Handle the global opt-out toggle first (requires email lookup).
+	if req.NotificationsOptOut != nil {
+		user, err := h.svc.GetMe(c.Context(), userID)
+		if err != nil {
+			return err
+		}
+		if *req.NotificationsOptOut {
+			if err := h.svc.Unsubscribe(c.Context(), user.Email); err != nil {
+				return err
+			}
+		} else {
+			if err := h.svc.Resubscribe(c.Context(), user.Email); err != nil {
+				return err
+			}
+		}
+	}
+	// Build prefs from current state + request overrides.
+	user, err := h.svc.GetMe(c.Context(), userID)
+	if err != nil {
+		return err
+	}
+	prefs := user.NotificationPrefs
+	if req.TransferReceived != nil {
+		prefs.TransferReceived = *req.TransferReceived
+	}
+	if req.DownloadNotification != nil {
+		prefs.DownloadNotification = *req.DownloadNotification
+	}
+	if req.ExpiryReminders != nil {
+		prefs.ExpiryReminders = *req.ExpiryReminders
+	}
+	if err := h.svc.UpdateNotificationPrefs(c.Context(), userID, prefs); err != nil {
+		return err
+	}
+	user2, err := h.svc.GetMe(c.Context(), userID)
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{
+		"notifications_opt_out": user2.NotificationsOptOut,
+		"transfer_received":     user2.NotificationPrefs.TransferReceived,
+		"download_notification": user2.NotificationPrefs.DownloadNotification,
+		"expiry_reminders":      user2.NotificationPrefs.ExpiryReminders,
+	})
+}
+
+// InternalNotificationPrefs GET /api/v1/auth/internal/notification-prefs?email=:email
+// Internal-only endpoint (no JWT) for the notification service to check prefs before sending.
+func (h *Handler) InternalNotificationPrefs(c fiber.Ctx) error {
+	email := c.Query("email")
+	if email == "" {
+		return apperrors.BadRequest("missing email")
+	}
+	optOut, prefs, err := h.svc.GetNotificationStatus(c.Context(), email)
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{
+		"opt_out":               optOut,
+		"transfer_received":     prefs.TransferReceived,
+		"download_notification": prefs.DownloadNotification,
+		"expiry_reminders":      prefs.ExpiryReminders,
+	})
 }

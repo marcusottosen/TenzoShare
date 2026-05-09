@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -90,12 +91,14 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*domain.
 
 func (r *UserRepository) GetByID(ctx context.Context, id string) (*domain.User, error) {
 	var u domain.User
+	var prefsJSON []byte
 	err := r.db.QueryRow(ctx, `
 		SELECT u.id, u.email, u.password_hash, u.role, u.is_active, u.email_verified,
 		       u.created_at, u.updated_at,
 		       COALESCE(m.is_enabled, false) AS mfa_enabled,
 		       u.failed_login_attempts, u.locked_until,
-		       u.date_format, u.time_format, u.timezone
+		       u.date_format, u.time_format, u.timezone,
+		       u.notifications_opt_out, u.notification_prefs
 		FROM auth.users u
 		LEFT JOIN auth.mfa_secrets m ON m.user_id = u.id
 		WHERE u.id = $1
@@ -104,6 +107,7 @@ func (r *UserRepository) GetByID(ctx context.Context, id string) (*domain.User, 
 		&u.IsActive, &u.EmailVerified, &u.CreatedAt, &u.UpdatedAt,
 		&u.MFAEnabled, &u.FailedLoginAttempts, &u.LockedUntil,
 		&u.DateFormat, &u.TimeFormat, &u.Timezone,
+		&u.NotificationsOptOut, &prefsJSON,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -111,6 +115,7 @@ func (r *UserRepository) GetByID(ctx context.Context, id string) (*domain.User, 
 		}
 		return nil, apperrors.Internal("get user by id", err)
 	}
+	u.NotificationPrefs = parseNotificationPrefs(prefsJSON)
 	return &u, nil
 }
 
@@ -348,15 +353,15 @@ func (r *UserRepository) UpdatePreferences(ctx context.Context, userID string, d
 	return nil
 }
 
-// GetLockoutConfig returns the current max_failed_attempts, lockout_duration, and
-// require_mfa from the auth.auth_settings singleton row.
-func (r *UserRepository) GetLockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration, requireMFA bool, err error) {
+// GetLockoutConfig returns the current max_failed_attempts, lockout_duration,
+// require_mfa, and require_email_verification from the auth.auth_settings singleton row.
+func (r *UserRepository) GetLockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration, requireMFA bool, requireEmailVerification bool, err error) {
 	var mins int
-	row := r.db.QueryRow(ctx, `SELECT max_failed_attempts, lockout_duration_minutes, require_mfa FROM auth.auth_settings WHERE id = 1`)
-	if err = row.Scan(&maxAttempts, &mins, &requireMFA); err != nil {
-		return 10, 15 * time.Minute, false, nil // safe fallback to previous defaults
+	row := r.db.QueryRow(ctx, `SELECT max_failed_attempts, lockout_duration_minutes, require_mfa, require_email_verification FROM auth.auth_settings WHERE id = 1`)
+	if err = row.Scan(&maxAttempts, &mins, &requireMFA, &requireEmailVerification); err != nil {
+		return 10, 15 * time.Minute, false, false, nil // safe fallback to previous defaults
 	}
-	return maxAttempts, time.Duration(mins) * time.Minute, requireMFA, nil
+	return maxAttempts, time.Duration(mins) * time.Minute, requireMFA, requireEmailVerification, nil
 }
 
 // DisableMFA removes the MFA secret row for a user (disabling MFA).
@@ -364,6 +369,51 @@ func (r *UserRepository) DisableMFA(ctx context.Context, userID string) error {
 	_, err := r.db.Exec(ctx, `DELETE FROM auth.mfa_secrets WHERE user_id = $1`, userID)
 	if err != nil {
 		return apperrors.Internal("disable mfa", err)
+	}
+	return nil
+}
+
+// ── Email verification ────────────────────────────────────────────────────────
+
+// StoreEmailVerificationToken saves a verification token for a user, replacing any existing one.
+func (r *UserRepository) StoreEmailVerificationToken(ctx context.Context, userID, rawToken string, expiresAt time.Time) error {
+	// Invalidate any existing token for this user first.
+	_, _ = r.db.Exec(ctx, `DELETE FROM auth.email_verifications WHERE user_id = $1`, userID)
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO auth.email_verifications (token, user_id, expires_at)
+		VALUES ($1, $2, $3)
+	`, rawToken, userID, expiresAt)
+	if err != nil {
+		return apperrors.Internal("store email verification token", err)
+	}
+	return nil
+}
+
+// ConsumeEmailVerificationToken deletes a valid (non-expired) token and returns
+// the associated user ID. Returns BadRequest if the token is invalid or expired.
+func (r *UserRepository) ConsumeEmailVerificationToken(ctx context.Context, rawToken string) (string, error) {
+	var userID string
+	err := r.db.QueryRow(ctx, `
+		DELETE FROM auth.email_verifications
+		WHERE token = $1 AND expires_at > now()
+		RETURNING user_id
+	`, rawToken).Scan(&userID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", apperrors.BadRequest("invalid or expired verification token")
+		}
+		return "", apperrors.Internal("consume email verification token", err)
+	}
+	return userID, nil
+}
+
+// SetEmailVerified marks the given user's email_verified flag as true.
+func (r *UserRepository) SetEmailVerified(ctx context.Context, userID string) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE auth.users SET email_verified = true, updated_at = now() WHERE id = $1
+	`, userID)
+	if err != nil {
+		return apperrors.Internal("set email verified", err)
 	}
 	return nil
 }
@@ -378,4 +428,81 @@ func hashToken(raw string) string {
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// parseNotificationPrefs deserialises JSONB from the DB into NotificationPrefs,
+// applying defaults (all enabled) for any missing/null keys.
+func parseNotificationPrefs(raw []byte) domain.NotificationPrefs {
+	defaults := domain.DefaultNotificationPrefs()
+	if len(raw) == 0 {
+		return defaults
+	}
+	var p struct {
+		TransferReceived     *bool `json:"transfer_received"`
+		DownloadNotification *bool `json:"download_notification"`
+		ExpiryReminders      *bool `json:"expiry_reminders"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return defaults
+	}
+	if p.TransferReceived != nil {
+		defaults.TransferReceived = *p.TransferReceived
+	}
+	if p.DownloadNotification != nil {
+		defaults.DownloadNotification = *p.DownloadNotification
+	}
+	if p.ExpiryReminders != nil {
+		defaults.ExpiryReminders = *p.ExpiryReminders
+	}
+	return defaults
+}
+
+// ── Notification preferences & opt-out ────────────────────────────────────────
+
+// SetNotificationsOptOut sets the global opt-out flag for the user identified by email.
+func (r *UserRepository) SetNotificationsOptOut(ctx context.Context, email string, optOut bool) error {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE auth.users SET notifications_opt_out = $2, updated_at = now()
+		WHERE email = $1
+	`, email, optOut)
+	if err != nil {
+		return apperrors.Internal("set notifications opt out", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperrors.NotFound("user not found")
+	}
+	return nil
+}
+
+// UpdateNotificationPrefs stores the user's fine-grained notification prefs as JSONB.
+func (r *UserRepository) UpdateNotificationPrefs(ctx context.Context, userID string, prefs domain.NotificationPrefs) error {
+	raw, err := json.Marshal(prefs)
+	if err != nil {
+		return apperrors.Internal("marshal notification prefs", err)
+	}
+	_, err = r.db.Exec(ctx, `
+		UPDATE auth.users SET notification_prefs = $2::jsonb, updated_at = now()
+		WHERE id = $1
+	`, userID, raw)
+	if err != nil {
+		return apperrors.Internal("update notification prefs", err)
+	}
+	return nil
+}
+
+// GetNotificationStatus returns the opt-out flag and prefs for a user looked up by email.
+// Used by the notification service internal endpoint.
+func (r *UserRepository) GetNotificationStatus(ctx context.Context, email string) (optOut bool, prefs domain.NotificationPrefs, err error) {
+	var prefsJSON []byte
+	qErr := r.db.QueryRow(ctx, `
+		SELECT notifications_opt_out, notification_prefs FROM auth.users WHERE email = $1
+	`, email).Scan(&optOut, &prefsJSON)
+	if qErr != nil {
+		if errors.Is(qErr, pgx.ErrNoRows) {
+			return false, domain.DefaultNotificationPrefs(), nil // unknown user → send by default
+		}
+		return false, domain.DefaultNotificationPrefs(), apperrors.Internal("get notification status", qErr)
+	}
+	prefs = parseNotificationPrefs(prefsJSON)
+	return optOut, prefs, nil
 }

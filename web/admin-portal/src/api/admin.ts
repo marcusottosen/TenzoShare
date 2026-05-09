@@ -431,6 +431,36 @@ export interface BrandingConfig {
   dm_page_bg_color: string | null;
   dm_surface_color: string | null;
   dm_text_color: string | null;
+  // Email white-label
+  email_sender_name: string;
+  email_support_email: string;
+  email_footer_text: string;
+  email_subject_prefix: string;
+  email_header_link: string;
+  // Email colors & reply-to (migration 008)
+  email_reply_to: string;
+  email_button_color: string;
+  email_button_text_color: string;
+  email_body_bg_color: string;
+  email_card_bg_color: string;
+  email_card_border_color: string;
+  email_heading_color: string;
+  email_text_color: string;
+  // Per-type subjects
+  subject_transfer_received: string;
+  subject_password_reset: string;
+  subject_email_verification: string;
+  subject_download_notification: string;
+  subject_expiry_reminder: string;
+  subject_transfer_revoked: string;
+  subject_request_submission: string;
+  // Per-type CTA button text
+  cta_transfer_received: string;
+  cta_download_notification: string;
+  cta_password_reset: string;
+  cta_email_verification: string;
+  cta_expiry_reminder: string;
+  cta_request_submission: string;
 }
 
 export async function getBranding(): Promise<BrandingConfig> {
@@ -456,6 +486,36 @@ export async function updateBranding(body: {
   dm_surface_color?: string;
   dm_text_color?: string;
   clear_dark_mode?: boolean;
+  // Email white-label
+  email_sender_name?: string;
+  email_support_email?: string;
+  email_footer_text?: string;
+  email_subject_prefix?: string;
+  email_header_link?: string;
+  // Email colors & reply-to (migration 008)
+  email_reply_to?: string;
+  email_button_color?: string;
+  email_button_text_color?: string;
+  email_body_bg_color?: string;
+  email_card_bg_color?: string;
+  email_card_border_color?: string;
+  email_heading_color?: string;
+  email_text_color?: string;
+  // Per-type subjects
+  subject_transfer_received?: string;
+  subject_password_reset?: string;
+  subject_email_verification?: string;
+  subject_download_notification?: string;
+  subject_expiry_reminder?: string;
+  subject_transfer_revoked?: string;
+  subject_request_submission?: string;
+  // Per-type CTA button text
+  cta_transfer_received?: string;
+  cta_download_notification?: string;
+  cta_password_reset?: string;
+  cta_email_verification?: string;
+  cta_expiry_reminder?: string;
+  cta_request_submission?: string;
 }): Promise<BrandingConfig> {
   return request<BrandingConfig>('/admin/branding', {
     method: 'PUT',

@@ -191,11 +191,41 @@ func (r *stubUserRepo) UpdatePreferences(_ context.Context, _ string, _, _, _ *s
 	return r.err
 }
 
-func (r *stubUserRepo) GetLockoutConfig(_ context.Context) (int, time.Duration, bool, error) {
-	return 10, 15 * time.Minute, false, nil
+func (r *stubUserRepo) GetLockoutConfig(_ context.Context) (int, time.Duration, bool, bool, error) {
+	return 10, 15 * time.Minute, false, false, nil
 }
 
 func (r *stubUserRepo) DisableMFA(_ context.Context, _ string) error { return r.err }
+
+func (r *stubUserRepo) StoreEmailVerificationToken(_ context.Context, _, _ string, _ time.Time) error {
+	return r.err
+}
+
+func (r *stubUserRepo) ConsumeEmailVerificationToken(_ context.Context, _ string) (string, error) {
+	if r.err != nil {
+		return "", r.err
+	}
+	return "", nil
+}
+
+func (r *stubUserRepo) SetEmailVerified(_ context.Context, _ string) error { return r.err }
+
+func (r *stubUserRepo) SetNotificationsOptOut(_ context.Context, _ string, _ bool) error {
+	return r.err
+}
+func (r *stubUserRepo) UpdateNotificationPrefs(_ context.Context, _ string, _ domain.NotificationPrefs) error {
+	return r.err
+}
+func (r *stubUserRepo) GetNotificationStatus(_ context.Context, email string) (bool, domain.NotificationPrefs, error) {
+	if r.err != nil {
+		return false, domain.NotificationPrefs{}, r.err
+	}
+	u, ok := r.users[email]
+	if !ok {
+		return false, domain.DefaultNotificationPrefs(), nil
+	}
+	return u.NotificationsOptOut, u.NotificationPrefs, nil
+}
 
 // ── test helpers ──────────────────────────────────────────────────────────────
 

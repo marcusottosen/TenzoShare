@@ -43,6 +43,9 @@ yarn-error.log*
 *.key
 acme.json
 
+# Local dev tooling (not for production or CI)
+infrastructure/docker/docker-compose.mailhog.yml
+
 # Local Persistence (Docker Volumes)
 *_data/
 /postgres_data/

@@ -58,6 +58,8 @@ CREATE TABLE IF NOT EXISTS auth.users (
     date_format            TEXT        CHECK (date_format IN ('ISO', 'EU', 'US', 'DE', 'LONG')),
     time_format            TEXT        CHECK (time_format IN ('12h', '24h')),
     timezone               TEXT,
+    notifications_opt_out  BOOL        NOT NULL DEFAULT false,
+    notification_prefs     JSONB       NOT NULL DEFAULT '{}',
     created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT users_email_unique UNIQUE (email),
@@ -120,19 +122,28 @@ CREATE INDEX IF NOT EXISTS api_keys_user_idx ON auth.api_keys (user_id);
 CREATE INDEX IF NOT EXISTS api_keys_hash_idx ON auth.api_keys (key_hash);
 
 CREATE TABLE IF NOT EXISTS auth.auth_settings (
-    id                       INT         PRIMARY KEY DEFAULT 1,
-    max_failed_attempts      INT         NOT NULL DEFAULT 10,
-    lockout_duration_minutes INT         NOT NULL DEFAULT 15,
-    require_mfa              BOOLEAN     NOT NULL DEFAULT false,
-    updated_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+    id                           INT         PRIMARY KEY DEFAULT 1,
+    max_failed_attempts          INT         NOT NULL DEFAULT 10,
+    lockout_duration_minutes     INT         NOT NULL DEFAULT 15,
+    require_mfa                  BOOLEAN     NOT NULL DEFAULT false,
+    require_email_verification   BOOLEAN     NOT NULL DEFAULT false,
+    updated_at                   TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT auth_settings_singleton CHECK (id = 1)
 );
-INSERT INTO auth.auth_settings (id, max_failed_attempts, lockout_duration_minutes, require_mfa)
-VALUES (1, 10, 15, false) ON CONFLICT (id) DO NOTHING;
+INSERT INTO auth.auth_settings (id, max_failed_attempts, lockout_duration_minutes, require_mfa, require_email_verification)
+VALUES (1, 10, 15, false, false) ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS auth.email_verifications (
+    token      TEXT        PRIMARY KEY,
+    user_id    UUID        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ev_user_idx ON auth.email_verifications (user_id);
 
 -- Mark all auth migrations applied so service startup skips re-running them.
 INSERT INTO auth.schema_migrations (name) VALUES
-  ('001_init.sql'), ('002_phase1.sql'), ('003_last_login.sql'), ('004_auth_settings.sql'), ('005_user_preferences.sql'), ('006_mfa_settings.sql')
+  ('001_init.sql'), ('002_phase1.sql'), ('003_last_login.sql'), ('004_auth_settings.sql'), ('005_user_preferences.sql'), ('006_mfa_settings.sql'), ('007_email_verifications.sql'), ('008_notification_prefs.sql')
 ON CONFLICT DO NOTHING;
 
 -- =============================================================================
@@ -158,6 +169,7 @@ CREATE TABLE IF NOT EXISTS transfer.transfers (
     description     TEXT        NOT NULL DEFAULT '',
     sender_email    TEXT        NOT NULL DEFAULT '',
     view_only       BOOLEAN     NOT NULL DEFAULT false,
+    reminder_sent_at TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_transfers_owner   ON transfer.transfers (owner_id);
@@ -210,7 +222,8 @@ CREATE INDEX IF NOT EXISTS idx_file_dl_counts_transfer ON transfer.file_download
 
 INSERT INTO transfer.schema_migrations (name) VALUES
   ('001_init.sql'), ('002_add_name_description.sql'), ('003_file_requests.sql'),
-  ('004_sender_email.sql'), ('005_file_download_counts.sql'), ('006_view_only.sql')
+  ('004_sender_email.sql'), ('005_file_download_counts.sql'), ('006_view_only.sql'),
+  ('007_reminder_sent_at.sql')
 ON CONFLICT DO NOTHING;
 
 -- =============================================================================
@@ -366,6 +379,32 @@ CREATE TABLE IF NOT EXISTS admin_svc.branding_settings (
     dm_page_bg_color   VARCHAR(7),
     dm_surface_color   VARCHAR(7),
     dm_text_color      VARCHAR(7),
+    email_sender_name    TEXT        NOT NULL DEFAULT '',
+    email_support_email  TEXT        NOT NULL DEFAULT '',
+    email_footer_text    TEXT        NOT NULL DEFAULT '',
+    email_subject_prefix TEXT        NOT NULL DEFAULT '',
+    email_header_link    TEXT        NOT NULL DEFAULT '',
+    email_reply_to               TEXT NOT NULL DEFAULT '',
+    email_button_color           TEXT NOT NULL DEFAULT '',
+    email_button_text_color      TEXT NOT NULL DEFAULT '',
+    email_body_bg_color          TEXT NOT NULL DEFAULT '',
+    email_card_bg_color          TEXT NOT NULL DEFAULT '',
+    email_card_border_color      TEXT NOT NULL DEFAULT '',
+    email_heading_color          TEXT NOT NULL DEFAULT '',
+    email_text_color             TEXT NOT NULL DEFAULT '',
+    email_subject_transfer_received     TEXT NOT NULL DEFAULT '',
+    email_subject_password_reset        TEXT NOT NULL DEFAULT '',
+    email_subject_email_verification    TEXT NOT NULL DEFAULT '',
+    email_subject_download_notification TEXT NOT NULL DEFAULT '',
+    email_subject_expiry_reminder       TEXT NOT NULL DEFAULT '',
+    email_subject_transfer_revoked      TEXT NOT NULL DEFAULT '',
+    email_subject_request_submission    TEXT NOT NULL DEFAULT '',
+    email_cta_transfer_received     TEXT NOT NULL DEFAULT '',
+    email_cta_download_notification  TEXT NOT NULL DEFAULT '',
+    email_cta_password_reset         TEXT NOT NULL DEFAULT '',
+    email_cta_email_verification     TEXT NOT NULL DEFAULT '',
+    email_cta_expiry_reminder        TEXT NOT NULL DEFAULT '',
+    email_cta_request_submission     TEXT NOT NULL DEFAULT '',
     updated_at         TIMESTAMPTZ  NOT NULL DEFAULT now(),
     CONSTRAINT branding_settings_singleton CHECK (id = 1)
 );
@@ -376,6 +415,8 @@ CREATE TABLE IF NOT EXISTS admin_svc.platform_settings (
     date_format TEXT        NOT NULL DEFAULT 'EU',
     time_format TEXT        NOT NULL DEFAULT '24h',
     timezone    TEXT        NOT NULL DEFAULT 'UTC',
+    portal_url  TEXT        NOT NULL DEFAULT '',
+    download_url TEXT       NOT NULL DEFAULT '',
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT platform_settings_singleton   CHECK (id = 1),
     CONSTRAINT platform_settings_date_format CHECK (date_format IN ('ISO', 'EU', 'US', 'DE', 'LONG')),
@@ -383,6 +424,19 @@ CREATE TABLE IF NOT EXISTS admin_svc.platform_settings (
 );
 INSERT INTO admin_svc.platform_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
 
+CREATE TABLE IF NOT EXISTS admin_svc.smtp_settings (
+    id                INT     PRIMARY KEY DEFAULT 1,
+    smtp_host         TEXT    NOT NULL DEFAULT '',
+    smtp_port         TEXT    NOT NULL DEFAULT '1025',
+    smtp_username     TEXT    NOT NULL DEFAULT '',
+    smtp_password_enc TEXT             DEFAULT NULL,
+    smtp_from         TEXT    NOT NULL DEFAULT '',
+    smtp_use_tls      BOOL    NOT NULL DEFAULT false,
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT smtp_settings_singleton CHECK (id = 1)
+);
+INSERT INTO admin_svc.smtp_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
+
 INSERT INTO admin_svc.schema_migrations (name) VALUES
-  ('001_branding_settings.sql'), ('002_branding_extend.sql'), ('003_branding_dark_mode.sql'), ('004_platform_settings.sql')
+  ('001_branding_settings.sql'), ('002_branding_extend.sql'), ('003_branding_dark_mode.sql'), ('004_platform_settings.sql'), ('005_smtp_settings.sql'), ('006_platform_urls.sql'), ('007_email_branding.sql'), ('008_email_content.sql')
 ON CONFLICT DO NOTHING;

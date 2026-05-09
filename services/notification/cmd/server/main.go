@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	stdlog "log"
 	"os"
 	"os/signal"
@@ -47,14 +48,48 @@ func main() {
 		log.Warn("failed to ensure NATS streams", zap.Error(err))
 	}
 
+	// Branding fetcher — reads from admin service, cached 5 min.
+	// Non-fatal: defaults are used when admin is unreachable.
+	adminURL := getEnvOr("ADMIN_SERVICE_URL", "http://tenzoshare-admin:8087")
+	branding := email.NewBrandingFetcher(adminURL, log)
+	go branding.Get() // warm up cache in background
+
 	// Email sender
-	sender := email.New(cfg.SMTP, log)
+	sender := email.New(cfg.SMTP, log, branding)
 
 	// NATS consumer — runs in background goroutine
-	cons := consumer.New(jsClient, sender, log)
+	authServiceURL := getEnvOr("AUTH_SERVICE_URL", "http://tenzoshare-auth:8081")
+	cons := consumer.New(jsClient, sender, log, cfg.App.Pepper, cfg.App.BaseURL, authServiceURL, adminURL)
 	go func() {
 		if err := cons.Start(ctx); err != nil {
 			log.Error("notification consumer exited with error", zap.Error(err))
+		}
+	}()
+
+	// CONFIG.smtp subscriber — receives live SMTP config updates from the admin service.
+	// Uses DeliverLastPolicy so the sender is updated immediately on (re)start if the
+	// admin has previously saved SMTP settings.
+	go func() {
+		err := jsClient.SubscribeLast(ctx, "CONFIG", "notification-smtp-config", "CONFIG.smtp",
+			func(_ string, data []byte) error {
+				var update smtpConfigUpdate
+				if err := json.Unmarshal(data, &update); err != nil {
+					log.Warn("failed to parse CONFIG.smtp message", zap.Error(err))
+					return nil // don't NAK — bad message would loop
+				}
+				sender.UpdateConfig(config.SMTPConfig{
+					Host:     update.Host,
+					Port:     update.Port,
+					Username: update.Username,
+					Password: update.Password,
+					From:     update.From,
+					UseTLS:   update.UseTLS,
+				})
+				return nil
+			},
+		)
+		if err != nil {
+			log.Warn("CONFIG.smtp subscriber exited", zap.Error(err))
 		}
 	}()
 
@@ -94,4 +129,14 @@ func getEnvOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// smtpConfigUpdate is the payload published by the admin service to CONFIG.smtp.
+type smtpConfigUpdate struct {
+	Host     string `json:"host"`
+	Port     string `json:"port"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	From     string `json:"from"`
+	UseTLS   bool   `json:"use_tls"`
 }

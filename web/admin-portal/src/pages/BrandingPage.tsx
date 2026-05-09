@@ -87,6 +87,12 @@ export default function BrandingPage() {
   const [logoChanged, setLogoChanged] = useState(false);
   const [clearLogo, setClearLogo] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  // Email white-label state
+  const [emailSenderName, setEmailSenderName] = useState('');
+  const [emailSupportEmail, setEmailSupportEmail] = useState('');
+  const [emailFooterText, setEmailFooterText] = useState('');
+  const [emailSubjectPrefix, setEmailSubjectPrefix] = useState('');
+  const [emailHeaderLink, setEmailHeaderLink] = useState('');
 
   useEffect(() => {
     setLoading(true);
@@ -110,6 +116,12 @@ export default function BrandingPage() {
         setDmSurfaceColor(c.dm_surface_color ?? DM_DEFAULTS.dm_surface_color);
         setDmTextColor(c.dm_text_color ?? DM_DEFAULTS.dm_text_color);
         setLogoPreview(c.logo_data_url ?? null);
+        // Email white-label
+        setEmailSenderName(c.email_sender_name ?? '');
+        setEmailSupportEmail(c.email_support_email ?? '');
+        setEmailFooterText(c.email_footer_text ?? '');
+        setEmailSubjectPrefix(c.email_subject_prefix ?? '');
+        setEmailHeaderLink(c.email_header_link ?? '');
       })
       .catch(() => setError('Failed to load branding settings.'))
       .finally(() => setLoading(false));
@@ -183,6 +195,12 @@ export default function BrandingPage() {
       } else if (logoChanged && logoPreview) {
         body.logo_data_url = logoPreview;
       }
+      // Email white-label fields (always send, empty string clears them)
+      body.email_sender_name = emailSenderName.trim();
+      body.email_support_email = emailSupportEmail.trim();
+      body.email_footer_text = emailFooterText.trim();
+      body.email_subject_prefix = emailSubjectPrefix.trim();
+      body.email_header_link = emailHeaderLink.trim();
       const updated = await updateBranding(body);
       setConfig(updated);
       setLogoChanged(false);

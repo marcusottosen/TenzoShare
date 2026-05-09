@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { isDarkMode, setDarkMode } from '../branding';
 import { getPlatformConfig } from '../api/platform';
-import { updatePreferences, getMe } from '../api/auth';
+import { updatePreferences, getMe, getNotificationPrefs, updateNotificationPrefs, type NotificationPrefs } from '../api/auth';
 import {
   setActivePrefs, getActivePrefs, COMMON_TIMEZONES,
   type DateFormat, type TimeFormat,
@@ -54,10 +54,19 @@ export default function SettingsPage() {
   const [prefsSaved, setPrefsSaved] = useState(false);
   const [prefsError, setPrefsError] = useState<string | null>(null);
 
+  // Notification prefs
+  const [notifPrefs, setNotifPrefs] = useState<NotificationPrefs | null>(null);
+  const [savingNotif, setSavingNotif] = useState(false);
+  const [notifSaved, setNotifSaved] = useState(false);
+  const [notifError, setNotifError] = useState<string | null>(null);
+
   useEffect(() => {
-    // Load system defaults and current user prefs
-    Promise.all([getPlatformConfig().catch(() => null), getMe().catch(() => null)])
-      .then(([sys, me]) => {
+    // Load system defaults, current user prefs, and notification prefs
+    Promise.all([
+      getPlatformConfig().catch(() => null),
+      getMe().catch(() => null),
+      getNotificationPrefs().catch(() => null),
+    ]).then(([sys, me, notif]) => {
         if (sys) {
           setSysDefault({ dateFormat: sys.date_format, timeFormat: sys.time_format, timezone: sys.timezone });
         }
@@ -65,6 +74,7 @@ export default function SettingsPage() {
         setDateFormat((me?.date_format as DateFormat) ?? '');
         setTimeFormat((me?.time_format as TimeFormat) ?? '');
         setTimezone(me?.timezone ?? '');
+        if (notif) setNotifPrefs(notif);
       });
   }, []);
 
@@ -102,6 +112,28 @@ export default function SettingsPage() {
   }
 
   const sysFallback = sysDefault ? `System default: ${sysDefault.dateFormat}` : '';
+
+  async function handleSaveNotifPrefs(e: React.FormEvent) {
+    e.preventDefault();
+    if (!notifPrefs) return;
+    setSavingNotif(true);
+    setNotifError(null);
+    setNotifSaved(false);
+    try {
+      const updated = await updateNotificationPrefs(notifPrefs);
+      setNotifPrefs(updated);
+      setNotifSaved(true);
+      setTimeout(() => setNotifSaved(false), 3000);
+    } catch {
+      setNotifError('Failed to save notification preferences.');
+    } finally {
+      setSavingNotif(false);
+    }
+  }
+
+  function toggleNotifPref(key: keyof NotificationPrefs) {
+    setNotifPrefs(prev => prev ? { ...prev, [key]: !prev[key] } : prev);
+  }
 
   return (
     <div className="page">
@@ -211,26 +243,76 @@ export default function SettingsPage() {
       {/* Notifications */}
       <div className="card">
         <div className="card-header" style={{ marginBottom: 4 }}>
-          <h2 className="card-title">Notifications <ComingSoonBadge /></h2>
+          <h2 className="card-title">Notifications</h2>
         </div>
-        <SettingRow label="Download alerts" description="Receive an email when someone downloads one of your transfers.">
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'not-allowed', opacity: 0.45 }}>
-            <input type="checkbox" disabled style={{ width: 16, height: 16 }} />
-            <span style={{ fontSize: 13 }}>Notify me</span>
-          </label>
-        </SettingRow>
-        <SettingRow label="Transfer expiry reminders" description="Get a heads-up before a transfer link expires.">
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'not-allowed', opacity: 0.45 }}>
-            <input type="checkbox" disabled style={{ width: 16, height: 16 }} />
-            <span style={{ fontSize: 13 }}>Notify me</span>
-          </label>
-        </SettingRow>
-        <SettingRow label="File request submissions" description="Email me when someone submits files to one of your requests.">
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'not-allowed', opacity: 0.45 }}>
-            <input type="checkbox" disabled style={{ width: 16, height: 16 }} />
-            <span style={{ fontSize: 13 }}>Notify me</span>
-          </label>
-        </SettingRow>
+        {notifPrefs === null ? (
+          <p style={{ fontSize: 13, color: 'var(--color-text-muted)', padding: '12px 0' }}>Loading…</p>
+        ) : (
+          <form onSubmit={handleSaveNotifPrefs}>
+            {notifError && (
+              <div style={{ background: 'var(--color-error-bg, #fee2e2)', color: 'var(--color-error, #dc2626)', borderRadius: 6, padding: '8px 12px', fontSize: 13, marginBottom: 12 }}>
+                {notifError}
+              </div>
+            )}
+            {notifSaved && (
+              <div style={{ background: 'var(--color-success-bg, #dcfce7)', color: 'var(--color-success, #16a34a)', borderRadius: 6, padding: '8px 12px', fontSize: 13, marginBottom: 12 }}>
+                Notification preferences saved.
+              </div>
+            )}
+            <SettingRow label="Unsubscribe from all emails" description="Opt out of all non-essential notification emails.">
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={notifPrefs.notifications_opt_out}
+                  onChange={() => toggleNotifPref('notifications_opt_out')}
+                  style={{ width: 16, height: 16 }}
+                />
+                <span style={{ fontSize: 13 }}>Unsubscribe</span>
+              </label>
+            </SettingRow>
+            <SettingRow label="Transfer received" description="Email when someone sends you a transfer.">
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: notifPrefs.notifications_opt_out ? 'not-allowed' : 'pointer', opacity: notifPrefs.notifications_opt_out ? 0.45 : 1 }}>
+                <input
+                  type="checkbox"
+                  checked={notifPrefs.transfer_received}
+                  disabled={notifPrefs.notifications_opt_out}
+                  onChange={() => toggleNotifPref('transfer_received')}
+                  style={{ width: 16, height: 16 }}
+                />
+                <span style={{ fontSize: 13 }}>Notify me</span>
+              </label>
+            </SettingRow>
+            <SettingRow label="Download alerts" description="Email when someone downloads one of your transfers.">
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: notifPrefs.notifications_opt_out ? 'not-allowed' : 'pointer', opacity: notifPrefs.notifications_opt_out ? 0.45 : 1 }}>
+                <input
+                  type="checkbox"
+                  checked={notifPrefs.download_notification}
+                  disabled={notifPrefs.notifications_opt_out}
+                  onChange={() => toggleNotifPref('download_notification')}
+                  style={{ width: 16, height: 16 }}
+                />
+                <span style={{ fontSize: 13 }}>Notify me</span>
+              </label>
+            </SettingRow>
+            <SettingRow label="Expiry reminders" description="Email before a transfer link expires.">
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: notifPrefs.notifications_opt_out ? 'not-allowed' : 'pointer', opacity: notifPrefs.notifications_opt_out ? 0.45 : 1 }}>
+                <input
+                  type="checkbox"
+                  checked={notifPrefs.expiry_reminders}
+                  disabled={notifPrefs.notifications_opt_out}
+                  onChange={() => toggleNotifPref('expiry_reminders')}
+                  style={{ width: 16, height: 16 }}
+                />
+                <span style={{ fontSize: 13 }}>Notify me</span>
+              </label>
+            </SettingRow>
+            <div style={{ marginTop: 16, display: 'flex', gap: 10 }}>
+              <button type="submit" className="btn btn-primary" disabled={savingNotif}>
+                {savingNotif ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </form>
+        )}
       </div>
     </div>
   );

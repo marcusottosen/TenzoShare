@@ -43,10 +43,14 @@ func (r *RequestRepository) Create(ctx context.Context, req *domain.FileRequest)
 func (r *RequestRepository) GetBySlug(ctx context.Context, slug string) (*domain.FileRequest, error) {
 	var out domain.FileRequest
 	err := r.db.QueryRow(ctx, `
-		SELECT id, owner_id, slug, name, description, allowed_types, max_size_mb, max_files, expires_at, is_active, created_at
-		FROM transfer.file_requests WHERE slug = $1
+		SELECT fr.id, fr.owner_id, COALESCE(u.email, '') AS owner_email,
+		       fr.slug, fr.name, fr.description, fr.allowed_types,
+		       fr.max_size_mb, fr.max_files, fr.expires_at, fr.is_active, fr.created_at
+		FROM transfer.file_requests fr
+		LEFT JOIN auth.users u ON u.id = fr.owner_id
+		WHERE fr.slug = $1
 	`, slug).Scan(
-		&out.ID, &out.OwnerID, &out.Slug, &out.Name, &out.Description,
+		&out.ID, &out.OwnerID, &out.OwnerEmail, &out.Slug, &out.Name, &out.Description,
 		&out.AllowedTypes, &out.MaxSizeMB, &out.MaxFiles, &out.ExpiresAt, &out.IsActive, &out.CreatedAt,
 	)
 	if err != nil {
@@ -59,10 +63,14 @@ func (r *RequestRepository) GetBySlug(ctx context.Context, slug string) (*domain
 func (r *RequestRepository) GetByID(ctx context.Context, id string) (*domain.FileRequest, error) {
 	var out domain.FileRequest
 	err := r.db.QueryRow(ctx, `
-		SELECT id, owner_id, slug, name, description, allowed_types, max_size_mb, max_files, expires_at, is_active, created_at
-		FROM transfer.file_requests WHERE id = $1
+		SELECT fr.id, fr.owner_id, COALESCE(u.email, '') AS owner_email,
+		       fr.slug, fr.name, fr.description, fr.allowed_types,
+		       fr.max_size_mb, fr.max_files, fr.expires_at, fr.is_active, fr.created_at
+		FROM transfer.file_requests fr
+		LEFT JOIN auth.users u ON u.id = fr.owner_id
+		WHERE fr.id = $1
 	`, id).Scan(
-		&out.ID, &out.OwnerID, &out.Slug, &out.Name, &out.Description,
+		&out.ID, &out.OwnerID, &out.OwnerEmail, &out.Slug, &out.Name, &out.Description,
 		&out.AllowedTypes, &out.MaxSizeMB, &out.MaxFiles, &out.ExpiresAt, &out.IsActive, &out.CreatedAt,
 	)
 	if err != nil {

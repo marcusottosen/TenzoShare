@@ -8,6 +8,7 @@ import "time"
 type FileRequest struct {
 	ID              string
 	OwnerID         string
+	OwnerEmail      string // joined from auth.users at read time; not stored in transfer schema
 	Slug            string
 	Name            string
 	Description     string

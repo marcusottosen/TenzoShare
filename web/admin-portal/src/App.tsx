@@ -16,6 +16,8 @@ import LogRetentionPage from './pages/LogRetentionPage';
 import SecuritySettingsPage from './pages/SecuritySettingsPage';
 import BrandingPage from './pages/BrandingPage';
 import GeneralSettingsPage from './pages/GeneralSettingsPage';
+import SmtpSettingsPage from './pages/SmtpSettingsPage';
+import EmailContentPage from './pages/EmailContentPage';
 
 export default function App() {
   return (
@@ -38,6 +40,8 @@ export default function App() {
               <Route path="/storage" element={<StorageSettingsPage />} />
               <Route path="/storage/files" element={<StorageFilesPage />} />
               <Route path="/storage/insights" element={<StorageInsightsPage />} />
+              <Route path="/email" element={<SmtpSettingsPage />} />
+              <Route path="/email/content" element={<EmailContentPage />} />
             </Route>
           </Route>
 

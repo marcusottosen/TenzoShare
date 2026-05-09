@@ -20,6 +20,8 @@ export default function GeneralSettingsPage() {
   const [dateFormat, setDateFormat] = useState<DateFormat>('EU');
   const [timeFormat, setTimeFormat] = useState<TimeFormat>('24h');
   const [timezone, setTimezone] = useState('UTC');
+  const [portalUrl, setPortalUrl] = useState('');
+  const [downloadUrl, setDownloadUrl] = useState('');
 
   useEffect(() => {
     getPlatformConfig()
@@ -28,6 +30,8 @@ export default function GeneralSettingsPage() {
         setDateFormat(c.date_format);
         setTimeFormat(c.time_format);
         setTimezone(c.timezone);
+        setPortalUrl(c.portal_url ?? '');
+        setDownloadUrl(c.download_url ?? '');
       })
       .catch(() => setError('Failed to load platform settings.'));
   }, []);
@@ -38,9 +42,11 @@ export default function GeneralSettingsPage() {
     setError(null);
     setSaved(false);
     try {
-      const updated = await updatePlatformConfig({ date_format: dateFormat, time_format: timeFormat, timezone });
+      const updated = await updatePlatformConfig({ date_format: dateFormat, time_format: timeFormat, timezone, portal_url: portalUrl, download_url: downloadUrl });
       setConfig(updated);
       setActivePrefs({ dateFormat: updated.date_format, timeFormat: updated.time_format, timezone: updated.timezone });
+      setPortalUrl(updated.portal_url ?? '');
+      setDownloadUrl(updated.download_url ?? '');
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch {
@@ -66,7 +72,7 @@ export default function GeneralSettingsPage() {
       <div className="page-header">
         <div>
           <h1 className="page-title">General Settings</h1>
-          <p className="page-subtitle">System-wide defaults for date, time, and timezone formatting.</p>
+          <p className="page-subtitle">System-wide defaults for date, time, timezone, and platform URLs.</p>
         </div>
       </div>
 
@@ -154,6 +160,49 @@ export default function GeneralSettingsPage() {
           <button type="submit" className="btn btn-primary" disabled={saving}>
             {saving ? 'Saving…' : 'Save changes'}
           </button>
+        </div>
+
+        <div className="card" style={{ marginTop: 20, marginBottom: 20 }}>
+          <div className="card-header">
+            <h2 className="card-title">Platform URLs</h2>
+            <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginTop: 2 }}>
+              Base URLs used when building links in outgoing emails. Leave blank to fall back to the server's configured defaults.
+            </p>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20, marginTop: 16 }}>
+            <div>
+              <label className="form-label" htmlFor="portal_url">Portal URL</label>
+              <input
+                id="portal_url"
+                type="url"
+                className="form-input"
+                value={portalUrl}
+                onChange={(e) => setPortalUrl(e.target.value)}
+                placeholder="https://app.example.com"
+                style={{ maxWidth: 480 }}
+              />
+              <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>
+                Used in email-verification and password-reset links (user portal). Example: <code>http://192.168.10.150:3000</code>
+              </p>
+            </div>
+
+            <div>
+              <label className="form-label" htmlFor="download_url">Download URL</label>
+              <input
+                id="download_url"
+                type="url"
+                className="form-input"
+                value={downloadUrl}
+                onChange={(e) => setDownloadUrl(e.target.value)}
+                placeholder="https://app.example.com"
+                style={{ maxWidth: 480 }}
+              />
+              <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>
+                Used in transfer download links. Example: <code>http://192.168.10.150:3003</code>
+              </p>
+            </div>
+          </div>
         </div>
 
         {config.updated_at && (

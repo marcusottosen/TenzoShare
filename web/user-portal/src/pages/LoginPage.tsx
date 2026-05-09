@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router';
-import { login, storeTokens, getMe } from '../api/auth';
+import { login, storeTokens, getMe, resendVerificationEmail } from '../api/auth';
 import { useAuth } from '../stores/auth';
 import { getLogoUrl } from '../branding';
 import { setTokens } from '../api/client';
@@ -10,12 +10,16 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [emailNotVerified, setEmailNotVerified] = useState(false);
+  const [resendStatus, setResendStatus] = useState<'idle' | 'sending' | 'sent'>('idle');
   const { setUser } = useAuth();
   const navigate = useNavigate();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
+    setEmailNotVerified(false);
+    setResendStatus('idle');
     setLoading(true);
     try {
       const result = await login(email, password);
@@ -37,9 +41,23 @@ export default function LoginPage() {
         navigate('/');
       }
     } catch (err: any) {
-      setError(err.message ?? 'Login failed');
+      if (err?.status === 403 && err?.message === 'email_not_verified') {
+        setEmailNotVerified(true);
+      } else {
+        setError(err.message ?? 'Login failed');
+      }
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleResend() {
+    setResendStatus('sending');
+    try {
+      await resendVerificationEmail(email);
+      setResendStatus('sent');
+    } catch {
+      setResendStatus('idle');
     }
   }
 
@@ -54,6 +72,21 @@ export default function LoginPage() {
         <p className="auth-sub">Sign in to your account to continue</p>
 
         {error && <div className="alert alert-error">{error}</div>}
+
+        {emailNotVerified && (
+          <div className="alert alert-warning" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <span>Your email address has not been verified. Please check your inbox for a verification link.</span>
+            <button
+              type="button"
+              className="btn btn-sm btn-outline"
+              onClick={handleResend}
+              disabled={resendStatus === 'sending' || resendStatus === 'sent'}
+              style={{ alignSelf: 'flex-start' }}
+            >
+              {resendStatus === 'sending' ? 'Sending…' : resendStatus === 'sent' ? '✓ Verification email sent' : 'Resend verification email'}
+            </button>
+          </div>
+        )}
 
         <form onSubmit={handleSubmit}>
           <div className="form-group">

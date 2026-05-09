@@ -120,6 +120,11 @@ func main() {
 	v1.Post("/refresh", h.Refresh)
 	v1.Post("/password-reset/request", h.PasswordResetRequest)
 	v1.Post("/password-reset/confirm", h.PasswordResetConfirm)
+	v1.Get("/verify-email", h.VerifyEmail)
+	v1.Post("/resend-verification", h.ResendVerification)
+	v1.Get("/unsubscribe", h.Unsubscribe) // F1: HMAC-signed token, no auth required
+	// Internal endpoint (no JWT) — notification service checks prefs before sending.
+	v1.Get("/internal/notification-prefs", h.InternalNotificationPrefs)
 
 	// Revocation check middleware — rejects tokens whose JTI is in the Redis blacklist.
 	// If Redis is unavailable cacheClient will be nil and IsTokenRevoked returns false (fail-open).
@@ -139,6 +144,8 @@ func main() {
 	protected.Get("/me", h.Me)
 	protected.Patch("/me", h.UpdateMe)
 	protected.Patch("/me/preferences", h.UpdatePreferences)
+	protected.Get("/me/notification-prefs", h.GetNotificationPrefs)
+	protected.Patch("/me/notification-prefs", h.UpdateNotificationPrefs)
 	// Disable requires the user to already have MFA enabled, so full token is expected.
 	protected.Post("/mfa/disable", h.MFADisable)
 

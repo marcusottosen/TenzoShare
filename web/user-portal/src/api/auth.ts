@@ -121,6 +121,13 @@ export async function confirmPasswordReset(token: string, newPassword: string) {
   });
 }
 
+export async function resendVerificationEmail(email: string) {
+  return request<{ message: string }>('/auth/resend-verification', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+}
+
 export async function listAPIKeys(): Promise<{ keys: APIKey[] }> {
   return request<{ keys: APIKey[] }>('/users/apikeys');
 }
@@ -148,6 +155,28 @@ export interface DatePrefsPayload {
 
 export async function updatePreferences(prefs: DatePrefsPayload): Promise<MeResponse> {
   return request<MeResponse>('/auth/me/preferences', {
+    method: 'PATCH',
+    body: JSON.stringify(prefs),
+  });
+}
+
+// ── Notification preferences (Phase F) ────────────────────────────────────────
+
+export interface NotificationPrefs {
+  notifications_opt_out: boolean;
+  transfer_received: boolean;
+  download_notification: boolean;
+  expiry_reminders: boolean;
+}
+
+export async function getNotificationPrefs(): Promise<NotificationPrefs> {
+  return request<NotificationPrefs>('/auth/me/notification-prefs');
+}
+
+export async function updateNotificationPrefs(
+  prefs: Partial<NotificationPrefs>,
+): Promise<NotificationPrefs> {
+  return request<NotificationPrefs>('/auth/me/notification-prefs', {
     method: 'PATCH',
     body: JSON.stringify(prefs),
   });

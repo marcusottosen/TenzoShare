@@ -5,6 +5,8 @@ export interface PlatformConfig {
   date_format: DateFormat;
   time_format: TimeFormat;
   timezone: string;
+  portal_url: string;
+  download_url: string;
   updated_at?: string;
 }
 

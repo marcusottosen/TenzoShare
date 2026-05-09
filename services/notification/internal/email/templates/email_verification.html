@@ -1,0 +1,39 @@
+{{ define "content" }}
+<p style="margin:0 0 20px;font-size:16px;font-weight:600;color:{{ .HeadingColor }};
+          font-family:Arial,Helvetica,sans-serif;">Verify your email address</p>
+
+<p style="margin:0 0 24px;font-size:15px;color:{{ .TextColor }};line-height:1.7;
+          font-family:Arial,Helvetica,sans-serif;">
+  Thank you for signing up for <strong>{{ .AppName }}</strong>. Please verify
+  your email address to activate your account and start sharing files securely.
+</p>
+
+<!-- CTA button -->
+<table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+  <tr>
+    <td align="center" style="padding:4px 0 28px;">
+      <a href="{{ .VerificationURL }}"
+         style="display:inline-block;background-color:{{ .ButtonColor }};color:{{ .ButtonTextColor }};
+                text-decoration:none;font-size:15px;font-weight:700;padding:13px 32px;
+                border-radius:6px;font-family:Arial,Helvetica,sans-serif;">
+        {{ .CTAButtonText }}
+      </a>
+    </td>
+  </tr>
+</table>
+
+<p style="margin:0 0 8px;font-size:13px;color:#94a3b8;font-family:Arial,Helvetica,sans-serif;">
+  Button not working? Copy and paste this link into your browser:
+</p>
+<p style="margin:0 0 24px;font-size:13px;line-height:1.5;word-break:break-all;
+          font-family:Arial,Helvetica,sans-serif;">
+  <a href="{{ .VerificationURL }}"
+     style="color:#64748b;text-decoration:underline;">{{ .VerificationURL }}</a>
+</p>
+
+<p style="margin:0;font-size:13px;color:#94a3b8;line-height:1.6;
+          font-family:Arial,Helvetica,sans-serif;">
+  This link expires in <strong>24 hours</strong>.
+  If you did not create an account, no action is needed.
+</p>
+{{ end }}

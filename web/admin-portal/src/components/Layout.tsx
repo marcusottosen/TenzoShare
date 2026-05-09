@@ -108,6 +108,14 @@ function IconGlobe() {
     </svg>
   );
 }
+function IconMail() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+      <polyline points="22,6 12,13 2,6"/>
+    </svg>
+  );
+}
 
 const PAGE_TITLES: Record<string, string> = {
   '/': 'System Overview',
@@ -122,6 +130,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/storage/insights': 'Storage Insights',
   '/branding': 'Branding',
   '/general': 'General Settings',
+  '/email': 'Email / SMTP',
 };
 
 function getInitials(email?: string): string {
@@ -214,6 +223,12 @@ export default function Layout() {
           <div className="sidebar-section-label">Configuration</div>
           <NavLink to="/general" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             <IconGlobe /> General Settings
+          </NavLink>
+          <NavLink to="/email" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            <IconMail /> Email / SMTP
+          </NavLink>
+          <NavLink to="/email/content" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'} style={{ paddingLeft: 28 }}>
+            <IconMail /> Email Content
           </NavLink>
           <NavLink to="/branding" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             <IconPalette /> Branding

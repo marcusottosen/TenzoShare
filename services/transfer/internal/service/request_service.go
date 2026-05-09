@@ -173,17 +173,23 @@ func (s *RequestService) Submit(ctx context.Context, p SubmitParams) (*domain.Re
 	}
 
 	// Notify the request owner via NATS (best-effort — never fail the upload on NATS error).
-	if s.js != nil {
-		payload, _ := json.Marshal(map[string]string{
-			"type":      "request_submission",
-			"owner_id":  req.OwnerID,
-			"request":   req.Name,
-			"filename":  p.Header.Filename,
-			"submitter": p.SubmitterName,
+	if s.js != nil && req.OwnerEmail != "" {
+		data, _ := json.Marshal(map[string]any{
+			"RequestName":   req.Name,
+			"Filename":      p.Header.Filename,
+			"SubmitterName": p.SubmitterName,
+			"ReviewURL":     s.cfg.App.BaseURL + "/requests",
 		})
-		if err := s.js.Publish(ctx, "NOTIFICATIONS.email", payload); err != nil {
-			s.log.Warn("failed to publish request_submission notification", zap.Error(err))
+		ev := map[string]any{
+			"type": "request_submission",
+			"to":   []string{req.OwnerEmail},
+			"data": json.RawMessage(data),
 		}
+		go func() {
+			if err := s.js.Publish(ctx, "NOTIFICATIONS.email", ev); err != nil {
+				s.log.Warn("failed to publish request_submission notification", zap.Error(err))
+			}
+		}()
 	}
 
 	return result, nil

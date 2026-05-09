@@ -314,3 +314,42 @@ func (r *TransferRepository) ExpireStale(ctx context.Context) (int64, error) {
 	}
 	return tag.RowsAffected(), nil
 }
+
+// GetTransfersNeedingReminder returns active transfers that expire within the next 24 hours
+// and have not yet had a reminder email sent (reminder_sent_at IS NULL).
+func (r *TransferRepository) GetTransfersNeedingReminder(ctx context.Context) ([]*domain.Transfer, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, owner_id, sender_email, recipient_email, slug, name, expires_at
+		FROM transfer.transfers
+		WHERE is_revoked = FALSE
+		  AND reminder_sent_at IS NULL
+		  AND expires_at IS NOT NULL
+		  AND expires_at > NOW()
+		  AND expires_at <= NOW() + INTERVAL '24 hours'
+	`)
+	if err != nil {
+		return nil, apperrors.Internal("get transfers needing reminder", err)
+	}
+	defer rows.Close()
+
+	var transfers []*domain.Transfer
+	for rows.Next() {
+		var t domain.Transfer
+		if err := rows.Scan(&t.ID, &t.OwnerID, &t.SenderEmail, &t.RecipientEmail, &t.Slug, &t.Name, &t.ExpiresAt); err != nil {
+			return nil, apperrors.Internal("scan transfer for reminder", err)
+		}
+		transfers = append(transfers, &t)
+	}
+	return transfers, rows.Err()
+}
+
+// MarkReminderSent sets reminder_sent_at = NOW() for the given transfer.
+func (r *TransferRepository) MarkReminderSent(ctx context.Context, id string) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE transfer.transfers SET reminder_sent_at = NOW() WHERE id = $1
+	`, id)
+	if err != nil {
+		return apperrors.Internal("mark reminder sent", err)
+	}
+	return nil
+}

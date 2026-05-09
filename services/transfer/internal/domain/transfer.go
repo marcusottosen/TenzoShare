@@ -20,6 +20,7 @@ type Transfer struct {
 	IsExhausted    bool       // true when every file has reached MaxDownloads; populated by repo
 	ExpiresAt      *time.Time // always set; "never" is not permitted
 	IsRevoked      bool
+	ReminderSentAt *time.Time // non-nil when an expiry reminder email has been sent
 	CreatedAt      time.Time
 }
 

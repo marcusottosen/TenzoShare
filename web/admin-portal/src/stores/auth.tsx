@@ -32,6 +32,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         date_format: DEFAULT_PREFS.dateFormat,
         time_format: DEFAULT_PREFS.timeFormat,
         timezone: DEFAULT_PREFS.timezone,
+        portal_url: '',
+        download_url: '',
       }))])
       .then(([me, sys]) => {
         if (me.role !== 'admin') {

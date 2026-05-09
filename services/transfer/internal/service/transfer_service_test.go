@@ -185,6 +185,14 @@ func (r *stubTransferRepo) Revoke(_ context.Context, id, ownerID string) error {
 	return nil
 }
 
+func (r *stubTransferRepo) GetTransfersNeedingReminder(_ context.Context) ([]*domain.Transfer, error) {
+	return nil, r.err
+}
+
+func (r *stubTransferRepo) MarkReminderSent(_ context.Context, _ string) error {
+	return r.err
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func newTestTransferService(repo transferRepository) *TransferService {

@@ -31,6 +31,8 @@ type transferRepository interface {
 	GetFileDownloadCounts(ctx context.Context, transferID string) (map[string]int, error)
 	IncrementDownloads(ctx context.Context, id string) error
 	Revoke(ctx context.Context, id, ownerID string) error
+	GetTransfersNeedingReminder(ctx context.Context) ([]*domain.Transfer, error)
+	MarkReminderSent(ctx context.Context, id string) error
 }
 
 // TransferService handles business logic for creating and accessing transfers.
@@ -154,9 +156,15 @@ func (s *TransferService) publishEmailNotification(ctx context.Context, t *domai
 		expiresAt = t.ExpiresAt.Format(time.RFC1123)
 	}
 
+	senderName := t.SenderEmail
+	if senderName == "" {
+		senderName = "a TenzoShare user"
+	}
 	data, _ := json.Marshal(map[string]any{
-		"SenderName":  "a TenzoShare user",
-		"Title":       t.Slug, // will be replaced with real title field in future
+		"SenderName":  senderName,
+		"Slug":        t.Slug,
+		"Title":       t.Name,
+		"Message":     t.Description,
 		"DownloadURL": downloadURL,
 		"ExpiresAt":   expiresAt,
 		"HasPassword": t.PasswordHash != "",
@@ -170,6 +178,40 @@ func (s *TransferService) publishEmailNotification(ctx context.Context, t *domai
 	go func() {
 		if err := s.js.Publish(ctx, "NOTIFICATIONS.email", ev); err != nil {
 			s.log.Warn("failed to publish email notification", zap.Error(err))
+		}
+	}()
+}
+
+// publishDownloadNotificationEmail notifies the transfer owner when a file is downloaded.
+// Only fires when the owner has an email address and NATS is available.
+// Best-effort: errors are only logged.
+func (s *TransferService) publishDownloadNotificationEmail(ctx context.Context, t *domain.Transfer, fileID string) {
+	if s.js == nil || t.SenderEmail == "" {
+		return
+	}
+
+	downloadURL := s.cfg.App.BaseURL + "/t/" + t.Slug
+	recipientLabel := t.RecipientEmail
+	if recipientLabel == "" {
+		recipientLabel = "a public link visitor"
+	}
+
+	data, _ := json.Marshal(map[string]any{
+		"Title":          t.Name,
+		"Slug":           t.Slug,
+		"RecipientEmail": recipientLabel,
+		"DownloadedAt":   time.Now().UTC().Format(time.RFC1123),
+		"DownloadURL":    downloadURL,
+	})
+
+	ev := map[string]any{
+		"type": "download_notification",
+		"to":   []string{t.SenderEmail},
+		"data": json.RawMessage(data),
+	}
+	go func() {
+		if err := s.js.Publish(ctx, "NOTIFICATIONS.email", ev); err != nil {
+			s.log.Warn("failed to publish download_notification email", zap.Error(err))
 		}
 	}()
 }
@@ -263,6 +305,7 @@ func (s *TransferService) AttemptFileDownload(ctx context.Context, p AttemptFile
 	}()
 
 	s.publishAudit(ctx, "transfer.downloaded", t.OwnerID, t.ID, p.ClientIP)
+	s.publishDownloadNotificationEmail(ctx, t, p.FileID)
 
 	return &AccessResult{Transfer: t, FileIDs: fileIDs}, nil
 }
@@ -319,9 +362,14 @@ func (s *TransferService) Validate(ctx context.Context, p AccessParams) (*Access
 }
 
 func (s *TransferService) Revoke(ctx context.Context, id, ownerID string) error {
+	// Fetch before revoking so we can notify the recipient.
+	t, _ := s.repo.GetByID(ctx, id)
 	err := s.repo.Revoke(ctx, id, ownerID)
 	if err == nil {
 		s.publishAudit(ctx, "transfer.revoked", ownerID, id, "")
+		if t != nil {
+			s.publishRevokedEmail(ctx, t)
+		}
 	}
 	return err
 }
@@ -348,4 +396,73 @@ func (s *TransferService) GetByID(ctx context.Context, id string) (*domain.Trans
 
 func (s *TransferService) List(ctx context.Context, ownerID string, limit, offset int) ([]*domain.Transfer, error) {
 	return s.repo.ListByOwner(ctx, ownerID, limit, offset)
+}
+
+// publishRevokedEmail notifies the transfer recipient (if any) that the transfer was revoked.
+func (s *TransferService) publishRevokedEmail(ctx context.Context, t *domain.Transfer) {
+	if s.js == nil || t.RecipientEmail == "" {
+		return
+	}
+	data, _ := json.Marshal(map[string]any{
+		"Title":       t.Name,
+		"SenderEmail": t.SenderEmail,
+	})
+	ev := map[string]any{
+		"type": "transfer_revoked",
+		"to":   []string{t.RecipientEmail},
+		"data": json.RawMessage(data),
+	}
+	go func() {
+		if err := s.js.Publish(ctx, "NOTIFICATIONS.email", ev); err != nil {
+			s.log.Warn("failed to publish transfer_revoked email", zap.Error(err))
+		}
+	}()
+}
+
+// SendExpiryReminders queries transfers expiring within 24 hours that haven't
+// received a reminder yet and publishes transfer_expiry_reminder email events.
+// Intended to be called from a background goroutine (hourly).
+func (s *TransferService) SendExpiryReminders(ctx context.Context) {
+	if s.js == nil {
+		return
+	}
+	transfers, err := s.repo.GetTransfersNeedingReminder(ctx)
+	if err != nil {
+		s.log.Warn("failed to fetch transfers needing reminder", zap.Error(err))
+		return
+	}
+	for _, t := range transfers {
+		recipient := t.RecipientEmail
+		if recipient == "" {
+			// Public link — notify the sender instead.
+			recipient = t.SenderEmail
+		}
+		if recipient == "" {
+			continue
+		}
+
+		downloadURL := s.cfg.App.BaseURL + "/t/" + t.Slug
+		var expiresAt string
+		if t.ExpiresAt != nil {
+			expiresAt = t.ExpiresAt.Format(time.RFC1123)
+		}
+		data, _ := json.Marshal(map[string]any{
+			"Title":       t.Name,
+			"DownloadURL": downloadURL,
+			"ExpiresAt":   expiresAt,
+		})
+		ev := map[string]any{
+			"type": "transfer_expiry_reminder",
+			"to":   []string{recipient},
+			"data": json.RawMessage(data),
+		}
+		tID := t.ID
+		if err := s.js.Publish(ctx, "NOTIFICATIONS.email", ev); err != nil {
+			s.log.Warn("failed to publish expiry reminder email", zap.String("transfer_id", tID), zap.Error(err))
+			continue
+		}
+		if err := s.repo.MarkReminderSent(ctx, tID); err != nil {
+			s.log.Warn("failed to mark reminder sent", zap.String("transfer_id", tID), zap.Error(err))
+		}
+	}
 }

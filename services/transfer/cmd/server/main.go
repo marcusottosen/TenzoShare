@@ -26,7 +26,6 @@ import (
 	svcmigrations "github.com/tenzoshare/tenzoshare/services/transfer/migrations"
 )
 
-
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -131,6 +130,20 @@ func main() {
 				} else if n > 0 {
 					log.Info("expired stale transfers", zap.Int64("count", n))
 				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Background goroutine: send expiry reminder emails every hour.
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				svc.SendExpiryReminders(ctx)
 			case <-ctx.Done():
 				return
 			}
