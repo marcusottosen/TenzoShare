@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { fmt } from '../utils/dateFormat';
 import {
   listUsers, createUser, updateUser, deleteUser, unlockUser, verifyUserEmail,
-  resetUserPassword, setUserPassword,
+  resetUserPassword, setUserPassword, resetUserMFA,
   listStorageUsage,
   type AdminUser, type StorageUserUsage,
 } from '../api/admin';
@@ -248,6 +248,23 @@ function UserDetailModal({
           <Row label="Last login">
             {user.last_login_at ? fmt(user.last_login_at) : <span style={{ color: 'var(--color-text-muted)' }}>Never</span>}
           </Row>
+          <Row label="MFA (TOTP)">
+            <span className={`badge ${user.mfa_enabled ? 'badge-green' : 'badge-gray'}`} style={{ marginRight: 8 }}>
+              {user.mfa_enabled ? 'Enabled' : 'Disabled'}
+            </span>
+            {user.mfa_enabled && (
+              <button
+                className="btn btn-sm btn-secondary"
+                disabled={busy}
+                onClick={() => act(
+                  () => resetUserMFA(user.id),
+                  () => { patch({ mfa_enabled: false }); flash('MFA reset'); }
+                )}
+              >
+                Reset MFA
+              </button>
+            )}
+          </Row>
 
           {/* ── Password section ── */}
           <div style={{ marginTop: 18, marginBottom: 4 }}>
@@ -487,6 +504,7 @@ export default function UsersPage() {
                 <SortHeader label="User" sortKey="email" sort={sort} />
                 <SortHeader label="Role" sortKey="role" sort={sort} />
                 <SortHeader label="Status" sortKey="is_active" sort={sort} />
+                <th>MFA</th>
                 <th>Storage</th>
                 <SortHeader label="Joined" sortKey="created_at" sort={sort} />
                 <SortHeader label="Last Login" sortKey="last_login_at" sort={sort} />
@@ -513,6 +531,11 @@ export default function UsersPage() {
                       </span>
                       {isLocked(u) && <span className="badge badge-red" style={{ width: 'fit-content' }}>Locked</span>}
                     </div>
+                  </td>
+                  <td>
+                    <span className={`badge ${u.mfa_enabled ? 'badge-green' : 'badge-gray'}`}>
+                      {u.mfa_enabled ? 'On' : 'Off'}
+                    </span>
                   </td>
                   <td className="text-sm">
                     {(() => {

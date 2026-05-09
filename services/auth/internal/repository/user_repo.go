@@ -348,15 +348,24 @@ func (r *UserRepository) UpdatePreferences(ctx context.Context, userID string, d
 	return nil
 }
 
-// GetLockoutConfig returns the current max_failed_attempts and lockout_duration
-// from the auth.auth_settings singleton row.
-func (r *UserRepository) GetLockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration, err error) {
+// GetLockoutConfig returns the current max_failed_attempts, lockout_duration, and
+// require_mfa from the auth.auth_settings singleton row.
+func (r *UserRepository) GetLockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration, requireMFA bool, err error) {
 	var mins int
-	row := r.db.QueryRow(ctx, `SELECT max_failed_attempts, lockout_duration_minutes FROM auth.auth_settings WHERE id = 1`)
-	if err = row.Scan(&maxAttempts, &mins); err != nil {
-		return 10, 15 * time.Minute, nil // safe fallback to previous defaults
+	row := r.db.QueryRow(ctx, `SELECT max_failed_attempts, lockout_duration_minutes, require_mfa FROM auth.auth_settings WHERE id = 1`)
+	if err = row.Scan(&maxAttempts, &mins, &requireMFA); err != nil {
+		return 10, 15 * time.Minute, false, nil // safe fallback to previous defaults
 	}
-	return maxAttempts, time.Duration(mins) * time.Minute, nil
+	return maxAttempts, time.Duration(mins) * time.Minute, requireMFA, nil
+}
+
+// DisableMFA removes the MFA secret row for a user (disabling MFA).
+func (r *UserRepository) DisableMFA(ctx context.Context, userID string) error {
+	_, err := r.db.Exec(ctx, `DELETE FROM auth.mfa_secrets WHERE user_id = $1`, userID)
+	if err != nil {
+		return apperrors.Internal("disable mfa", err)
+	}
+	return nil
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

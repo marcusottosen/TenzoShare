@@ -95,7 +95,7 @@ func deriveSeverity(action string, success bool) string {
 		return "warning"
 	}
 	// Destructive/sensitive actions are "warning" even when they succeed.
-	for _, kw := range []string{"_deleted", "_purged", "_purge", "_revoked", "_terminated", "_banned", "_locked"} {
+	for _, kw := range []string{"_deleted", "_purged", "_purge", "_revoked", "_terminated", "_banned", "_locked", "_mfa_reset", "_password_reset", "_password_set"} {
 		if strings.Contains(action, kw) {
 			return "warning"
 		}

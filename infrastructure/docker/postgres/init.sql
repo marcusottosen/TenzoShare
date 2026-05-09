@@ -123,15 +123,16 @@ CREATE TABLE IF NOT EXISTS auth.auth_settings (
     id                       INT         PRIMARY KEY DEFAULT 1,
     max_failed_attempts      INT         NOT NULL DEFAULT 10,
     lockout_duration_minutes INT         NOT NULL DEFAULT 15,
+    require_mfa              BOOLEAN     NOT NULL DEFAULT false,
     updated_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT auth_settings_singleton CHECK (id = 1)
 );
-INSERT INTO auth.auth_settings (id, max_failed_attempts, lockout_duration_minutes)
-VALUES (1, 10, 15) ON CONFLICT (id) DO NOTHING;
+INSERT INTO auth.auth_settings (id, max_failed_attempts, lockout_duration_minutes, require_mfa)
+VALUES (1, 10, 15, false) ON CONFLICT (id) DO NOTHING;
 
 -- Mark all auth migrations applied so service startup skips re-running them.
 INSERT INTO auth.schema_migrations (name) VALUES
-  ('001_init.sql'), ('002_phase1.sql'), ('003_last_login.sql'), ('004_auth_settings.sql'), ('005_user_preferences.sql')
+  ('001_init.sql'), ('002_phase1.sql'), ('003_last_login.sql'), ('004_auth_settings.sql'), ('005_user_preferences.sql'), ('006_mfa_settings.sql')
 ON CONFLICT DO NOTHING;
 
 -- =============================================================================

@@ -66,7 +66,7 @@ func (h *Handler) Login(c fiber.Ctx) error {
 		return apperrors.Validation(err.Error())
 	}
 
-	pair, user, err := h.svc.Login(c.Context(), req.Email, req.Password, c.IP())
+	pair, user, mfaSetupRequired, err := h.svc.Login(c.Context(), req.Email, req.Password, c.IP())
 	if err != nil {
 		// surface mfa_required as a specific response, not a generic 401
 		if apperrors.IsUnauthorized(err) && err.Error() == "mfa_required" {
@@ -78,7 +78,14 @@ func (h *Handler) Login(c fiber.Ctx) error {
 		return err
 	}
 
-	return c.JSON(tokenResponse(pair))
+	resp := tokenResponse(pair)
+	if mfaSetupRequired {
+		// The token issued here is setup-only (MFASetupRequired=true claim, no refresh).
+		// Remove the empty refresh_token from the response so clients don't try to store it.
+		delete(resp, "refresh_token")
+		resp["mfa_setup_required"] = true
+	}
+	return c.JSON(resp)
 }
 
 // ── Login with MFA ────────────────────────────────────────────────────────────
@@ -160,6 +167,9 @@ func (h *Handler) MFASetup(c fiber.Ctx) error {
 		return err
 	}
 
+	// Prevent the TOTP secret from being cached by browsers or intermediaries.
+	c.Set("Cache-Control", "no-store")
+	c.Set("Pragma", "no-cache")
 	return c.JSON(fiber.Map{
 		"secret":           result.Secret,
 		"provisioning_uri": result.ProvisioningURI,
@@ -186,11 +196,43 @@ func (h *Handler) MFAVerify(c fiber.Ctx) error {
 		return apperrors.Validation(err.Error())
 	}
 
-	if err := h.svc.VerifyMFA(c.Context(), userID, req.OTPCode); err != nil {
+	pair, err := h.svc.VerifyMFA(c.Context(), userID, req.OTPCode)
+	if err != nil {
 		return err
 	}
 
-	return c.JSON(fiber.Map{"mfa_enabled": true})
+	// Return full tokens so clients coming from the mfa_setup_required flow
+	// can immediately start a real session without re-authenticating.
+	resp := tokenResponse(pair)
+	resp["mfa_enabled"] = true
+	return c.JSON(resp)
+}
+
+// ── MFA disable ───────────────────────────────────────────────────────────────
+
+type mfaDisableRequest struct {
+	OTPCode string `json:"otp_code" validate:"required,len=6"`
+}
+
+func (h *Handler) MFADisable(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+
+	var req mfaDisableRequest
+	if err := c.Bind().JSON(&req); err != nil {
+		return apperrors.BadRequest("invalid request body")
+	}
+	if err := validate.Struct(req); err != nil {
+		return apperrors.Validation(err.Error())
+	}
+
+	if err := h.svc.DisableMFA(c.Context(), userID, req.OTPCode); err != nil {
+		return err
+	}
+
+	return c.JSON(fiber.Map{"mfa_enabled": false})
 }
 
 // ── Password reset ────────────────────────────────────────────────────────────

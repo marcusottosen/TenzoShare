@@ -38,6 +38,7 @@ type UserRow struct {
 	Role                string     `json:"role"`
 	IsActive            bool       `json:"is_active"`
 	EmailVerified       bool       `json:"email_verified"`
+	MFAEnabled          bool       `json:"mfa_enabled"`
 	FailedLoginAttempts int        `json:"failed_login_attempts"`
 	LockedUntil         *time.Time `json:"locked_until"`
 	LastLoginAt         *time.Time `json:"last_login_at"`
@@ -192,6 +193,7 @@ func main() {
 	v1.Post("/users/:id/verify", handleVerifyEmail)
 	v1.Post("/users/:id/reset-password", handleResetPassword)
 	v1.Post("/users/:id/set-password", handleSetPassword)
+	v1.Delete("/users/:id/mfa", handleResetUserMFA)
 	v1.Get("/stats", handleGetStats)
 	v1.Get("/system/health", handleSystemHealth)
 	v1.Get("/storage/usage", handleListStorageUsage)
@@ -338,7 +340,7 @@ func handleListUsers(c fiber.Ctx) error {
 		return apperrors.Internal("count users", err)
 	}
 
-	dataSQL := "SELECT id, email, role, is_active, email_verified, failed_login_attempts, locked_until, last_login_at, created_at, updated_at FROM auth.users " +
+	dataSQL := "SELECT u.id, u.email, u.role, u.is_active, u.email_verified, COALESCE(m.is_enabled, false) AS mfa_enabled, u.failed_login_attempts, u.locked_until, u.last_login_at, u.created_at, u.updated_at FROM auth.users u LEFT JOIN auth.mfa_secrets m ON m.user_id = u.id " +
 		where + " ORDER BY " + orderBy + " LIMIT $" + itoa(idx) + " OFFSET $" + itoa(idx+1)
 	args = append(args, limit, offset)
 
@@ -351,7 +353,7 @@ func handleListUsers(c fiber.Ctx) error {
 	users := make([]UserRow, 0)
 	for rows.Next() {
 		var u UserRow
-		if err := rows.Scan(&u.ID, &u.Email, &u.Role, &u.IsActive, &u.EmailVerified,
+		if err := rows.Scan(&u.ID, &u.Email, &u.Role, &u.IsActive, &u.EmailVerified, &u.MFAEnabled,
 			&u.FailedLoginAttempts, &u.LockedUntil, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return apperrors.Internal("scan user row", err)
 		}
@@ -485,6 +487,27 @@ func handleUnlockUser(c fiber.Ctx) error {
 		return apperrors.NotFound("user not found")
 	}
 	publishAdminAudit(c, "admin.user_unlocked", id, nil)
+	return c.JSON(fiber.Map{"ok": true})
+}
+
+// DELETE /api/v1/admin/users/:id/mfa — remove a user's MFA secret (admin reset)
+func handleResetUserMFA(c fiber.Ctx) error {
+	id := c.Params("id")
+	// Verify user exists first
+	var exists bool
+	if err := db.QueryRow(c.Context(), "SELECT EXISTS(SELECT 1 FROM auth.users WHERE id = $1)", id).Scan(&exists); err != nil {
+		return apperrors.Internal("check user", err)
+	}
+	if !exists {
+		return apperrors.NotFound("user not found")
+	}
+	if _, err := db.Exec(c.Context(), "DELETE FROM auth.mfa_secrets WHERE user_id = $1", id); err != nil {
+		return apperrors.Internal("reset mfa", err)
+	}
+	publishAdminAudit(c, "admin.user_mfa_reset", id, map[string]any{
+		"target_user_id": id,
+		"reason":        "admin_initiated_mfa_reset",
+	})
 	return c.JSON(fiber.Map{"ok": true})
 }
 
@@ -1755,6 +1778,7 @@ func runAuditPurge(log *zap.Logger) {
 type AuthLockoutConfig struct {
 	MaxFailedAttempts      int    `json:"max_failed_attempts"`
 	LockoutDurationMinutes int    `json:"lockout_duration_minutes"`
+	RequireMFA             bool   `json:"require_mfa"`
 	UpdatedAt              string `json:"updated_at"`
 }
 
@@ -1763,9 +1787,9 @@ func handleGetAuthConfig(c fiber.Ctx) error {
 	var cfg AuthLockoutConfig
 	var updatedAt time.Time
 	err := db.QueryRow(c.Context(), `
-		SELECT max_failed_attempts, lockout_duration_minutes, updated_at
+		SELECT max_failed_attempts, lockout_duration_minutes, require_mfa, updated_at
 		FROM auth.auth_settings WHERE id = 1`,
-	).Scan(&cfg.MaxFailedAttempts, &cfg.LockoutDurationMinutes, &updatedAt)
+	).Scan(&cfg.MaxFailedAttempts, &cfg.LockoutDurationMinutes, &cfg.RequireMFA, &updatedAt)
 	if err != nil {
 		return apperrors.Internal("get auth config", err)
 	}
@@ -1776,8 +1800,9 @@ func handleGetAuthConfig(c fiber.Ctx) error {
 // PUT /api/v1/admin/auth/config
 func handlePutAuthConfig(c fiber.Ctx) error {
 	var body struct {
-		MaxFailedAttempts      *int `json:"max_failed_attempts"`
-		LockoutDurationMinutes *int `json:"lockout_duration_minutes"`
+		MaxFailedAttempts      *int  `json:"max_failed_attempts"`
+		LockoutDurationMinutes *int  `json:"lockout_duration_minutes"`
+		RequireMFA             *bool `json:"require_mfa"`
 	}
 	if err := json.Unmarshal(c.Body(), &body); err != nil {
 		return apperrors.BadRequest("invalid JSON body")
@@ -1793,9 +1818,10 @@ func handlePutAuthConfig(c fiber.Ctx) error {
 		UPDATE auth.auth_settings SET
 		    max_failed_attempts      = COALESCE($1, max_failed_attempts),
 		    lockout_duration_minutes = COALESCE($2, lockout_duration_minutes),
+		    require_mfa              = COALESCE($3, require_mfa),
 		    updated_at               = now()
 		WHERE id = 1`,
-		body.MaxFailedAttempts, body.LockoutDurationMinutes,
+		body.MaxFailedAttempts, body.LockoutDurationMinutes, body.RequireMFA,
 	)
 	if err != nil {
 		return apperrors.Internal("update auth config", err)

@@ -191,9 +191,11 @@ func (r *stubUserRepo) UpdatePreferences(_ context.Context, _ string, _, _, _ *s
 	return r.err
 }
 
-func (r *stubUserRepo) GetLockoutConfig(_ context.Context) (int, time.Duration, error) {
-	return 10, 15 * time.Minute, nil
+func (r *stubUserRepo) GetLockoutConfig(_ context.Context) (int, time.Duration, bool, error) {
+	return 10, 15 * time.Minute, false, nil
 }
+
+func (r *stubUserRepo) DisableMFA(_ context.Context, _ string) error { return r.err }
 
 // ── test helpers ──────────────────────────────────────────────────────────────
 
@@ -291,7 +293,7 @@ func TestLogin_Success(t *testing.T) {
 	svc := newTestAuthService(t, newStubRepo())
 	registerUser(t, svc, "bob@example.com", "correcthorse")
 
-	pair, user, err := svc.Login(context.Background(), "bob@example.com", "correcthorse", "")
+	pair, user, _, err := svc.Login(context.Background(), "bob@example.com", "correcthorse", "")
 	if err != nil {
 		t.Fatalf("Login: %v", err)
 	}
@@ -307,7 +309,7 @@ func TestLogin_WrongPassword_ReturnsUnauthorized(t *testing.T) {
 	svc := newTestAuthService(t, newStubRepo())
 	registerUser(t, svc, "carol@example.com", "rightpass")
 
-	_, _, err := svc.Login(context.Background(), "carol@example.com", "wrongpass", "")
+	_, _, _, err := svc.Login(context.Background(), "carol@example.com", "wrongpass", "")
 	if err == nil {
 		t.Fatal("expected unauthorized error")
 	}
@@ -323,7 +325,7 @@ func TestLogin_WrongPassword_ReturnsUnauthorized(t *testing.T) {
 func TestLogin_UnknownEmail_ReturnsUnauthorized(t *testing.T) {
 	svc := newTestAuthService(t, newStubRepo())
 
-	_, _, err := svc.Login(context.Background(), "ghost@example.com", "anypass", "")
+	_, _, _, err := svc.Login(context.Background(), "ghost@example.com", "anypass", "")
 	if err == nil {
 		t.Fatal("expected unauthorized error for unknown email")
 	}
@@ -343,7 +345,7 @@ func TestLogin_DisabledAccount_ReturnsUnauthorized(t *testing.T) {
 	repo.users[u.Email].IsActive = false
 	repo.usersByID[u.ID].IsActive = false
 
-	_, _, err := svc.Login(context.Background(), "dave@example.com", "pass", "")
+	_, _, _, err := svc.Login(context.Background(), "dave@example.com", "pass", "")
 	if err == nil {
 		t.Fatal("expected error for disabled account")
 	}
@@ -363,7 +365,7 @@ func TestLogin_LockedAccount_ReturnsUnauthorized(t *testing.T) {
 	repo.users[u.Email].LockedUntil = &future
 	repo.usersByID[u.ID].LockedUntil = &future
 
-	_, _, err := svc.Login(context.Background(), "eve@example.com", "pass", "")
+	_, _, _, err := svc.Login(context.Background(), "eve@example.com", "pass", "")
 	if err == nil {
 		t.Fatal("expected error for locked account")
 	}
@@ -379,7 +381,7 @@ func TestValidateAccessToken_ValidToken_ReturnsClaims(t *testing.T) {
 	svc := newTestAuthService(t, newStubRepo())
 
 	registerUser(t, svc, "frank@example.com", "pass12345")
-	pair, _, err := svc.Login(context.Background(), "frank@example.com", "pass12345", "")
+	pair, _, _, err := svc.Login(context.Background(), "frank@example.com", "pass12345", "")
 	if err != nil {
 		t.Fatalf("Login: %v", err)
 	}
@@ -407,7 +409,7 @@ func TestValidateAccessToken_WrongKey_ReturnsError(t *testing.T) {
 
 	// Register + login on otherSvc, validate on svc (different key)
 	registerUser(t, otherSvc, "g@g.com", "pass12345")
-	pair, _, err := otherSvc.Login(context.Background(), "g@g.com", "pass12345", "")
+	pair, _, _, err := otherSvc.Login(context.Background(), "g@g.com", "pass12345", "")
 	if err != nil {
 		t.Fatalf("Login: %v", err)
 	}
@@ -593,7 +595,7 @@ func TestLogin_MFAEnabled_ReturnsMFARequired(t *testing.T) {
 	// Enable MFA on the user.
 	repo.users["mfa@example.com"].MFAEnabled = true
 
-	pair, user, err := svc.Login(ctx, "mfa@example.com", "password123", "")
+	pair, user, _, err := svc.Login(ctx, "mfa@example.com", "password123", "")
 	if pair != nil {
 		t.Fatal("expected nil TokenPair when MFA is required")
 	}
@@ -616,7 +618,7 @@ func TestRefreshTokens_Success(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pair, _, err := svc.Login(ctx, "user@example.com", "password123", "")
+	pair, _, _, err := svc.Login(ctx, "user@example.com", "password123", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -654,7 +656,7 @@ func TestRefreshTokens_DisabledUser_ReturnsUnauthorized(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pair, _, err := svc.Login(ctx, "disabled@example.com", "password123", "")
+	pair, _, _, err := svc.Login(ctx, "disabled@example.com", "password123", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -871,7 +873,7 @@ func TestConfirmPasswordReset_ValidToken_UpdatesPassword(t *testing.T) {
 		t.Fatalf("ConfirmPasswordReset: %v", err)
 	}
 	// Confirm the old password no longer works.
-	_, _, loginErr := svc.Login(ctx, "confirm@example.com", "oldpassword", "")
+	_, _, _, loginErr := svc.Login(ctx, "confirm@example.com", "oldpassword", "")
 	if loginErr == nil {
 		t.Fatal("old password should have been invalidated")
 	}
@@ -926,7 +928,7 @@ func TestVerifyMFA_NoMFASecret_ReturnsError(t *testing.T) {
 		t.Fatal(err)
 	}
 	// No SetupMFA called — GetMFASecret will return NotFound.
-	err = svc.VerifyMFA(ctx, registered.ID, "123456")
+	_, err = svc.VerifyMFA(ctx, registered.ID, "123456")
 	if err == nil {
 		t.Fatal("expected error when MFA not configured")
 	}
@@ -947,7 +949,7 @@ func TestVerifyMFA_WrongOTP_ReturnsUnauthorized(t *testing.T) {
 		t.Fatalf("SetupMFA: %v", err)
 	}
 
-	err = svc.VerifyMFA(ctx, registered.ID, "000000") // wrong code
+	_, err = svc.VerifyMFA(ctx, registered.ID, "000000") // wrong code
 	if !apperrors.IsUnauthorized(err) {
 		t.Fatalf("expected unauthorized error for wrong OTP, got %v", err)
 	}
@@ -973,7 +975,7 @@ func TestVerifyMFA_ValidOTP_EnablesMFA(t *testing.T) {
 		t.Fatalf("GenerateCode: %v", err)
 	}
 
-	err = svc.VerifyMFA(ctx, registered.ID, code)
+	_, err = svc.VerifyMFA(ctx, registered.ID, code)
 	if err != nil {
 		t.Fatalf("VerifyMFA with valid code: %v", err)
 	}

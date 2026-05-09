@@ -6,6 +6,7 @@ export interface AdminUser {
   role: string;
   is_active: boolean;
   email_verified: boolean;
+  mfa_enabled: boolean;
   failed_login_attempts: number;
   locked_until: string | null;
   last_login_at: string | null;
@@ -388,6 +389,7 @@ export async function triggerAuditPurge(): Promise<AuditPurgeResult> {
 export interface AuthLockoutConfig {
   max_failed_attempts: number;
   lockout_duration_minutes: number;
+  require_mfa: boolean;
   updated_at: string;
 }
 
@@ -398,11 +400,16 @@ export async function getAuthConfig(): Promise<AuthLockoutConfig> {
 export async function updateAuthConfig(body: {
   max_failed_attempts?: number;
   lockout_duration_minutes?: number;
+  require_mfa?: boolean;
 }): Promise<AuthLockoutConfig> {
   return request<AuthLockoutConfig>('/admin/auth/config', {
     method: 'PUT',
     body: JSON.stringify(body),
   });
+}
+
+export async function resetUserMFA(userId: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/admin/users/${userId}/mfa`, { method: 'DELETE' });
 }
 
 // ── Branding ──────────────────────────────────────────────────────────────────

@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router';
 import { login, storeTokens, getMe } from '../api/auth';
 import { useAuth } from '../stores/auth';
 import { getLogoUrl } from '../branding';
+import { setTokens } from '../api/client';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -20,6 +21,13 @@ export default function LoginPage() {
       const result = await login(email, password);
       if (result.mfa_required && result.user_id) {
         navigate('/login/mfa', { state: { userId: result.user_id } });
+        return;
+      }
+      if (result.mfa_setup_required && result.access_token) {
+        // Store the setup-only access token (no refresh token — intentional).
+        // This token only unlocks /mfa/setup and /mfa/verify.
+        setTokens(result.access_token, '');
+        navigate('/profile', { state: { mfaSetupRequired: true } });
         return;
       }
       if (result.access_token && result.refresh_token) {

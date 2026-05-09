@@ -127,17 +127,24 @@ func main() {
 		return svc.IsTokenRevoked(ctx, jti)
 	})
 
-	// authenticated
-	protected := v1.Group("", middleware.JWTAuth(pubKey), revocationCheck)
+	// MFA setup/verify routes — accessible with both regular tokens AND setup-only tokens
+	// (MFASetupRequired=true claim). Must NOT have BlockIfMFASetupPending middleware.
+	mfaSetup := v1.Group("", middleware.JWTAuth(pubKey), revocationCheck)
+	mfaSetup.Post("/mfa/setup", h.MFASetup)
+	mfaSetup.Post("/mfa/verify", h.MFAVerify)
+
+	// All other authenticated routes — setup-only tokens are rejected here.
+	protected := v1.Group("", middleware.JWTAuth(pubKey), revocationCheck, middleware.BlockIfMFASetupPending())
 	protected.Post("/logout", h.Logout)
 	protected.Get("/me", h.Me)
 	protected.Patch("/me", h.UpdateMe)
 	protected.Patch("/me/preferences", h.UpdatePreferences)
-	protected.Post("/mfa/setup", h.MFASetup)
-	protected.Post("/mfa/verify", h.MFAVerify)
+	// Disable requires the user to already have MFA enabled, so full token is expected.
+	protected.Post("/mfa/disable", h.MFADisable)
 
 	// API key management — /api/v1/users/apikeys
-	userRoutes := app.Group("/api/v1/users", middleware.JWTAuth(pubKey), revocationCheck)
+	// Setup-only tokens must not be able to create/list API keys.
+	userRoutes := app.Group("/api/v1/users", middleware.JWTAuth(pubKey), revocationCheck, middleware.BlockIfMFASetupPending())
 	userRoutes.Get("/apikeys", h.ListAPIKeys)
 	userRoutes.Post("/apikeys", h.CreateAPIKey)
 	userRoutes.Delete("/apikeys/:id", h.DeleteAPIKey)

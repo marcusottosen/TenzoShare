@@ -14,6 +14,9 @@ export interface LoginResult {
   refresh_token?: string;
   expires_in?: number;
   token_type?: string;
+  // Present when the admin requires MFA but this user hasn't set it up yet.
+  // The access_token in this case is a setup-only token (no refresh_token).
+  mfa_setup_required?: boolean;
 }
 
 export interface MeResponse {
@@ -82,8 +85,23 @@ export async function setupMFA() {
   });
 }
 
+export interface VerifyMFAResult {
+  mfa_enabled: boolean;
+  access_token?: string;
+  refresh_token?: string;
+  expires_in?: number;
+  token_type?: string;
+}
+
 export async function verifyMFA(otpCode: string) {
-  return request<{ mfa_enabled: boolean }>('/auth/mfa/verify', {
+  return request<VerifyMFAResult>('/auth/mfa/verify', {
+    method: 'POST',
+    body: JSON.stringify({ otp_code: otpCode }),
+  });
+}
+
+export async function disableMFA(otpCode: string) {
+  return request<{ mfa_enabled: boolean }>('/auth/mfa/disable', {
     method: 'POST',
     body: JSON.stringify({ otp_code: otpCode }),
   });

@@ -36,6 +36,16 @@ const (
 	passwordResetRateLimit       = 5
 	passwordResetRateLimitWindow = 1 * time.Hour
 
+	// MFA endpoint rate limits (per user ID, not per IP — prevents account enumeration).
+	mfaSetupRateLimit         = 3 // 3 setup attempts
+	mfaSetupRateLimitWindow   = 10 * time.Minute
+	mfaVerifyRateLimit        = 5 // 5 verify attempts
+	mfaVerifyRateLimitWindow  = 5 * time.Minute
+	mfaDisableRateLimit       = 3 // 3 disable attempts
+	mfaDisableRateLimitWindow = 15 * time.Minute
+	mfaLoginRateLimit         = 5 // 5 /login/mfa attempts per user_id
+	mfaLoginRateLimitWindow   = 15 * time.Minute
+
 	lockoutConfigTTL = 60 * time.Second
 )
 
@@ -78,11 +88,12 @@ type userRepository interface {
 	UpdatePassword(ctx context.Context, userID, newHash string) error
 	RecordFailedLogin(ctx context.Context, userID string, maxAttempts int, lockDuration time.Duration) error
 	RecordSuccessfulLogin(ctx context.Context, userID string) error
-	GetLockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration, err error)
+	GetLockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration, requireMFA bool, err error)
 	CreateAPIKey(ctx context.Context, userID, name, keyHash, keyPrefix string, expiresAt *time.Time) (*domain.APIKey, error)
 	ListAPIKeys(ctx context.Context, userID string) ([]*domain.APIKey, error)
 	DeleteAPIKey(ctx context.Context, id, userID string) error
 	UpdatePreferences(ctx context.Context, userID string, dateFormat, timeFormat, timezone *string) error
+	DisableMFA(ctx context.Context, userID string) error
 }
 
 type AuthService struct {
@@ -98,6 +109,7 @@ type AuthService struct {
 	lockoutMu          sync.Mutex
 	cachedMaxAttempts  int
 	cachedLockDuration time.Duration
+	cachedRequireMFA   bool
 	lockoutCachedAt    time.Time
 }
 
@@ -170,21 +182,22 @@ func deriveMFAKey(pepper string) ([]byte, error) {
 
 // lockoutConfig returns the current lockout policy, reading from DB if the
 // cached values are older than lockoutConfigTTL (60 s).
-func (s *AuthService) lockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration) {
+func (s *AuthService) lockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration, requireMFA bool) {
 	s.lockoutMu.Lock()
 	defer s.lockoutMu.Unlock()
 	if time.Since(s.lockoutCachedAt) < lockoutConfigTTL && s.cachedMaxAttempts > 0 {
-		return s.cachedMaxAttempts, s.cachedLockDuration
+		return s.cachedMaxAttempts, s.cachedLockDuration, s.cachedRequireMFA
 	}
-	ma, ld, err := s.repo.GetLockoutConfig(ctx)
+	ma, ld, rmfa, err := s.repo.GetLockoutConfig(ctx)
 	if err != nil {
 		s.log.Warn("lockoutConfig: could not read auth_settings, using fallback", zap.Error(err))
-		return 10, 15 * time.Minute
+		return 10, 15 * time.Minute, false
 	}
 	s.cachedMaxAttempts = ma
 	s.cachedLockDuration = ld
+	s.cachedRequireMFA = rmfa
 	s.lockoutCachedAt = time.Now()
-	return ma, ld
+	return ma, ld, rmfa
 }
 
 func (s *AuthService) EnsureBootstrapAdmin(ctx context.Context, email, password string) error {
@@ -230,62 +243,95 @@ func (s *AuthService) Register(ctx context.Context, email, password, clientIP st
 	return user, nil
 }
 
-func (s *AuthService) Login(ctx context.Context, email, password, clientIP string) (*TokenPair, *domain.User, error) {
+func (s *AuthService) Login(ctx context.Context, email, password, clientIP string) (*TokenPair, *domain.User, bool, error) {
 	if clientIP != "" {
 		limited, err := s.checkRateLimit(ctx, clientIP)
 		if err != nil {
 			s.log.Warn("rate limit check failed", zap.Error(err))
 		} else if limited {
-			return nil, nil, apperrors.RateLimit("too many login attempts; try again in 15 minutes")
+			return nil, nil, false, apperrors.RateLimit("too many login attempts; try again in 15 minutes")
 		}
 	}
 
 	user, err := s.repo.GetByEmail(ctx, email)
 	if err != nil {
 		s.recordIPAttempt(ctx, clientIP)
-		return nil, nil, apperrors.Unauthorized("invalid credentials")
+		return nil, nil, false, apperrors.Unauthorized("invalid credentials")
 	}
 
 	if !user.IsActive {
-		return nil, nil, apperrors.Unauthorized("account is disabled")
+		return nil, nil, false, apperrors.Unauthorized("account is disabled")
 	}
 
 	if user.IsLocked() {
-		return nil, nil, apperrors.Unauthorized("account is temporarily locked; try again later")
+		return nil, nil, false, apperrors.Unauthorized("account is temporarily locked; try again later")
 	}
 
 	ok, err := crypto.VerifyPassword(password, user.PasswordHash, s.cfg.App.Pepper)
 	if err != nil || !ok {
-		maxAttempts, lockDur := s.lockoutConfig(ctx)
+		maxAttempts, lockDur, _ := s.lockoutConfig(ctx)
 		_ = s.repo.RecordFailedLogin(ctx, user.ID, maxAttempts, lockDur)
 		s.recordIPAttempt(ctx, clientIP)
 		s.publishAudit(ctx, AuditEvent{
 			Action: "login", UserID: user.ID, Email: email, ClientIP: clientIP,
 			Success: false, Reason: "invalid credentials", Timestamp: time.Now(),
 		})
-		return nil, nil, apperrors.Unauthorized("invalid credentials")
+		return nil, nil, false, apperrors.Unauthorized("invalid credentials")
 	}
 
 	if user.MFAEnabled {
-		return nil, user, apperrors.Unauthorized("mfa_required")
+		return nil, user, false, apperrors.Unauthorized("mfa_required")
 	}
 
+	// If admin requires MFA but user hasn't set it up, issue a setup-only token
+	// (short-lived, MFASetupRequired=true in claims) rather than full access tokens.
+	// The BlockIfMFASetupPending middleware enforces that this token can only reach
+	// /mfa/setup and /mfa/verify.
+	_, _, requireMFA := s.lockoutConfig(ctx)
+	mfaSetupRequired := requireMFA && !user.MFAEnabled
+
 	_ = s.repo.RecordSuccessfulLogin(ctx, user.ID)
+
+	if mfaSetupRequired {
+		setupToken, err := s.signSetupOnlyToken(user)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		setupPair := &TokenPair{
+			AccessToken: setupToken,
+			ExpiresIn:   int64((10 * time.Minute).Seconds()),
+		}
+		s.publishAudit(ctx, AuditEvent{
+			Action: "login", UserID: user.ID, Email: email, ClientIP: clientIP,
+			Success: true, Timestamp: time.Now(),
+		})
+		return setupPair, user, true, nil
+	}
+
 	pair, err := s.issueTokenPair(ctx, user)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 	s.publishAudit(ctx, AuditEvent{
 		Action: "login", UserID: user.ID, Email: email, ClientIP: clientIP,
 		Success: true, Timestamp: time.Now(),
 	})
-	return pair, user, nil
+	return pair, user, false, nil
 }
 
 func (s *AuthService) LoginWithMFA(ctx context.Context, userID, otpCode string) (*TokenPair, error) {
+	// Rate limit per user_id to prevent brute force of 6-digit TOTP codes.
+	if limited, _ := s.checkRateLimitGeneric(ctx, "ratelimit:mfa_login:"+userID, mfaLoginRateLimit, mfaLoginRateLimitWindow); limited {
+		return nil, apperrors.RateLimit("too many MFA attempts; try again in 15 minutes")
+	}
+
 	user, err := s.repo.GetByID(ctx, userID)
 	if err != nil {
 		return nil, apperrors.Unauthorized("invalid credentials")
+	}
+
+	if !user.IsActive {
+		return nil, apperrors.Unauthorized("account is disabled")
 	}
 
 	mfaSecret, err := s.repo.GetMFASecret(ctx, userID)
@@ -344,9 +390,21 @@ func (s *AuthService) Logout(ctx context.Context, userID string) error {
 }
 
 func (s *AuthService) SetupMFA(ctx context.Context, userID string) (*MFASetupResult, error) {
+	// Rate limit: prevent rapid secret-generation (amplifies replacement attacks).
+	if limited, _ := s.checkRateLimitGeneric(ctx, "ratelimit:mfa_setup:"+userID, mfaSetupRateLimit, mfaSetupRateLimitWindow); limited {
+		return nil, apperrors.RateLimit("too many MFA setup requests; try again later")
+	}
+
 	user, err := s.repo.GetByID(ctx, userID)
 	if err != nil {
 		return nil, err
+	}
+
+	// Prevent secret-replacement: if MFA is already enabled, the user must
+	// disable it first (which requires a current OTP). This stops an attacker
+	// who has the session from silently replacing the TOTP secret.
+	if user.MFAEnabled {
+		return nil, apperrors.Conflict("MFA is already enabled; disable it first")
 	}
 
 	key, err := totp.Generate(totp.GenerateOpts{
@@ -373,10 +431,55 @@ func (s *AuthService) SetupMFA(ctx context.Context, userID string) (*MFASetupRes
 	}, nil
 }
 
-func (s *AuthService) VerifyMFA(ctx context.Context, userID, otpCode string) error {
+func (s *AuthService) VerifyMFA(ctx context.Context, userID, otpCode string) (*TokenPair, error) {
+	// Rate limit to prevent brute-force of 6-digit codes during setup.
+	if limited, _ := s.checkRateLimitGeneric(ctx, "ratelimit:mfa_verify:"+userID, mfaVerifyRateLimit, mfaVerifyRateLimitWindow); limited {
+		return nil, apperrors.RateLimit("too many MFA verification attempts; try again in 5 minutes")
+	}
+
 	mfaSecret, err := s.repo.GetMFASecret(ctx, userID)
 	if err != nil {
-		return err
+		return nil, err
+	}
+
+	encKey := s.mfaEncryptionKey()
+	rawSecret, err := crypto.Decrypt(mfaSecret.Secret, encKey)
+	if err != nil {
+		return nil, apperrors.Internal("decrypt mfa secret", err)
+	}
+
+	if !totp.Validate(otpCode, string(rawSecret)) {
+		return nil, apperrors.Unauthorized("invalid OTP code")
+	}
+
+	if err := s.repo.EnableMFA(ctx, userID); err != nil {
+		return nil, err
+	}
+	s.publishAudit(ctx, AuditEvent{
+		Action: "mfa_enabled", UserID: userID, Success: true, Timestamp: time.Now(),
+	})
+
+	// After enabling MFA, fetch the user and issue full tokens so the client
+	// can immediately use the session (especially when coming from the
+	// mfa_setup_required flow where they only had a setup-only token).
+	user, err := s.repo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, apperrors.Internal("fetch user after mfa enable", err)
+	}
+	return s.issueTokenPair(ctx, user)
+}
+
+// DisableMFA verifies the current OTP code then removes the user's MFA secret,
+// fully disabling two-factor authentication.
+func (s *AuthService) DisableMFA(ctx context.Context, userID, otpCode string) error {
+	// Rate limit to prevent brute-force of the disable endpoint.
+	if limited, _ := s.checkRateLimitGeneric(ctx, "ratelimit:mfa_disable:"+userID, mfaDisableRateLimit, mfaDisableRateLimitWindow); limited {
+		return apperrors.RateLimit("too many MFA disable attempts; try again in 15 minutes")
+	}
+
+	mfaSecret, err := s.repo.GetMFASecret(ctx, userID)
+	if err != nil {
+		return apperrors.BadRequest("MFA is not enabled for this account")
 	}
 
 	encKey := s.mfaEncryptionKey()
@@ -389,13 +492,13 @@ func (s *AuthService) VerifyMFA(ctx context.Context, userID, otpCode string) err
 		return apperrors.Unauthorized("invalid OTP code")
 	}
 
-	err = s.repo.EnableMFA(ctx, userID)
-	if err == nil {
-		s.publishAudit(ctx, AuditEvent{
-			Action: "mfa_enabled", UserID: userID, Success: true, Timestamp: time.Now(),
-		})
+	if err := s.repo.DisableMFA(ctx, userID); err != nil {
+		return err
 	}
-	return err
+	s.publishAudit(ctx, AuditEvent{
+		Action: "mfa_disabled", UserID: userID, Success: true, Timestamp: time.Now(),
+	})
+	return nil
 }
 
 func (s *AuthService) RequestPasswordReset(ctx context.Context, email, clientIP string) (userID, resetToken string, err error) {
@@ -514,6 +617,33 @@ func (s *AuthService) signAccessToken(user *domain.User) (string, error) {
 
 func (s *AuthService) mfaEncryptionKey() []byte {
 	return s.mfaKey
+}
+
+// signSetupOnlyToken issues a short-lived (10 min) access token with
+// MFASetupRequired=true. Tokens with this flag are blocked on all protected
+// routes except /mfa/setup and /mfa/verify by the BlockIfMFASetupPending
+// middleware.
+func (s *AuthService) signSetupOnlyToken(user *domain.User) (string, error) {
+	now := time.Now()
+	const setupTTL = 10 * time.Minute
+	claims := middleware.Claims{
+		UserID:           user.ID,
+		Email:            user.Email,
+		Role:             string(user.Role),
+		JTI:              uuid.New().String(),
+		MFASetupRequired: true,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   user.ID,
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(setupTTL)),
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	signed, err := token.SignedString(s.privateKey)
+	if err != nil {
+		return "", apperrors.Internal("sign setup-only access token", err)
+	}
+	return signed, nil
 }
 
 func (s *AuthService) checkRateLimit(ctx context.Context, clientIP string) (bool, error) {

@@ -76,6 +76,12 @@ type Claims struct {
 	Email  string `json:"email"`
 	Role   string `json:"role"`
 	JTI    string `json:"jti,omitempty"`
+	// MFASetupRequired is true for short-lived setup-only tokens issued when an
+	// admin mandates MFA but the user has not yet configured it. Tokens with this
+	// flag must NOT be accepted on general-purpose authenticated routes — only
+	// /mfa/setup and /mfa/verify. Use the BlockIfMFASetupPending middleware to
+	// enforce this constraint.
+	MFASetupRequired bool `json:"mfa_setup_required,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -272,6 +278,20 @@ func TokenRevocation(isRevoked func(ctx context.Context, jti string) bool) fiber
 		}
 		if isRevoked(c.Context(), claims.JTI) {
 			return apperrors.Unauthorized("token has been revoked")
+		}
+		return c.Next()
+	}
+}
+
+// BlockIfMFASetupPending rejects requests from tokens that carry
+// MFASetupRequired=true. Apply this middleware on every protected route group
+// except /mfa/setup and /mfa/verify, which are the only endpoints a
+// setup-only token should reach.
+func BlockIfMFASetupPending() fiber.Handler {
+	return func(c fiber.Ctx) error {
+		claims, ok := c.Locals("claims").(*Claims)
+		if ok && claims != nil && claims.MFASetupRequired {
+			return apperrors.Forbidden("MFA setup required before accessing this resource")
 		}
 		return c.Next()
 	}
