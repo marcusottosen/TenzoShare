@@ -177,66 +177,92 @@ export default function SettingsPage() {
           <div className="alert alert-success" style={{ marginBottom: 12 }}>Preferences saved.</div>
         )}
 
-        <form onSubmit={handleSavePrefs} style={{ display: 'flex', flexDirection: 'column', gap: 20, marginTop: 8 }}>
-          {/* Date format */}
-          <div>
-            <label className="form-label">Date format</label>
-            <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 8 }}>{sysFallback}</p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-                <input type="radio" name="date_format" value="" checked={dateFormat === ''} onChange={() => setDateFormat('')} />
-                <span style={{ fontSize: 14, color: 'var(--color-text-muted)' }}>Use system default</span>
+        <form onSubmit={handleSavePrefs} style={{ marginTop: 8 }}>
+          {/* ── Date format ── */}
+          <div style={{ padding: '14px 0', borderBottom: '1px solid var(--color-border)' }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 10 }}>
+              <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--color-text-primary)' }}>Date format</span>
+              {sysFallback && <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{sysFallback}</span>}
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              <label style={{
+                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                padding: '6px 14px', borderRadius: 8, cursor: 'pointer',
+                border: `1.5px solid ${dateFormat === '' ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                background: dateFormat === '' ? 'color-mix(in srgb, var(--color-primary) 10%, transparent)' : 'var(--color-bg)',
+                transition: 'border-color 0.15s, background 0.15s',
+              }}>
+                <input type="radio" name="date_format" value="" checked={dateFormat === ''} onChange={() => setDateFormat('')} style={{ display: 'none' }} />
+                <span style={{ fontSize: 13, fontWeight: 500, color: dateFormat === '' ? 'var(--color-primary)' : 'var(--color-text-muted)' }}>System default</span>
               </label>
               {DATE_FORMAT_OPTIONS.map((opt) => (
-                <label key={opt.value} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-                  <input type="radio" name="date_format" value={opt.value} checked={dateFormat === opt.value} onChange={() => setDateFormat(opt.value)} />
-                  <span style={{ fontSize: 14 }}>{opt.label}</span>
-                  <code style={{
-                    fontSize: 12, background: 'var(--color-bg)', border: '1px solid var(--color-border)',
-                    borderRadius: 4, padding: '1px 6px', color: 'var(--color-text-muted)',
-                  }}>{opt.example}</code>
+                <label key={opt.value} style={{
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                  padding: '6px 14px', borderRadius: 8, cursor: 'pointer',
+                  border: `1.5px solid ${dateFormat === opt.value ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                  background: dateFormat === opt.value ? 'color-mix(in srgb, var(--color-primary) 10%, transparent)' : 'var(--color-bg)',
+                  transition: 'border-color 0.15s, background 0.15s',
+                }}>
+                  <input type="radio" name="date_format" value={opt.value} checked={dateFormat === opt.value} onChange={() => setDateFormat(opt.value)} style={{ display: 'none' }} />
+                  <code style={{ fontSize: 13, fontWeight: 600, letterSpacing: '0.01em', color: dateFormat === opt.value ? 'var(--color-primary)' : 'var(--color-text-primary)' }}>{opt.example}</code>
+                  <span style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2 }}>{opt.label.split(' ')[0]}</span>
                 </label>
               ))}
             </div>
           </div>
 
-          {/* Time format */}
-          <div>
-            <label className="form-label">Time format</label>
-            <div style={{ display: 'flex', gap: 20, marginTop: 6 }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-                <input type="radio" name="time_format" value="" checked={timeFormat === ''} onChange={() => setTimeFormat('')} />
-                <span style={{ fontSize: 14, color: 'var(--color-text-muted)' }}>System default</span>
+          {/* ── Time format ── */}
+          <SettingRow label="Time format">
+            <div style={{ display: 'inline-flex', border: '1.5px solid var(--color-border)', borderRadius: 8, overflow: 'hidden' }}>
+              <label style={{
+                padding: '6px 16px', cursor: 'pointer', fontSize: 13, fontWeight: 500,
+                borderRight: '1px solid var(--color-border)',
+                background: timeFormat === '' ? 'var(--color-primary)' : 'transparent',
+                color: timeFormat === '' ? '#fff' : 'var(--color-text-primary)',
+                transition: 'background 0.15s, color 0.15s',
+              }}>
+                <input type="radio" name="time_format" value="" checked={timeFormat === ''} onChange={() => setTimeFormat('')} style={{ display: 'none' }} />
+                System
               </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-                <input type="radio" name="time_format" value="24h" checked={timeFormat === '24h'} onChange={() => setTimeFormat('24h')} />
-                <span style={{ fontSize: 14 }}>14:30 (24-hour)</span>
+              <label style={{
+                padding: '6px 16px', cursor: 'pointer', fontSize: 13, fontWeight: 500,
+                borderRight: '1px solid var(--color-border)',
+                background: timeFormat === '24h' ? 'var(--color-primary)' : 'transparent',
+                color: timeFormat === '24h' ? '#fff' : 'var(--color-text-primary)',
+                transition: 'background 0.15s, color 0.15s',
+              }}>
+                <input type="radio" name="time_format" value="24h" checked={timeFormat === '24h'} onChange={() => setTimeFormat('24h')} style={{ display: 'none' }} />
+                14:30
               </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-                <input type="radio" name="time_format" value="12h" checked={timeFormat === '12h'} onChange={() => setTimeFormat('12h')} />
-                <span style={{ fontSize: 14 }}>2:30 PM (12-hour)</span>
+              <label style={{
+                padding: '6px 16px', cursor: 'pointer', fontSize: 13, fontWeight: 500,
+                background: timeFormat === '12h' ? 'var(--color-primary)' : 'transparent',
+                color: timeFormat === '12h' ? '#fff' : 'var(--color-text-primary)',
+                transition: 'background 0.15s, color 0.15s',
+              }}>
+                <input type="radio" name="time_format" value="12h" checked={timeFormat === '12h'} onChange={() => setTimeFormat('12h')} style={{ display: 'none' }} />
+                2:30 PM
               </label>
             </div>
-          </div>
+          </SettingRow>
 
-          {/* Timezone */}
-          <div>
-            <label className="form-label" htmlFor="timezone">Timezone</label>
+          {/* ── Timezone ── */}
+          <SettingRow label="Timezone" description="Used for display only — files are stored in UTC.">
             <select
               id="timezone"
               className="form-input"
               value={timezone}
               onChange={(e) => setTimezone(e.target.value)}
-              style={{ maxWidth: 360 }}
+              style={{ minWidth: 220, maxWidth: 300 }}
             >
               <option value="">System default{sysDefault ? ` (${sysDefault.timezone})` : ''}</option>
               {COMMON_TIMEZONES.map((tz) => (
                 <option key={tz} value={tz}>{tz}</option>
               ))}
             </select>
-          </div>
+          </SettingRow>
 
-          <div>
+          <div style={{ paddingTop: 4 }}>
             <button type="submit" className="btn btn-primary" disabled={savingPrefs}>
               {savingPrefs ? 'Saving…' : 'Save preferences'}
             </button>
