@@ -536,6 +536,7 @@ func (h *Handler) GetNotificationPrefs(c fiber.Ctx) error {
 		"transfer_received":     user.NotificationPrefs.TransferReceived,
 		"download_notification": user.NotificationPrefs.DownloadNotification,
 		"expiry_reminders":      user.NotificationPrefs.ExpiryReminders,
+		"auto_save_contacts":    user.AutoSaveContacts,
 	})
 }
 
@@ -597,6 +598,7 @@ func (h *Handler) UpdateNotificationPrefs(c fiber.Ctx) error {
 		"transfer_received":     user2.NotificationPrefs.TransferReceived,
 		"download_notification": user2.NotificationPrefs.DownloadNotification,
 		"expiry_reminders":      user2.NotificationPrefs.ExpiryReminders,
+		"auto_save_contacts":    user2.AutoSaveContacts,
 	})
 }
 
@@ -617,4 +619,125 @@ func (h *Handler) InternalNotificationPrefs(c fiber.Ctx) error {
 		"download_notification": prefs.DownloadNotification,
 		"expiry_reminders":      prefs.ExpiryReminders,
 	})
+}
+
+// ── Contacts ──────────────────────────────────────────────────────────────────
+
+// ListContacts GET /api/v1/users/contacts
+func (h *Handler) ListContacts(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	contacts, err := h.svc.ListContacts(c.Context(), userID)
+	if err != nil {
+		return err
+	}
+	out := make([]fiber.Map, 0, len(contacts))
+	for _, ct := range contacts {
+		out = append(out, fiber.Map{
+			"id":         ct.ID,
+			"email":      ct.Email,
+			"name":       ct.Name,
+			"created_at": ct.CreatedAt,
+		})
+	}
+	return c.JSON(fiber.Map{"contacts": out})
+}
+
+type upsertContactRequest struct {
+	Email string `json:"email" validate:"required,email,max=254"`
+	Name  string `json:"name"  validate:"max=200"`
+}
+
+// UpsertContact POST /api/v1/users/contacts
+func (h *Handler) UpsertContact(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	var req upsertContactRequest
+	if err := c.Bind().JSON(&req); err != nil {
+		return apperrors.BadRequest("invalid request body")
+	}
+	if err := validate.Struct(req); err != nil {
+		return apperrors.Validation(err.Error())
+	}
+	ct, err := h.svc.UpsertContact(c.Context(), userID, req.Email, req.Name)
+	if err != nil {
+		return err
+	}
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+		"id":         ct.ID,
+		"email":      ct.Email,
+		"name":       ct.Name,
+		"created_at": ct.CreatedAt,
+	})
+}
+
+type updateContactRequest struct {
+	Name string `json:"name" validate:"max=200"`
+}
+
+// UpdateContact PATCH /api/v1/users/contacts/:id
+func (h *Handler) UpdateContact(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	id := c.Params("id")
+	if id == "" {
+		return apperrors.BadRequest("missing contact id")
+	}
+	var req updateContactRequest
+	if err := c.Bind().JSON(&req); err != nil {
+		return apperrors.BadRequest("invalid request body")
+	}
+	if err := validate.Struct(req); err != nil {
+		return apperrors.Validation(err.Error())
+	}
+	ct, err := h.svc.UpdateContact(c.Context(), id, userID, req.Name)
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{
+		"id":         ct.ID,
+		"email":      ct.Email,
+		"name":       ct.Name,
+		"created_at": ct.CreatedAt,
+	})
+}
+
+// DeleteContact DELETE /api/v1/users/contacts/:id
+func (h *Handler) DeleteContact(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	id := c.Params("id")
+	if id == "" {
+		return apperrors.BadRequest("missing contact id")
+	}
+	if err := h.svc.DeleteContact(c.Context(), id, userID); err != nil {
+		return err
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+// UpdateAutoSaveContacts PATCH /api/v1/users/contacts/settings
+func (h *Handler) UpdateAutoSaveContacts(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	var req struct {
+		AutoSaveContacts bool `json:"auto_save_contacts"`
+	}
+	if err := c.Bind().JSON(&req); err != nil {
+		return apperrors.BadRequest("invalid request body")
+	}
+	if err := h.svc.UpdateAutoSaveContacts(c.Context(), userID, req.AutoSaveContacts); err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"auto_save_contacts": req.AutoSaveContacts})
 }

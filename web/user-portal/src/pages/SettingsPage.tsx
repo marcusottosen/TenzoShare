@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { isDarkMode, setDarkMode } from '../branding';
 import { getPlatformConfig } from '../api/platform';
 import { updatePreferences, getMe, getNotificationPrefs, updateNotificationPrefs, type NotificationPrefs } from '../api/auth';
+import { updateAutoSaveContacts } from '../api/contacts';
 import {
   setActivePrefs, getActivePrefs, COMMON_TIMEZONES,
   type DateFormat, type TimeFormat,
@@ -120,8 +121,11 @@ export default function SettingsPage() {
     setNotifError(null);
     setNotifSaved(false);
     try {
-      const updated = await updateNotificationPrefs(notifPrefs);
-      setNotifPrefs(updated);
+      const [updated] = await Promise.all([
+        updateNotificationPrefs(notifPrefs),
+        updateAutoSaveContacts(notifPrefs.auto_save_contacts),
+      ]);
+      setNotifPrefs({ ...updated, auto_save_contacts: notifPrefs.auto_save_contacts });
       setNotifSaved(true);
       setTimeout(() => setNotifSaved(false), 3000);
     } catch {
@@ -304,6 +308,17 @@ export default function SettingsPage() {
                   style={{ width: 16, height: 16 }}
                 />
                 <span style={{ fontSize: 13 }}>Notify me</span>
+              </label>
+            </SettingRow>
+            <SettingRow label="Auto-save contacts" description="Automatically save recipient emails to your Contacts when creating file shares or requests.">
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={notifPrefs.auto_save_contacts}
+                  onChange={() => toggleNotifPref('auto_save_contacts')}
+                  style={{ width: 16, height: 16 }}
+                />
+                <span style={{ fontSize: 13 }}>Save automatically</span>
               </label>
             </SettingRow>
             <div style={{ marginTop: 16, display: 'flex', gap: 10 }}>

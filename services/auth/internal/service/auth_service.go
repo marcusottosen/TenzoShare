@@ -102,6 +102,12 @@ type userRepository interface {
 	SetNotificationsOptOut(ctx context.Context, email string, optOut bool) error
 	UpdateNotificationPrefs(ctx context.Context, userID string, prefs domain.NotificationPrefs) error
 	GetNotificationStatus(ctx context.Context, email string) (optOut bool, prefs domain.NotificationPrefs, err error)
+	// contacts
+	UpsertContact(ctx context.Context, userID, email, name string) (*domain.Contact, error)
+	ListContacts(ctx context.Context, userID string) ([]*domain.Contact, error)
+	UpdateContact(ctx context.Context, id, userID, name string) (*domain.Contact, error)
+	DeleteContact(ctx context.Context, id, userID string) error
+	UpdateAutoSaveContacts(ctx context.Context, userID string, enabled bool) error
 }
 
 type AuthService struct {
@@ -982,4 +988,32 @@ func (s *AuthService) ValidateUnsubscribeToken(token string) (string, bool) {
 // Resubscribe clears the notifications_opt_out flag for the user identified by email.
 func (s *AuthService) Resubscribe(ctx context.Context, email string) error {
 	return s.repo.SetNotificationsOptOut(ctx, email, false)
+}
+
+// ── Contacts ──────────────────────────────────────────────────────────────────
+
+// UpsertContact adds or updates a contact email for the user.
+// If the email already exists the name is updated.
+func (s *AuthService) UpsertContact(ctx context.Context, userID, email, name string) (*domain.Contact, error) {
+	return s.repo.UpsertContact(ctx, userID, email, name)
+}
+
+// ListContacts returns all contacts for the user.
+func (s *AuthService) ListContacts(ctx context.Context, userID string) ([]*domain.Contact, error) {
+	return s.repo.ListContacts(ctx, userID)
+}
+
+// UpdateContact updates the display name of a contact.
+func (s *AuthService) UpdateContact(ctx context.Context, id, userID, name string) (*domain.Contact, error) {
+	return s.repo.UpdateContact(ctx, id, userID, name)
+}
+
+// DeleteContact removes a contact from the user's list.
+func (s *AuthService) DeleteContact(ctx context.Context, id, userID string) error {
+	return s.repo.DeleteContact(ctx, id, userID)
+}
+
+// UpdateAutoSaveContacts sets the auto_save_contacts preference.
+func (s *AuthService) UpdateAutoSaveContacts(ctx context.Context, userID string, enabled bool) error {
+	return s.repo.UpdateAutoSaveContacts(ctx, userID, enabled)
 }

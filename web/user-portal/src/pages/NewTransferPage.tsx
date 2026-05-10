@@ -2,6 +2,8 @@ import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import { listFiles, uploadFile, type FileRecord, type UploadProgress } from '../api/files';
 import { createTransfer } from '../api/transfers';
+import { listContacts, upsertContact, type Contact } from '../api/contacts';
+import { getNotificationPrefs } from '../api/auth';
 import { pendingUploadStore } from '../stores/pendingUpload';
 import { pendingFileStore } from '../stores/pendingFileStore';
 
@@ -44,6 +46,13 @@ export default function NewTransferPage() {
   const [notifyOnDownload, setNotifyOnDownload] = useState(true);
   const [expiresInHours, setExpiresInHours] = useState(168);
 
+  // Contacts for autocomplete
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [autoSaveContacts, setAutoSaveContacts] = useState(true);
+  const [suggestions, setSuggestions] = useState<Contact[]>([]);
+  const [suggestionIdx, setSuggestionIdx] = useState(-1);
+  const suggestionsRef = useRef<HTMLDivElement>(null);
+
   // Files staged for this transfer
   const [staged, setStaged] = useState<StagedFile[]>([]);
 
@@ -70,6 +79,12 @@ export default function NewTransferPage() {
       .catch(() => {})
       .finally(() => setLoadingLibrary(false));
   }, [showLibrary]);
+
+  // Load contacts for autocomplete
+  useEffect(() => {
+    listContacts().then(setContacts).catch(() => {});
+    getNotificationPrefs().then((p) => setAutoSaveContacts(p.auto_save_contacts ?? true)).catch(() => {});
+  }, []);
 
   // Consume any files forwarded from the dashboard upload zone
   useEffect(() => {
@@ -173,6 +188,19 @@ export default function NewTransferPage() {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
   }
 
+  function computeSuggestions(val: string) {
+    if (!val.trim()) { setSuggestions([]); return; }
+    const q = val.trim().toLowerCase();
+    setSuggestions(
+      contacts.filter(
+        (c) =>
+          !recipientEmails.includes(c.email) &&
+          (c.email.toLowerCase().includes(q) || c.name.toLowerCase().includes(q)),
+      ).slice(0, 6),
+    );
+    setSuggestionIdx(-1);
+  }
+
   function commitEmailInput() {
     const raw = emailInput.trim().replace(/,+$/, '');
     if (!raw) return;
@@ -180,6 +208,17 @@ export default function NewTransferPage() {
     const toAdd = parts.filter(e => isValidEmail(e) && !recipientEmails.includes(e));
     if (toAdd.length > 0) setRecipientEmails(prev => [...prev, ...toAdd]);
     setEmailInput('');
+    setSuggestions([]);
+    setSuggestionIdx(-1);
+  }
+
+  function pickSuggestion(email: string) {
+    if (!recipientEmails.includes(email)) {
+      setRecipientEmails(prev => [...prev, email]);
+    }
+    setEmailInput('');
+    setSuggestions([]);
+    setSuggestionIdx(-1);
   }
 
   function removeEmail(email: string) {
@@ -187,6 +226,16 @@ export default function NewTransferPage() {
   }
 
   function handleEmailKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (suggestions.length > 0) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setSuggestionIdx(i => Math.min(i + 1, suggestions.length - 1)); return; }
+      if (e.key === 'ArrowUp')   { e.preventDefault(); setSuggestionIdx(i => Math.max(i - 1, -1)); return; }
+      if ((e.key === 'Enter' || e.key === 'Tab') && suggestionIdx >= 0) {
+        e.preventDefault();
+        pickSuggestion(suggestions[suggestionIdx].email);
+        return;
+      }
+      if (e.key === 'Escape') { setSuggestions([]); setSuggestionIdx(-1); return; }
+    }
     if (e.key === 'Enter' || e.key === ',' || e.key === 'Tab') {
       e.preventDefault();
       commitEmailInput();
@@ -213,6 +262,10 @@ export default function NewTransferPage() {
         notify_on_download: notifyOnDownload,
         expires_in_hours: expiresInHours,
       });
+      // Auto-save recipient emails to contacts
+      if (autoSaveContacts && recipientEmails.length > 0) {
+        await Promise.allSettled(recipientEmails.map((email) => upsertContact(email)));
+      }
       navigate(`/transfers/${t.id}`);
     } catch (err: any) {
       setError(err.message);
@@ -431,6 +484,7 @@ export default function NewTransferPage() {
                   Recipient email{recipientEmails.length !== 1 ? 's' : ''}{' '}
                   <span className="text-sm" style={{ color: 'var(--color-text-muted)' }}>(optional)</span>
                 </label>
+                <div style={{ position: 'relative' }}>
                 <div
                   className="email-chips-field"
                   onClick={() => (document.getElementById('email-chip-input') as HTMLInputElement)?.focus()}
@@ -452,11 +506,48 @@ export default function NewTransferPage() {
                     multiple
                     className="email-chip-input"
                     value={emailInput}
-                    onChange={e => setEmailInput(e.target.value)}
+                    onChange={e => { setEmailInput(e.target.value); computeSuggestions(e.target.value); }}
                     onKeyDown={handleEmailKeyDown}
-                    onBlur={commitEmailInput}
+                    onBlur={() => { setTimeout(() => { setSuggestions([]); setSuggestionIdx(-1); }, 150); commitEmailInput(); }}
                     placeholder={recipientEmails.length === 0 ? 'recipient@example.com' : 'Add another…'}
+                    autoComplete="off"
                   />
+                </div>
+                {suggestions.length > 0 && (
+                  <div
+                    ref={suggestionsRef}
+                    style={{
+                      position: 'absolute',
+                      top: '100%',
+                      left: 0,
+                      right: 0,
+                      background: 'var(--color-card-bg, #fff)',
+                      border: '1px solid var(--color-border)',
+                      borderRadius: 6,
+                      boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+                      zIndex: 100,
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {suggestions.map((ct, i) => (
+                      <div
+                        key={ct.id}
+                        onMouseDown={(e) => { e.preventDefault(); pickSuggestion(ct.email); }}
+                        style={{
+                          padding: '8px 12px',
+                          cursor: 'pointer',
+                          background: i === suggestionIdx ? 'var(--color-primary-light, rgba(99,102,241,0.08))' : 'transparent',
+                          fontSize: 13,
+                          display: 'flex',
+                          flexDirection: 'column',
+                        }}
+                      >
+                        <span>{ct.email}</span>
+                        {ct.name && <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{ct.name}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
                 </div>
                 <p className="text-sm" style={{ color: 'var(--color-text-muted)', marginTop: 4 }}>
                   Press Enter, comma, or Tab to add each email. Leave empty for a public link.

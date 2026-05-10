@@ -156,6 +156,13 @@ func main() {
 	userRoutes.Post("/apikeys", h.CreateAPIKey)
 	userRoutes.Delete("/apikeys/:id", h.DeleteAPIKey)
 
+	// Contacts — /api/v1/users/contacts
+	userRoutes.Get("/contacts", h.ListContacts)
+	userRoutes.Post("/contacts", h.UpsertContact)
+	userRoutes.Patch("/contacts/settings", h.UpdateAutoSaveContacts) // must be before /:id
+	userRoutes.Patch("/contacts/:id", h.UpdateContact)
+	userRoutes.Delete("/contacts/:id", h.DeleteContact)
+
 	go func() {
 		log.Info("auth service starting", zap.String("port", cfg.Server.Port))
 		if err := app.Listen(":" + cfg.Server.Port); err != nil {

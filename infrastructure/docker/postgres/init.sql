@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS auth.users (
     timezone               TEXT,
     notifications_opt_out  BOOL        NOT NULL DEFAULT false,
     notification_prefs     JSONB       NOT NULL DEFAULT '{}',
+    auto_save_contacts     BOOLEAN     NOT NULL DEFAULT true,
     created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT users_email_unique UNIQUE (email),
@@ -141,9 +142,19 @@ CREATE TABLE IF NOT EXISTS auth.email_verifications (
 );
 CREATE INDEX IF NOT EXISTS ev_user_idx ON auth.email_verifications (user_id);
 
+CREATE TABLE IF NOT EXISTS auth.contacts (
+    id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id    UUID        NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    email      TEXT        NOT NULL,
+    name       TEXT        NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(user_id, email)
+);
+CREATE INDEX IF NOT EXISTS idx_contacts_user_id ON auth.contacts(user_id);
+
 -- Mark all auth migrations applied so service startup skips re-running them.
 INSERT INTO auth.schema_migrations (name) VALUES
-  ('001_init.sql'), ('002_phase1.sql'), ('003_last_login.sql'), ('004_auth_settings.sql'), ('005_user_preferences.sql'), ('006_mfa_settings.sql'), ('007_email_verifications.sql'), ('008_notification_prefs.sql')
+  ('001_init.sql'), ('002_phase1.sql'), ('003_last_login.sql'), ('004_auth_settings.sql'), ('005_user_preferences.sql'), ('006_mfa_settings.sql'), ('007_email_verifications.sql'), ('008_notification_prefs.sql'), ('009_contacts.sql')
 ON CONFLICT DO NOTHING;
 
 -- =============================================================================

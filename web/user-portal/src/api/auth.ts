@@ -167,6 +167,7 @@ export interface NotificationPrefs {
   transfer_received: boolean;
   download_notification: boolean;
   expiry_reminders: boolean;
+  auto_save_contacts: boolean;
 }
 
 export async function getNotificationPrefs(): Promise<NotificationPrefs> {

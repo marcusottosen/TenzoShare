@@ -51,6 +51,16 @@ function IconSettings() {
     </svg>
   );
 }
+function IconContacts() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+      <circle cx="9" cy="7" r="4"/>
+      <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+      <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+    </svg>
+  );
+}
 function IconLogOut() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -64,6 +74,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/files': 'My Files',
   '/transfers/new': 'Upload',
   '/requests': 'File Requests',
+  '/contacts': 'Contacts',
   '/shares': 'Shares & Requests',
   '/settings': 'Settings',
   '/profile': 'Profile',
@@ -141,6 +152,9 @@ export default function Layout() {
           </NavLink>
           <NavLink to="/requests" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             <IconInbox /> File Requests
+          </NavLink>
+          <NavLink to="/contacts" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            <IconContacts /> Contacts
           </NavLink>
 
           <div className="sidebar-section-label">Library</div>

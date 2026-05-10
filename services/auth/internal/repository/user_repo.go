@@ -98,7 +98,7 @@ func (r *UserRepository) GetByID(ctx context.Context, id string) (*domain.User, 
 		       COALESCE(m.is_enabled, false) AS mfa_enabled,
 		       u.failed_login_attempts, u.locked_until,
 		       u.date_format, u.time_format, u.timezone,
-		       u.notifications_opt_out, u.notification_prefs
+		       u.notifications_opt_out, u.notification_prefs, u.auto_save_contacts
 		FROM auth.users u
 		LEFT JOIN auth.mfa_secrets m ON m.user_id = u.id
 		WHERE u.id = $1
@@ -107,7 +107,7 @@ func (r *UserRepository) GetByID(ctx context.Context, id string) (*domain.User, 
 		&u.IsActive, &u.EmailVerified, &u.CreatedAt, &u.UpdatedAt,
 		&u.MFAEnabled, &u.FailedLoginAttempts, &u.LockedUntil,
 		&u.DateFormat, &u.TimeFormat, &u.Timezone,
-		&u.NotificationsOptOut, &prefsJSON,
+		&u.NotificationsOptOut, &prefsJSON, &u.AutoSaveContacts,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -505,4 +505,86 @@ func (r *UserRepository) GetNotificationStatus(ctx context.Context, email string
 	}
 	prefs = parseNotificationPrefs(prefsJSON)
 	return optOut, prefs, nil
+}
+
+// ── Contacts ──────────────────────────────────────────────────────────────────
+
+// UpsertContact inserts a new contact for the user or updates the name if the email already exists.
+func (r *UserRepository) UpsertContact(ctx context.Context, userID, email, name string) (*domain.Contact, error) {
+	var c domain.Contact
+	err := r.db.QueryRow(ctx, `
+		INSERT INTO auth.contacts (user_id, email, name)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (user_id, email) DO UPDATE SET name = EXCLUDED.name
+		RETURNING id, user_id, email, name, created_at
+	`, userID, email, name).Scan(&c.ID, &c.UserID, &c.Email, &c.Name, &c.CreatedAt)
+	if err != nil {
+		return nil, apperrors.Internal("upsert contact", err)
+	}
+	return &c, nil
+}
+
+// ListContacts returns all contacts for a user ordered by email.
+func (r *UserRepository) ListContacts(ctx context.Context, userID string) ([]*domain.Contact, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, user_id, email, name, created_at
+		FROM auth.contacts WHERE user_id = $1
+		ORDER BY email ASC
+	`, userID)
+	if err != nil {
+		return nil, apperrors.Internal("list contacts", err)
+	}
+	defer rows.Close()
+
+	var contacts []*domain.Contact
+	for rows.Next() {
+		var c domain.Contact
+		if err := rows.Scan(&c.ID, &c.UserID, &c.Email, &c.Name, &c.CreatedAt); err != nil {
+			return nil, apperrors.Internal("scan contact", err)
+		}
+		contacts = append(contacts, &c)
+	}
+	return contacts, rows.Err()
+}
+
+// UpdateContact updates the name of a contact belonging to the given user.
+func (r *UserRepository) UpdateContact(ctx context.Context, id, userID, name string) (*domain.Contact, error) {
+	var c domain.Contact
+	err := r.db.QueryRow(ctx, `
+		UPDATE auth.contacts SET name = $3
+		WHERE id = $1 AND user_id = $2
+		RETURNING id, user_id, email, name, created_at
+	`, id, userID, name).Scan(&c.ID, &c.UserID, &c.Email, &c.Name, &c.CreatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apperrors.NotFound("contact not found")
+		}
+		return nil, apperrors.Internal("update contact", err)
+	}
+	return &c, nil
+}
+
+// DeleteContact removes a contact belonging to the given user.
+func (r *UserRepository) DeleteContact(ctx context.Context, id, userID string) error {
+	tag, err := r.db.Exec(ctx, `
+		DELETE FROM auth.contacts WHERE id = $1 AND user_id = $2
+	`, id, userID)
+	if err != nil {
+		return apperrors.Internal("delete contact", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperrors.NotFound("contact not found")
+	}
+	return nil
+}
+
+// UpdateAutoSaveContacts sets the auto_save_contacts preference for a user.
+func (r *UserRepository) UpdateAutoSaveContacts(ctx context.Context, userID string, enabled bool) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE auth.users SET auto_save_contacts = $2, updated_at = now() WHERE id = $1
+	`, userID, enabled)
+	if err != nil {
+		return apperrors.Internal("update auto save contacts", err)
+	}
+	return nil
 }

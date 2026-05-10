@@ -45,6 +45,17 @@ type User struct {
 	// Notification settings
 	NotificationsOptOut bool
 	NotificationPrefs   NotificationPrefs
+	// Contacts
+	AutoSaveContacts bool
+}
+
+// Contact is a saved recipient address belonging to a user.
+type Contact struct {
+	ID        string
+	UserID    string
+	Email     string
+	Name      string
+	CreatedAt time.Time
 }
 
 // IsLocked reports whether the account is currently locked out.
