@@ -191,6 +191,7 @@ CREATE TABLE IF NOT EXISTS transfer.file_requests (
     allowed_types TEXT        NOT NULL DEFAULT '',
     max_size_mb   INT         NOT NULL DEFAULT 0,
     max_files     INT         NOT NULL DEFAULT 0,
+    notify_emails TEXT        NOT NULL DEFAULT '',
     expires_at    TIMESTAMPTZ NOT NULL,
     is_active     BOOLEAN     NOT NULL DEFAULT true,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -223,7 +224,7 @@ CREATE INDEX IF NOT EXISTS idx_file_dl_counts_transfer ON transfer.file_download
 INSERT INTO transfer.schema_migrations (name) VALUES
   ('001_init.sql'), ('002_add_name_description.sql'), ('003_file_requests.sql'),
   ('004_sender_email.sql'), ('005_file_download_counts.sql'), ('006_view_only.sql'),
-  ('007_reminder_sent_at.sql')
+  ('007_reminder_sent_at.sql'), ('008_request_notify_emails.sql')
 ON CONFLICT DO NOTHING;
 
 -- =============================================================================

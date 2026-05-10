@@ -15,6 +15,7 @@ type FileRequest struct {
 	AllowedTypes    string // comma-separated MIME prefixes; empty = all types accepted
 	MaxSizeMB       int    // 0 = unlimited
 	MaxFiles        int    // 0 = unlimited
+	NotifyEmails    string // comma-separated addresses to email the upload link on creation
 	ExpiresAt       time.Time
 	IsActive        bool
 	CreatedAt       time.Time

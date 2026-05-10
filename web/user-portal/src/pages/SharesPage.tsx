@@ -411,10 +411,13 @@ function FileRequestsTab() {
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                  <button className="btn btn-secondary btn-sm" onClick={() => navigate(`/requests/${r.id}`)}>
+                    View
+                  </button>
                   <button className="btn btn-secondary btn-sm" onClick={() => handleExpand(r.id)}>
                     <IconChevron open={isExpanded} /> {isExpanded ? 'Hide' : 'Submissions'}
                   </button>
-                  {r.is_active && (
+                  {r.is_active && !r.is_expired && new Date(r.expires_at) > new Date() && (
                     <button className="btn btn-danger btn-sm" onClick={() => handleDeactivate(r.id)} disabled={deactivating === r.id}>
                       {deactivating === r.id ? 'Closing…' : 'Close'}
                     </button>

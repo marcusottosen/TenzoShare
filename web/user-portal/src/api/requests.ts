@@ -8,6 +8,7 @@ export interface FileRequest {
   allowed_types: string;
   max_size_mb: number;
   max_files: number;
+  recipient_emails?: string[];
   expires_at: string;
   is_active: boolean;
   is_expired: boolean;
@@ -33,6 +34,7 @@ export interface CreateFileRequestParams {
   max_size_mb?: number;
   max_files?: number;
   expires_in_hours: number;
+  recipient_emails?: string[];
 }
 
 export async function listFileRequests(): Promise<{ requests: FileRequest[] }> {
@@ -52,4 +54,15 @@ export async function createFileRequest(params: CreateFileRequestParams): Promis
 
 export async function deactivateFileRequest(id: string): Promise<void> {
   return request<void>(`/requests/${id}`, { method: 'DELETE' });
+}
+
+export async function updateRequestRecipients(id: string, emails: string[]): Promise<FileRequest> {
+  return request<FileRequest>(`/requests/${id}/recipients`, {
+    method: 'PATCH',
+    body: JSON.stringify({ emails }),
+  });
+}
+
+export async function resendRequestInvite(id: string): Promise<void> {
+  return request<void>(`/requests/${id}/resend`, { method: 'POST' });
 }

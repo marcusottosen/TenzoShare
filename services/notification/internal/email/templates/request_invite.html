@@ -1,0 +1,44 @@
+{{ define "content" }}
+<p style="margin:0 0 20px;font-size:16px;font-weight:600;color:{{ .HeadingColor }};
+          font-family:Arial,Helvetica,sans-serif;">You've been invited to upload files</p>
+
+<p style="margin:0 0 24px;font-size:15px;color:{{ .TextColor }};line-height:1.7;
+          font-family:Arial,Helvetica,sans-serif;">
+  You've been asked to upload files to <strong>{{ .AppName }}</strong>.
+  Use the link below to submit your files — no account required.
+</p>
+
+<!-- Request details card -->
+<table width="100%" cellpadding="0" cellspacing="0" role="presentation"
+       style="margin-bottom:28px;">
+  <tr>
+    <td style="background-color:{{ .CardBgColor }};border:1px solid {{ .CardBorderColor }};border-radius:8px;
+               padding:20px 24px;">
+      <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+        <tr>
+          <td style="padding:5px 0;font-size:13px;color:#64748b;
+                     font-family:Arial,Helvetica,sans-serif;width:110px;">
+            Request
+          </td>
+          <td style="padding:5px 0;font-size:13px;color:{{ .HeadingColor }};font-weight:600;
+                     font-family:Arial,Helvetica,sans-serif;">{{ .RequestName }}</td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+
+<!-- CTA button -->
+<table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+  <tr>
+    <td align="center">
+      <a href="{{ .UploadURL }}"
+         style="display:inline-block;background-color:{{ .ButtonColor }};color:{{ .ButtonTextColor }};
+                text-decoration:none;font-family:Arial,Helvetica,sans-serif;font-size:15px;
+                font-weight:600;padding:14px 32px;border-radius:8px;letter-spacing:0.02em;">
+        Upload Files
+      </a>
+    </td>
+  </tr>
+</table>
+{{ end }}

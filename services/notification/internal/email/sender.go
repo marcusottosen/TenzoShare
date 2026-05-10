@@ -85,6 +85,7 @@ func (s *Sender) RenderHTML(emailType string, data any, unsubscribeURL string) s
 		"transfer_expiry_reminder": b.CustomExpiryReminder,
 		"transfer_revoked":         b.CustomTransferRevoked,
 		"request_submission":       b.CustomRequestSubmission,
+		"request_invite":           "",
 	}
 	if customTpl := customTemplates[emailType]; customTpl != "" {
 		// Inject unsubscribe URL as a substitutable tag too.
@@ -265,6 +266,18 @@ You can review the submission here:
 — The TenzoShare team
 `))
 
+var requestInviteTpl = template.Must(template.New("request_invite").Parse(`Hello,
+
+You've been asked to upload files to the following request on TenzoShare.
+
+Request: {{ .RequestName }}
+
+Click the link below to submit your files — no account required:
+{{ .UploadURL }}
+
+— The TenzoShare team
+`))
+
 var emailVerificationTpl = template.Must(template.New("email_verification").Parse(`Hello,
 
 Please verify your email address to complete your TenzoShare registration.
@@ -337,6 +350,15 @@ func RenderRequestSubmission(data RequestSubmissionData) (string, error) {
 	return buf.String(), nil
 }
 
+// RenderRequestInvite returns a formatted email body inviting a recipient to upload files.
+func RenderRequestInvite(data RequestInviteData) (string, error) {
+	var buf bytes.Buffer
+	if err := requestInviteTpl.Execute(&buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
 // RenderEmailVerification returns a formatted email body with the email verification link.
 func RenderEmailVerification(data EmailVerificationData) (string, error) {
 	var buf bytes.Buffer
@@ -391,6 +413,11 @@ type RequestSubmissionData struct {
 	Filename      string
 	SubmitterName string
 	ReviewURL     string
+}
+
+type RequestInviteData struct {
+	RequestName string
+	UploadURL   string
 }
 
 type EmailVerificationData struct {

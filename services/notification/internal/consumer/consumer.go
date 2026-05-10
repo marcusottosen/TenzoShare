@@ -201,6 +201,15 @@ func (c *Consumer) handle(subject string, data []byte) error {
 		body, err = email.RenderTransferRevoked(d)
 		htmlData = d
 
+	case "request_invite":
+		var d email.RequestInviteData
+		if err = json.Unmarshal(ev.Data, &d); err != nil {
+			break
+		}
+		subject2 = "You've been invited to upload files: " + d.RequestName
+		body, err = email.RenderRequestInvite(d)
+		htmlData = d
+
 	default:
 		c.log.Warn("unknown email event type", zap.String("type", ev.Type))
 		return nil

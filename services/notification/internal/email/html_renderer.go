@@ -23,6 +23,7 @@ func init() {
 		"transfer_received",
 		"download_notification",
 		"request_submission",
+		"request_invite",
 		"transfer_expiry_reminder",
 		"transfer_revoked",
 	}
@@ -102,6 +103,7 @@ func renderHTML(emailType string, branding BrandingData, data any, unsubscribeUR
 		"email_verification":       "Verify Email Address",
 		"transfer_expiry_reminder": "Download Files Now",
 		"request_submission":       "Review Submission",
+		"request_invite":           "Upload Files",
 	}
 	ctaOverrides := map[string]string{
 		"transfer_received":        branding.CTATransferReceived,
@@ -119,7 +121,7 @@ func renderHTML(emailType string, branding BrandingData, data any, unsubscribeUR
 
 	// Mark known URL fields as safe so html/template does not re-encode them.
 	for _, field := range []string{
-		"DownloadURL", "VerificationURL", "ResetURL", "ReviewURL",
+		"DownloadURL", "VerificationURL", "ResetURL", "ReviewURL", "UploadURL",
 	} {
 		if v, ok := m[field].(string); ok && v != "" {
 			m[field] = htmltpl.URL(v)

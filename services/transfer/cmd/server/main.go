@@ -113,6 +113,8 @@ func main() {
 	requests.Post("/", h.CreateFileRequest)
 	requests.Get("/", h.ListFileRequests)
 	requests.Get("/:id", h.GetFileRequest)
+	requests.Patch("/:id/recipients", h.UpdateRequestRecipients)
+	requests.Post("/:id/resend", h.ResendRequestInvite)
 	requests.Delete("/:id", h.DeactivateFileRequest)
 
 	// Public file request endpoints (no auth — guests view and upload)
