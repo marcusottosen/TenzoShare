@@ -131,6 +131,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/branding': 'Branding',
   '/general': 'General Settings',
   '/email': 'Email / SMTP',
+  '/account': 'My Account',
 };
 
 function getInitials(email?: string): string {
@@ -245,7 +246,12 @@ export default function Layout() {
         </div>
 
         <div className="sidebar-footer">
-          <div className="sidebar-user-row">
+          <div
+            className="sidebar-user-row"
+            style={{ cursor: 'pointer' }}
+            onClick={() => navigate('/account')}
+            title="My Account"
+          >
             <div className="sidebar-avatar">{initials}</div>
             <div className="sidebar-user-info">
               <div className="sidebar-user-name">{displayName}</div>
@@ -265,7 +271,12 @@ export default function Layout() {
         </button>
         <div className="navbar-breadcrumb">{pageTitle}</div>
 
-        <div className="navbar-avatar">{initials}</div>
+        <div
+          className="navbar-avatar"
+          style={{ cursor: 'pointer' }}
+          onClick={() => navigate('/account')}
+          title="My Account"
+        >{initials}</div>
       </header>
 
       {/* ── Main content ────────────────────────────────────── */}

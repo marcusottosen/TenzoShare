@@ -1,11 +1,16 @@
 // Package email provides SMTP email delivery for the notification service.
-// It uses Go's standard net/smtp with optional STARTTLS.
+// It supports three TLS modes via SMTP_USE_TLS:
+//   - false (default): plain TCP with automatic STARTTLS upgrade when offered (port 587)
+//   - true: implicit TLS from the start of the connection (SMTPS, port 465)
 package email
 
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/base64"
 	"fmt"
+	"mime"
+	"net"
 	"net/smtp"
 	"strings"
 	"sync"
@@ -15,6 +20,11 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/tenzoshare/tenzoshare/shared/pkg/config"
+)
+
+const (
+	smtpDialTimeout = 15 * time.Second
+	smtpOpTimeout   = 60 * time.Second
 )
 
 // Sender delivers transactional emails via SMTP.
@@ -45,12 +55,13 @@ func (s *Sender) UpdateConfig(cfg config.SMTPConfig) {
 
 // Message is the data passed to Send.
 type Message struct {
-	To       []string
-	FromName string // optional display name for the From header, e.g. "Acme Transfers"
-	ReplyTo  string // optional Reply-To address
-	Subject  string
-	Body     string // plain-text body (always set)
-	HTMLBody string // HTML body; if set, message is sent as multipart/alternative
+	To                 []string
+	FromName           string // optional display name for the From header, e.g. "Acme Transfers"
+	ReplyTo            string // optional Reply-To address
+	Subject            string
+	Body               string // plain-text body (always set)
+	HTMLBody           string // HTML body; if set, message is sent as multipart/alternative
+	ListUnsubscribeURL string // if set, adds List-Unsubscribe + List-Unsubscribe-Post headers
 }
 
 // Branding returns the current BrandingData for use by callers that need
@@ -111,60 +122,118 @@ func (s *Sender) Send(msg Message) error {
 	s.mu.RUnlock()
 
 	addr := cfg.Host + ":" + cfg.Port
-
-	body := buildMIME(cfg.From, msg.FromName, msg.ReplyTo, msg.To, msg.Subject, msg.Body, msg.HTMLBody)
-
-	var auth smtp.Auth
-	if cfg.Username != "" {
-		auth = smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)
-	}
+	body := buildMIME(cfg.From, msg.FromName, msg.ReplyTo, msg.To, msg.Subject, msg.Body, msg.HTMLBody, msg.ListUnsubscribeURL)
 
 	if cfg.UseTLS {
-		tlsCfg := &tls.Config{ServerName: cfg.Host} //nolint:gosec
-		conn, err := tls.Dial("tcp", addr, tlsCfg)
+		// Implicit TLS (SMTPS): TLS wraps the TCP connection from the very start.
+		// tls.DialWithDialer is used so we get a dial timeout; an op deadline is
+		// set on the resulting connection to bound the entire SMTP transaction.
+		netDialer := &net.Dialer{Timeout: smtpDialTimeout}
+		conn, err := tls.DialWithDialer(netDialer, "tcp", addr, &tls.Config{ServerName: cfg.Host}) //nolint:gosec
 		if err != nil {
-			return fmt.Errorf("smtp tls dial: %w", err)
+			return fmt.Errorf("smtp implicit-tls dial: %w", err)
 		}
+		defer conn.Close()                              //nolint:errcheck
+		conn.SetDeadline(time.Now().Add(smtpOpTimeout)) //nolint:errcheck
+
 		client, err := smtp.NewClient(conn, cfg.Host)
 		if err != nil {
 			return fmt.Errorf("smtp new client: %w", err)
 		}
-		defer client.Close()
-		if auth != nil {
-			if err := client.Auth(auth); err != nil {
+		defer client.Close() //nolint:errcheck
+
+		// smtp.PlainAuth refuses to send credentials when smtp.Client.tls==false,
+		// even though the underlying connection IS TLS (the client just doesn't know
+		// because TLS was not started via StartTLS). Use our own Auth impl that
+		// skips the check — safe because we know the transport is already encrypted.
+		if cfg.Username != "" {
+			if err := client.Auth(implicitTLSPlainAuth{cfg.Username, cfg.Password}); err != nil {
 				return fmt.Errorf("smtp auth: %w", err)
 			}
 		}
-		if err := client.Mail(cfg.From); err != nil {
-			return fmt.Errorf("smtp MAIL FROM: %w", err)
-		}
-		for _, to := range msg.To {
-			if err := client.Rcpt(to); err != nil {
-				return fmt.Errorf("smtp RCPT TO %s: %w", to, err)
-			}
-		}
-		w, err := client.Data()
-		if err != nil {
-			return fmt.Errorf("smtp DATA: %w", err)
-		}
-		if _, err = w.Write(body); err != nil {
-			return fmt.Errorf("smtp write body: %w", err)
-		}
-		return w.Close()
+		return smtpSendData(client, cfg.From, msg.To, body)
 	}
 
-	// plain SMTP (dev / MailHog)
-	return smtp.SendMail(addr, auth, cfg.From, msg.To, body)
+	// Plain TCP path — STARTTLS upgrade is attempted if the server advertises it.
+	// We dial manually (instead of using smtp.SendMail) so we can apply timeouts.
+	tcpConn, err := (&net.Dialer{Timeout: smtpDialTimeout}).Dial("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("smtp dial: %w", err)
+	}
+	defer tcpConn.Close()                              //nolint:errcheck
+	tcpConn.SetDeadline(time.Now().Add(smtpOpTimeout)) //nolint:errcheck
+
+	client, err := smtp.NewClient(tcpConn, cfg.Host)
+	if err != nil {
+		return fmt.Errorf("smtp new client: %w", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	// Upgrade to TLS if the server advertises STARTTLS.
+	if ok, _ := client.Extension("STARTTLS"); ok {
+		if err := client.StartTLS(&tls.Config{ServerName: cfg.Host}); err != nil { //nolint:gosec
+			return fmt.Errorf("smtp starttls: %w", err)
+		}
+	}
+
+	if cfg.Username != "" {
+		// PlainAuth correctly checks c.tls==true after StartTLS.
+		if err := client.Auth(smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)); err != nil {
+			return fmt.Errorf("smtp auth: %w", err)
+		}
+	}
+	return smtpSendData(client, cfg.From, msg.To, body)
+}
+
+// smtpSendData issues MAIL FROM, RCPT TO, and DATA commands to deliver body.
+func smtpSendData(client *smtp.Client, from string, to []string, body []byte) error {
+	if err := client.Mail(from); err != nil {
+		return fmt.Errorf("smtp MAIL FROM: %w", err)
+	}
+	for _, addr := range to {
+		if err := client.Rcpt(addr); err != nil {
+			return fmt.Errorf("smtp RCPT TO %s: %w", addr, err)
+		}
+	}
+	w, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("smtp DATA: %w", err)
+	}
+	if _, err = w.Write(body); err != nil {
+		return fmt.Errorf("smtp write body: %w", err)
+	}
+	return w.Close()
+}
+
+// implicitTLSPlainAuth implements smtp.Auth for connections already wrapped in
+// TLS at the TCP level (implicit TLS / SMTPS, port 465). It behaves identically
+// to smtp.PlainAuth but omits the TLS check that would otherwise fail because
+// smtp.Client is unaware TLS is active when the connection was pre-dialed.
+type implicitTLSPlainAuth struct{ username, password string }
+
+func (a implicitTLSPlainAuth) Start(*smtp.ServerInfo) (string, []byte, error) {
+	resp := "\x00" + a.username + "\x00" + a.password
+	return "PLAIN", []byte(resp), nil
+}
+
+func (a implicitTLSPlainAuth) Next(_ []byte, more bool) ([]byte, error) {
+	if more {
+		return nil, fmt.Errorf("unexpected server challenge during PLAIN auth")
+	}
+	return nil, nil
 }
 
 // buildMIME constructs the raw SMTP message bytes. When htmlBody is non-empty
 // the message uses multipart/alternative so clients can choose the best part.
-func buildMIME(from, fromName, replyTo string, to []string, subject, plainBody, htmlBody string) []byte {
+// All bodies are base64-encoded (Content-Transfer-Encoding: base64) so that
+// non-ASCII content in user-supplied strings is transmitted safely through
+// strict 7-bit MTAs.
+func buildMIME(from, fromName, replyTo string, to []string, subject, plainBody, htmlBody, listUnsubURL string) []byte {
 	var buf bytes.Buffer
+
+	// From header — RFC 5322 display name, RFC 2047 encoded if non-ASCII.
 	if fromName != "" {
-		// RFC 5322 display-name format: "Display Name" <addr@example.com>
-		quoted := fmt.Sprintf("%q", fromName) // Go's %q adds surrounding double-quotes and escapes
-		fmt.Fprintf(&buf, "From: %s <%s>\r\n", quoted, from)
+		fmt.Fprintf(&buf, "From: %s <%s>\r\n", encodeDisplayName(fromName), from)
 	} else {
 		fmt.Fprintf(&buf, "From: %s\r\n", from)
 	}
@@ -172,34 +241,97 @@ func buildMIME(from, fromName, replyTo string, to []string, subject, plainBody, 
 		fmt.Fprintf(&buf, "Reply-To: %s\r\n", replyTo)
 	}
 	fmt.Fprintf(&buf, "To: %s\r\n", joinAddrs(to))
-	fmt.Fprintf(&buf, "Subject: %s\r\n", subject)
+	// Subject — RFC 2047 B-encoded when non-ASCII characters are present.
+	fmt.Fprintf(&buf, "Subject: %s\r\n", encodeHeader(subject))
 	fmt.Fprintf(&buf, "Date: %s\r\n", time.Now().Format(time.RFC1123Z))
+
+	// Message-ID — required by RFC 5322; used by spam filters and threading.
+	domain := "mail.local"
+	if at := strings.LastIndex(from, "@"); at >= 0 {
+		domain = from[at+1:]
+	}
+	fmt.Fprintf(&buf, "Message-ID: <%d@%s>\r\n", time.Now().UnixNano(), domain)
+
 	fmt.Fprintf(&buf, "MIME-Version: 1.0\r\n")
 
+	// List-Unsubscribe — displayed as an unsubscribe button by Gmail / Outlook.
+	if listUnsubURL != "" {
+		fmt.Fprintf(&buf, "List-Unsubscribe: <%s>\r\n", listUnsubURL)
+		fmt.Fprintf(&buf, "List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n")
+	}
+
 	if htmlBody == "" {
-		// Plain-text only
+		// Plain-text only — base64-encoded for safe 8-bit transport.
 		fmt.Fprintf(&buf, "Content-Type: text/plain; charset=UTF-8\r\n")
-		fmt.Fprintf(&buf, "\r\n%s", plainBody)
+		fmt.Fprintf(&buf, "Content-Transfer-Encoding: base64\r\n")
+		fmt.Fprintf(&buf, "\r\n")
+		buf.WriteString(mimeBase64([]byte(plainBody)))
 		return buf.Bytes()
 	}
 
-	// multipart/alternative — text/plain first (lowest fidelity), text/html last (preferred)
-	boundary := fmt.Sprintf("--tenzoshare_%d", time.Now().UnixNano())
+	// multipart/alternative — text/plain first (lowest fidelity), text/html last (preferred).
+	// Boundary does NOT start with '--'; the delimiter adds those automatically.
+	boundary := fmt.Sprintf("tenzoshare_%d", time.Now().UnixNano())
 	fmt.Fprintf(&buf, "Content-Type: multipart/alternative; boundary=%q\r\n", boundary)
 	fmt.Fprintf(&buf, "\r\n")
 
 	// plain part
 	fmt.Fprintf(&buf, "--%s\r\n", boundary)
 	fmt.Fprintf(&buf, "Content-Type: text/plain; charset=UTF-8\r\n")
-	fmt.Fprintf(&buf, "\r\n%s\r\n", plainBody)
+	fmt.Fprintf(&buf, "Content-Transfer-Encoding: base64\r\n")
+	fmt.Fprintf(&buf, "\r\n")
+	buf.WriteString(mimeBase64([]byte(plainBody)))
+	fmt.Fprintf(&buf, "\r\n")
 
 	// HTML part
 	fmt.Fprintf(&buf, "--%s\r\n", boundary)
 	fmt.Fprintf(&buf, "Content-Type: text/html; charset=UTF-8\r\n")
-	fmt.Fprintf(&buf, "\r\n%s\r\n", htmlBody)
+	fmt.Fprintf(&buf, "Content-Transfer-Encoding: base64\r\n")
+	fmt.Fprintf(&buf, "\r\n")
+	buf.WriteString(mimeBase64([]byte(htmlBody)))
+	fmt.Fprintf(&buf, "\r\n")
 
 	fmt.Fprintf(&buf, "--%s--\r\n", boundary)
 	return buf.Bytes()
+}
+
+// mimeBase64 returns data as base64 with 76-character line wrapping per RFC 2045.
+func mimeBase64(data []byte) string {
+	encoded := base64.StdEncoding.EncodeToString(data)
+	var sb strings.Builder
+	for i := 0; i < len(encoded); i += 76 {
+		end := i + 76
+		if end > len(encoded) {
+			end = len(encoded)
+		}
+		sb.WriteString(encoded[i:end])
+		sb.WriteString("\r\n")
+	}
+	return sb.String()
+}
+
+// encodeHeader RFC 2047 B-encodes s when it contains non-ASCII characters,
+// otherwise returns s unchanged. Used for Subject and other unstructured headers.
+func encodeHeader(s string) string {
+	for _, r := range s {
+		if r > 127 {
+			return mime.BEncoding.Encode("UTF-8", s)
+		}
+	}
+	return s
+}
+
+// encodeDisplayName returns a safe RFC 5322 display-name token. ASCII names are
+// quoted with double-quotes; non-ASCII names are RFC 2047 Q-encoded.
+func encodeDisplayName(name string) string {
+	for _, r := range name {
+		if r > 127 {
+			return mime.QEncoding.Encode("UTF-8", name)
+		}
+	}
+	// ASCII: use a simple double-quoted string. Escape embedded " and \.
+	escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(name)
+	return `"` + escaped + `"`
 }
 
 func joinAddrs(addrs []string) string {

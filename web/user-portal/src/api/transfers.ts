@@ -14,6 +14,7 @@ export interface Transfer {
   is_revoked: boolean;
   has_password: boolean;
   view_only: boolean;
+  notify_on_download: boolean;
   expires_at?: string;
   created_at: string;
   file_ids?: string[];
@@ -35,6 +36,7 @@ export interface CreateTransferParams {
   password?: string;
   max_downloads?: number;
   view_only?: boolean;
+  notify_on_download?: boolean;
   /** Required: 1–2160 hours (max 90 days). */
   expires_in_hours: number;
 }

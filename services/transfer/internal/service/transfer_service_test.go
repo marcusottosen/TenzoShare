@@ -193,6 +193,18 @@ func (r *stubTransferRepo) MarkReminderSent(_ context.Context, _ string) error {
 	return r.err
 }
 
+func (r *stubTransferRepo) UpdateRecipientEmail(_ context.Context, id, ownerID, recipientEmail string) error {
+	if r.err != nil {
+		return r.err
+	}
+	t, ok := r.byID[id]
+	if !ok || t.OwnerID != ownerID {
+		return apperrors.NotFound("transfer not found")
+	}
+	t.RecipientEmail = recipientEmail
+	return nil
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func newTestTransferService(repo transferRepository) *TransferService {

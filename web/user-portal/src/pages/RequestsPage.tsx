@@ -13,6 +13,7 @@ export default function RequestsPage() {
   const [allowedTypes, setAllowedTypes] = useState('');
   const [maxSizeMB, setMaxSizeMB] = useState('');
   const [expiresInHrs, setExpiresInHrs] = useState('72');
+  const [notifyOnUpload, setNotifyOnUpload] = useState(true);
   const [recipientEmails, setRecipientEmails] = useState<string[]>([]);
   const [emailInput, setEmailInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -66,6 +67,7 @@ export default function RequestsPage() {
         max_size_mb: maxSizeMB ? parseInt(maxSizeMB, 10) : undefined,
         expires_in_hours: hrs,
         recipient_emails: recipientEmails.length > 0 ? recipientEmails : undefined,
+        notify_on_upload: notifyOnUpload,
       });
       navigate(`/requests/${req.id}`);
     } catch (err: unknown) {
@@ -183,6 +185,34 @@ export default function RequestsPage() {
             <small style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
               1 day = 24 hrs · 1 week = 168 hrs · max 1 year = 8760 hrs
             </small>
+          </div>
+
+          <div style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 12,
+            padding: '14px 16px',
+            background: 'var(--color-input-bg)',
+            border: `1px solid ${notifyOnUpload ? 'var(--color-primary)' : 'var(--color-border)'}`,
+            borderRadius: 8,
+            marginBottom: 16,
+            transition: 'all 0.15s',
+          }}>
+            <input
+              id="notify-on-upload"
+              type="checkbox"
+              checked={notifyOnUpload}
+              onChange={(e) => setNotifyOnUpload(e.target.checked)}
+              style={{ marginTop: 2, flexShrink: 0, cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+            />
+            <div style={{ flex: 1 }}>
+              <label htmlFor="notify-on-upload" style={{ fontWeight: 600, fontSize: 13, cursor: 'pointer', display: 'block', marginBottom: 2 }}>
+                Notify me when a file is uploaded
+              </label>
+              <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: 0, lineHeight: 1.5 }}>
+                You will receive an email each time a guest submits a file to this request.
+              </p>
+            </div>
           </div>
 
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 8 }}>

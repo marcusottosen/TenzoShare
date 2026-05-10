@@ -230,12 +230,13 @@ func (c *Consumer) handle(subject string, data []byte) error {
 	htmlBody := c.sender.RenderHTML(ev.Type, htmlData, unsubURL)
 
 	sendErr := c.sender.Send(email.Message{
-		To:       ev.To,
-		FromName: branding.EmailSenderName,
-		ReplyTo:  branding.EmailReplyTo,
-		Subject:  subject2,
-		Body:     body,
-		HTMLBody: htmlBody,
+		To:                 ev.To,
+		FromName:           branding.EmailSenderName,
+		ReplyTo:            branding.EmailReplyTo,
+		Subject:            subject2,
+		Body:               body,
+		HTMLBody:           htmlBody,
+		ListUnsubscribeURL: unsubURL,
 	})
 	if sendErr != nil {
 		c.log.Error("failed to send email",

@@ -18,6 +18,7 @@ export interface MeResponse {
   user_id: string;
   email: string;
   role: string;
+  created_at?: string;
   // per-user format prefs (null = use system default)
   date_format?: string | null;
   time_format?: string | null;
@@ -69,4 +70,11 @@ export async function createAPIKey(name: string): Promise<APIKey> {
 
 export async function deleteAPIKey(id: string): Promise<void> {
   return request<void>(`/users/apikeys/${id}`, { method: 'DELETE' });
+}
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  return request<void>('/users/me', {
+    method: 'PATCH',
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
 }

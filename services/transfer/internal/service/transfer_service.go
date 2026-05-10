@@ -50,17 +50,18 @@ func New(repo *repository.TransferRepository, cfg *config.Config, js *jetstream.
 
 // CreateParams carries creation inputs from the handler.
 type CreateParams struct {
-	OwnerID        string
-	SenderEmail    string // email of the creating user, stored for display to recipients
-	Name           string
-	Description    string
-	FileIDs        []string
-	RecipientEmail string
-	Password       string // empty = no password
-	MaxDownloads   int
-	ViewOnly       bool          // true = serve files inline; no download button for recipients
-	ExpiresIn      time.Duration // must be > 0 and <= 90 days
-	ClientIP       string        // for audit log
+	OwnerID          string
+	SenderEmail      string // email of the creating user, stored for display to recipients
+	Name             string
+	Description      string
+	FileIDs          []string
+	RecipientEmail   string
+	Password         string // empty = no password
+	MaxDownloads     int
+	ViewOnly         bool          // true = serve files inline; no download button for recipients
+	NotifyOnDownload bool          // true = email the owner when a recipient downloads a file
+	ExpiresIn        time.Duration // must be > 0 and <= 90 days
+	ClientIP         string        // for audit log
 }
 
 // CreateResult is returned to the handler after successful creation.
@@ -91,14 +92,15 @@ func (s *TransferService) Create(ctx context.Context, p CreateParams) (*CreateRe
 	}
 
 	t := &domain.Transfer{
-		OwnerID:        p.OwnerID,
-		SenderEmail:    p.SenderEmail,
-		Name:           strings.TrimSpace(p.Name),
-		Description:    strings.TrimSpace(p.Description),
-		RecipientEmail: p.RecipientEmail,
-		Slug:           slug,
-		MaxDownloads:   p.MaxDownloads,
-		ViewOnly:       p.ViewOnly,
+		OwnerID:          p.OwnerID,
+		SenderEmail:      p.SenderEmail,
+		Name:             strings.TrimSpace(p.Name),
+		Description:      strings.TrimSpace(p.Description),
+		RecipientEmail:   p.RecipientEmail,
+		Slug:             slug,
+		MaxDownloads:     p.MaxDownloads,
+		ViewOnly:         p.ViewOnly,
+		NotifyOnDownload: p.NotifyOnDownload,
 	}
 
 	if p.Password != "" {
@@ -198,7 +200,7 @@ func (s *TransferService) publishEmailNotification(ctx context.Context, t *domai
 // Only fires when the owner has an email address and NATS is available.
 // Best-effort: errors are only logged.
 func (s *TransferService) publishDownloadNotificationEmail(ctx context.Context, t *domain.Transfer, fileID string) {
-	if s.js == nil || t.SenderEmail == "" {
+	if s.js == nil || t.SenderEmail == "" || !t.NotifyOnDownload {
 		return
 	}
 

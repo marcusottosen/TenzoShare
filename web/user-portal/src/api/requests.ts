@@ -9,6 +9,7 @@ export interface FileRequest {
   max_size_mb: number;
   max_files: number;
   recipient_emails?: string[];
+  notify_on_upload: boolean;
   expires_at: string;
   is_active: boolean;
   is_expired: boolean;
@@ -35,6 +36,7 @@ export interface CreateFileRequestParams {
   max_files?: number;
   expires_in_hours: number;
   recipient_emails?: string[];
+  notify_on_upload?: boolean;
 }
 
 export async function listFileRequests(): Promise<{ requests: FileRequest[] }> {

@@ -52,17 +52,18 @@ func New(svc *service.TransferService, requestSvc *service.RequestService, jwtPr
 }
 
 type createRequest struct {
-	Name            string   `json:"name"             validate:"required,min=1,max=200"`
-	Description     string   `json:"description"      validate:"max=1000"`
-	FileIDs         []string `json:"file_ids"         validate:"required,min=1,dive,uuid4"`
+	Name        string   `json:"name"             validate:"required,min=1,max=200"`
+	Description string   `json:"description"      validate:"max=1000"`
+	FileIDs     []string `json:"file_ids"         validate:"required,min=1,dive,uuid4"`
 	// RecipientEmails accepts multiple addresses; stored comma-separated.
 	// RecipientEmail is kept for backward-compat single-email clients.
-	RecipientEmails []string `json:"recipient_emails" validate:"omitempty,max=20,dive,email"`
-	RecipientEmail  string   `json:"recipient_email"  validate:"omitempty,email"`
-	Password        string   `json:"password"`
-	MaxDownloads    int      `json:"max_downloads"    validate:"min=0"`
-	ViewOnly        bool     `json:"view_only"`
-	ExpiresInHours  int      `json:"expires_in_hours" validate:"required,min=1,max=2160"`
+	RecipientEmails  []string `json:"recipient_emails" validate:"omitempty,max=20,dive,email"`
+	RecipientEmail   string   `json:"recipient_email"  validate:"omitempty,email"`
+	Password         string   `json:"password"`
+	MaxDownloads     int      `json:"max_downloads"    validate:"min=0"`
+	ViewOnly         bool     `json:"view_only"`
+	NotifyOnDownload bool     `json:"notify_on_download"`
+	ExpiresInHours   int      `json:"expires_in_hours" validate:"required,min=1,max=2160"`
 }
 
 // Create POST /api/v1/transfers
@@ -93,17 +94,18 @@ func (h *Handler) Create(c fiber.Ctx) error {
 	recipientEmail := strings.Join(allEmails, ",")
 
 	result, err := h.svc.Create(c.Context(), service.CreateParams{
-		OwnerID:        ownerID,
-		SenderEmail:    senderEmail,
-		Name:           req.Name,
-		Description:    req.Description,
-		FileIDs:        req.FileIDs,
-		RecipientEmail: recipientEmail,
-		Password:       req.Password,
-		MaxDownloads:   req.MaxDownloads,
-		ViewOnly:       req.ViewOnly,
-		ExpiresIn:      time.Duration(req.ExpiresInHours) * time.Hour,
-		ClientIP:       realClientIP(c),
+		OwnerID:          ownerID,
+		SenderEmail:      senderEmail,
+		Name:             req.Name,
+		Description:      req.Description,
+		FileIDs:          req.FileIDs,
+		RecipientEmail:   recipientEmail,
+		Password:         req.Password,
+		MaxDownloads:     req.MaxDownloads,
+		ViewOnly:         req.ViewOnly,
+		NotifyOnDownload: req.NotifyOnDownload,
+		ExpiresIn:        time.Duration(req.ExpiresInHours) * time.Hour,
+		ClientIP:         realClientIP(c),
 	})
 	if err != nil {
 		return err
@@ -218,21 +220,22 @@ func (h *Handler) Access(c fiber.Ctx) error {
 
 func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 	m := fiber.Map{
-		"id":               t.ID,
-		"owner_id":         t.OwnerID,
-		"sender_email":     t.SenderEmail,
-		"name":             t.Name,
-		"description":      t.Description,
-		"slug":             t.Slug,
-		"status":           t.Status(),
-		"max_downloads":    t.MaxDownloads,
-		"download_count":   t.DownloadCount,
-		"is_revoked":       t.IsRevoked,
-		"view_only":        t.ViewOnly,
-		"has_password":     t.PasswordHash != "",
-		"created_at":       t.CreatedAt,
-		"file_count":       t.FileCount,
-		"total_size_bytes": t.TotalSizeBytes,
+		"id":                 t.ID,
+		"owner_id":           t.OwnerID,
+		"sender_email":       t.SenderEmail,
+		"name":               t.Name,
+		"description":        t.Description,
+		"slug":               t.Slug,
+		"status":             t.Status(),
+		"max_downloads":      t.MaxDownloads,
+		"download_count":     t.DownloadCount,
+		"is_revoked":         t.IsRevoked,
+		"view_only":          t.ViewOnly,
+		"notify_on_download": t.NotifyOnDownload,
+		"has_password":       t.PasswordHash != "",
+		"created_at":         t.CreatedAt,
+		"file_count":         t.FileCount,
+		"total_size_bytes":   t.TotalSizeBytes,
 	}
 	if t.RecipientEmail != "" {
 		m["recipient_email"] = t.RecipientEmail

@@ -168,9 +168,10 @@ CREATE TABLE IF NOT EXISTS transfer.transfers (
     name            TEXT        NOT NULL DEFAULT '',
     description     TEXT        NOT NULL DEFAULT '',
     sender_email    TEXT        NOT NULL DEFAULT '',
-    view_only       BOOLEAN     NOT NULL DEFAULT false,
-    reminder_sent_at TIMESTAMPTZ,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    view_only          BOOLEAN     NOT NULL DEFAULT false,
+    reminder_sent_at   TIMESTAMPTZ,
+    notify_on_download BOOLEAN     NOT NULL DEFAULT true,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_transfers_owner   ON transfer.transfers (owner_id);
 CREATE INDEX IF NOT EXISTS idx_transfers_slug    ON transfer.transfers (slug);
@@ -191,9 +192,10 @@ CREATE TABLE IF NOT EXISTS transfer.file_requests (
     allowed_types TEXT        NOT NULL DEFAULT '',
     max_size_mb   INT         NOT NULL DEFAULT 0,
     max_files     INT         NOT NULL DEFAULT 0,
-    notify_emails TEXT        NOT NULL DEFAULT '',
-    expires_at    TIMESTAMPTZ NOT NULL,
-    is_active     BOOLEAN     NOT NULL DEFAULT true,
+    notify_emails    TEXT        NOT NULL DEFAULT '',
+    notify_on_upload BOOLEAN     NOT NULL DEFAULT true,
+    expires_at       TIMESTAMPTZ NOT NULL,
+    is_active        BOOLEAN     NOT NULL DEFAULT true,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_file_requests_owner ON transfer.file_requests (owner_id);
@@ -224,7 +226,8 @@ CREATE INDEX IF NOT EXISTS idx_file_dl_counts_transfer ON transfer.file_download
 INSERT INTO transfer.schema_migrations (name) VALUES
   ('001_init.sql'), ('002_add_name_description.sql'), ('003_file_requests.sql'),
   ('004_sender_email.sql'), ('005_file_download_counts.sql'), ('006_view_only.sql'),
-  ('007_reminder_sent_at.sql'), ('008_request_notify_emails.sql')
+  ('007_reminder_sent_at.sql'), ('008_request_notify_emails.sql'),
+  ('009_request_notify_on_upload.sql'), ('010_transfer_notify_on_download.sql')
 ON CONFLICT DO NOTHING;
 
 -- =============================================================================

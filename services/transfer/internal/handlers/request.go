@@ -38,6 +38,7 @@ type createRequestBody struct {
 	MaxFiles        int      `json:"max_files"`
 	ExpiresInHrs    int      `json:"expires_in_hours" validate:"required,min=1,max=8760"`
 	RecipientEmails []string `json:"recipient_emails" validate:"omitempty,max=20,dive,email"`
+	NotifyOnUpload  bool     `json:"notify_on_upload"`
 }
 
 // CreateFileRequest POST /api/v1/requests
@@ -56,14 +57,15 @@ func (h *Handler) CreateFileRequest(c fiber.Ctx) error {
 	}
 
 	fr, err := h.requestSvc.Create(c.Context(), service.CreateRequestParams{
-		OwnerID:      claims.UserID,
-		Name:         req.Name,
-		Description:  req.Description,
-		AllowedTypes: req.AllowedTypes,
-		MaxSizeMB:    req.MaxSizeMB,
-		MaxFiles:     req.MaxFiles,
-		ExpiresInHrs: req.ExpiresInHrs,
-		NotifyEmails: strings.Join(req.RecipientEmails, ","),
+		OwnerID:        claims.UserID,
+		Name:           req.Name,
+		Description:    req.Description,
+		AllowedTypes:   req.AllowedTypes,
+		MaxSizeMB:      req.MaxSizeMB,
+		MaxFiles:       req.MaxFiles,
+		ExpiresInHrs:   req.ExpiresInHrs,
+		NotifyEmails:   strings.Join(req.RecipientEmails, ","),
+		NotifyOnUpload: req.NotifyOnUpload,
 	})
 	if err != nil {
 		return err
@@ -244,6 +246,7 @@ func fileRequestResponse(r *domain.FileRequest) fiber.Map {
 		"max_size_mb":      r.MaxSizeMB,
 		"max_files":        r.MaxFiles,
 		"recipient_emails": recipientEmails,
+		"notify_on_upload": r.NotifyOnUpload,
 		"expires_at":       r.ExpiresAt.Format(time.RFC3339),
 		"is_active":        r.IsActive,
 		"is_expired":       r.IsExpired(),

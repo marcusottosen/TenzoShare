@@ -41,6 +41,7 @@ export default function NewTransferPage() {
   const [password, setPassword] = useState('');
   const [maxDownloads, setMaxDownloads] = useState(0);
   const [viewOnly, setViewOnly] = useState(false);
+  const [notifyOnDownload, setNotifyOnDownload] = useState(true);
   const [expiresInHours, setExpiresInHours] = useState(168);
 
   // Files staged for this transfer
@@ -209,6 +210,7 @@ export default function NewTransferPage() {
         password: password || undefined,
         max_downloads: maxDownloads || undefined,
         view_only: viewOnly || undefined,
+        notify_on_download: notifyOnDownload,
         expires_in_hours: expiresInHours,
       });
       navigate(`/transfers/${t.id}`);
@@ -533,6 +535,34 @@ export default function NewTransferPage() {
                 Recipients can open and read files in the browser but will not see a download button.
                 The server enforces this by serving files inline.{' '}
                 <em>Note: determined users may still save via browser tools — this is a workflow and compliance aid, not DRM.</em>
+              </p>
+            </div>
+          </div>
+
+          <div style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 12,
+            padding: '14px 16px',
+            background: 'var(--color-input-bg)',
+            border: `1px solid ${notifyOnDownload ? 'var(--color-primary)' : 'var(--color-border)'}`,
+            borderRadius: 8,
+            marginTop: 4,
+            transition: 'all 0.15s',
+          }}>
+            <input
+              id="notify-on-download"
+              type="checkbox"
+              checked={notifyOnDownload}
+              onChange={(e) => setNotifyOnDownload(e.target.checked)}
+              style={{ marginTop: 2, flexShrink: 0, cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+            />
+            <div style={{ flex: 1 }}>
+              <label htmlFor="notify-on-download" style={{ fontWeight: 600, fontSize: 13, cursor: 'pointer', display: 'block', marginBottom: 2 }}>
+                Notify me when a file is downloaded
+              </label>
+              <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: 0, lineHeight: 1.5 }}>
+                You will receive an email each time a recipient downloads a file from this transfer.
               </p>
             </div>
           </div>

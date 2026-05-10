@@ -62,14 +62,15 @@ func NewRequestService(
 
 // CreateRequestParams carries inputs for creating a file request.
 type CreateRequestParams struct {
-	OwnerID      string
-	Name         string
-	Description  string
-	AllowedTypes string // comma-separated MIME prefixes; empty = all
-	MaxSizeMB    int    // 0 = unlimited
-	MaxFiles     int    // 0 = unlimited
-	ExpiresInHrs int    // must be >= 1
-	NotifyEmails string // comma-separated; empty = no invite emails sent
+	OwnerID        string
+	Name           string
+	Description    string
+	AllowedTypes   string // comma-separated MIME prefixes; empty = all
+	MaxSizeMB      int    // 0 = unlimited
+	MaxFiles       int    // 0 = unlimited
+	ExpiresInHrs   int    // must be >= 1
+	NotifyEmails   string // comma-separated; empty = no invite emails sent
+	NotifyOnUpload bool   // true = email the owner when a guest submits a file
 }
 
 // Create creates a new file request and returns the persisted record.
@@ -80,15 +81,16 @@ func (s *RequestService) Create(ctx context.Context, p CreateRequestParams) (*do
 		return nil, apperrors.Internal("generate slug", err)
 	}
 	req := &domain.FileRequest{
-		OwnerID:      p.OwnerID,
-		Slug:         slug,
-		Name:         p.Name,
-		Description:  p.Description,
-		AllowedTypes: p.AllowedTypes,
-		MaxSizeMB:    p.MaxSizeMB,
-		MaxFiles:     p.MaxFiles,
-		NotifyEmails: p.NotifyEmails,
-		ExpiresAt:    time.Now().Add(time.Duration(p.ExpiresInHrs) * time.Hour),
+		OwnerID:        p.OwnerID,
+		Slug:           slug,
+		Name:           p.Name,
+		Description:    p.Description,
+		AllowedTypes:   p.AllowedTypes,
+		MaxSizeMB:      p.MaxSizeMB,
+		MaxFiles:       p.MaxFiles,
+		NotifyEmails:   p.NotifyEmails,
+		NotifyOnUpload: p.NotifyOnUpload,
+		ExpiresAt:      time.Now().Add(time.Duration(p.ExpiresInHrs) * time.Hour),
 	}
 	result, err := s.repo.Create(ctx, req)
 	if err != nil {
@@ -270,7 +272,7 @@ func (s *RequestService) Submit(ctx context.Context, p SubmitParams) (*domain.Re
 	}
 
 	// Notify the request owner via NATS (best-effort — never fail the upload on NATS error).
-	if s.js != nil && req.OwnerEmail != "" {
+	if s.js != nil && req.NotifyOnUpload && req.OwnerEmail != "" {
 		data, _ := json.Marshal(map[string]any{
 			"RequestName":   req.Name,
 			"Filename":      p.Header.Filename,
