@@ -124,7 +124,7 @@ export default function Layout() {
             <img src={getLogoUrl()} alt="TenzoShare" style={{ width: 32, height: 32, objectFit: 'contain' }} />
           </div>
           <div>
-            <div className="sidebar-title">TenzoShare</div>
+            <div className="sidebar-title">{getAppName()}</div>
             <div className="sidebar-subtitle">User Portal</div>
           </div>
         </div>

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	htmltpl "html/template"
+	"strings"
 )
 
 //go:embed templates/*.html
@@ -137,4 +138,71 @@ func renderHTML(emailType string, branding BrandingData, data any, unsubscribeUR
 		return "", fmt.Errorf("execute HTML template %s: %w", emailType, err)
 	}
 	return buf.String(), nil
+}
+
+// renderCustomHTML substitutes {{Tag}} placeholders in a user-supplied HTML string.
+// Only known, safe values are substituted — the template HTML itself is never
+// parsed by html/template so no injection via the template structure is possible.
+// Unknown {{X}} patterns are left as-is so the author can spot typos.
+func renderCustomHTML(customTpl string, emailType string, branding BrandingData, data any) string {
+	// Build the same flat map that renderHTML builds, so the same tags work.
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return customTpl
+	}
+	m := map[string]string{}
+	var tmp map[string]any
+	if err := json.Unmarshal(raw, &tmp); err == nil {
+		for k, v := range tmp {
+			m[k] = fmt.Sprintf("%v", v)
+		}
+	}
+
+	// Inject branding values using the same CamelCase names the Go templates use.
+	btnColor := branding.EmailButtonColor
+	if btnColor == "" {
+		btnColor = branding.PrimaryColor
+	}
+	btnTextColor := branding.EmailButtonTextColor
+	if btnTextColor == "" {
+		btnTextColor = "#ffffff"
+	}
+	bodyBg := branding.EmailBodyBgColor
+	if bodyBg == "" {
+		bodyBg = "#f1f5f9"
+	}
+	cardBg := branding.EmailCardBgColor
+	if cardBg == "" {
+		cardBg = "#f8fafc"
+	}
+	cardBorder := branding.EmailCardBorderColor
+	if cardBorder == "" {
+		cardBorder = "#e2e8f0"
+	}
+	heading := branding.EmailHeadingColor
+	if heading == "" {
+		heading = "#1e293b"
+	}
+	textColor := branding.EmailTextColor
+	if textColor == "" {
+		textColor = "#475569"
+	}
+	m["AppName"] = branding.AppName
+	m["PrimaryColor"] = branding.PrimaryColor
+	m["ButtonColor"] = btnColor
+	m["ButtonTextColor"] = btnTextColor
+	m["BodyBgColor"] = bodyBg
+	m["CardBgColor"] = cardBg
+	m["CardBorderColor"] = cardBorder
+	m["HeadingColor"] = heading
+	m["TextColor"] = textColor
+	m["EmailSenderName"] = branding.EmailSenderName
+	m["EmailSupportEmail"] = branding.EmailSupportEmail
+	m["EmailFooterText"] = branding.EmailFooterText
+
+	result := customTpl
+	for tag, val := range m {
+		result = strings.ReplaceAll(result, "{"+"{"+tag+"}}", val)
+	}
+	return result
 }

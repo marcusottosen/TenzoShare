@@ -461,6 +461,14 @@ export interface BrandingConfig {
   cta_email_verification: string;
   cta_expiry_reminder: string;
   cta_request_submission: string;
+  // Per-type fully custom HTML templates (empty = use standard branded template)
+  custom_transfer_received: string;
+  custom_password_reset: string;
+  custom_email_verification: string;
+  custom_download_notification: string;
+  custom_expiry_reminder: string;
+  custom_transfer_revoked: string;
+  custom_request_submission: string;
 }
 
 export async function getBranding(): Promise<BrandingConfig> {
@@ -516,6 +524,14 @@ export async function updateBranding(body: {
   cta_email_verification?: string;
   cta_expiry_reminder?: string;
   cta_request_submission?: string;
+  // Per-type fully custom HTML templates
+  custom_transfer_received?: string;
+  custom_password_reset?: string;
+  custom_email_verification?: string;
+  custom_download_notification?: string;
+  custom_expiry_reminder?: string;
+  custom_transfer_revoked?: string;
+  custom_request_submission?: string;
 }): Promise<BrandingConfig> {
   return request<BrandingConfig>('/admin/branding', {
     method: 'PUT',

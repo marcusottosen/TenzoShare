@@ -49,6 +49,14 @@ type BrandingData struct {
 	CTAEmailVerification    string
 	CTAExpiryReminder       string
 	CTARequestSubmission    string
+	// Per-type fully custom HTML templates (empty = use standard branded template)
+	CustomTransferReceived     string
+	CustomPasswordReset        string
+	CustomEmailVerification    string
+	CustomDownloadNotification string
+	CustomExpiryReminder       string
+	CustomTransferRevoked      string
+	CustomRequestSubmission    string
 }
 
 var defaultBranding = BrandingData{
@@ -153,6 +161,13 @@ func (f *BrandingFetcher) fetch() (BrandingData, error) {
 		CTAEmailVerification        string  `json:"cta_email_verification"`
 		CTAExpiryReminder           string  `json:"cta_expiry_reminder"`
 		CTARequestSubmission        string  `json:"cta_request_submission"`
+		CustomTransferReceived      string  `json:"custom_transfer_received"`
+		CustomPasswordReset         string  `json:"custom_password_reset"`
+		CustomEmailVerification     string  `json:"custom_email_verification"`
+		CustomDownloadNotification  string  `json:"custom_download_notification"`
+		CustomExpiryReminder        string  `json:"custom_expiry_reminder"`
+		CustomTransferRevoked       string  `json:"custom_transfer_revoked"`
+		CustomRequestSubmission     string  `json:"custom_request_submission"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return BrandingData{}, fmt.Errorf("parse branding response: %w", err)
@@ -187,6 +202,13 @@ func (f *BrandingFetcher) fetch() (BrandingData, error) {
 		CTAEmailVerification:        raw.CTAEmailVerification,
 		CTAExpiryReminder:           raw.CTAExpiryReminder,
 		CTARequestSubmission:        raw.CTARequestSubmission,
+		CustomTransferReceived:      raw.CustomTransferReceived,
+		CustomPasswordReset:         raw.CustomPasswordReset,
+		CustomEmailVerification:     raw.CustomEmailVerification,
+		CustomDownloadNotification:  raw.CustomDownloadNotification,
+		CustomExpiryReminder:        raw.CustomExpiryReminder,
+		CustomTransferRevoked:       raw.CustomTransferRevoked,
+		CustomRequestSubmission:     raw.CustomRequestSubmission,
 	}
 	if bd.AppName == "" {
 		bd.AppName = defaultBranding.AppName

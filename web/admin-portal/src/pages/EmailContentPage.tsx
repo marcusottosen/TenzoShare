@@ -71,7 +71,15 @@ interface EmailTypeMeta {
   defaultCTA?: string; // undefined = no CTA button
   subjectField: keyof BrandingConfig;
   ctaField?: keyof BrandingConfig;
+  customField: keyof BrandingConfig;
+  /** Tags available in custom templates for this type */
+  tags: string[];
 }
+
+// Tags available in every custom template
+const COMMON_TAGS = ['AppName', 'PrimaryColor', 'ButtonColor', 'ButtonTextColor',
+  'BodyBgColor', 'CardBgColor', 'CardBorderColor', 'HeadingColor', 'TextColor',
+  'EmailSenderName', 'EmailSupportEmail', 'EmailFooterText', 'UnsubscribeURL'];
 
 const EMAIL_TYPES: EmailTypeMeta[] = [
   {
@@ -81,6 +89,8 @@ const EMAIL_TYPES: EmailTypeMeta[] = [
     defaultCTA: 'View & Download Files',
     subjectField: 'subject_transfer_received',
     ctaField: 'cta_transfer_received',
+    customField: 'custom_transfer_received',
+    tags: [...COMMON_TAGS, 'SenderName', 'Title', 'Message', 'DownloadURL', 'ExpiresAt'],
   },
   {
     key: 'password_reset',
@@ -89,6 +99,8 @@ const EMAIL_TYPES: EmailTypeMeta[] = [
     defaultCTA: 'Reset Password',
     subjectField: 'subject_password_reset',
     ctaField: 'cta_password_reset',
+    customField: 'custom_password_reset',
+    tags: [...COMMON_TAGS, 'ResetURL'],
   },
   {
     key: 'email_verification',
@@ -97,6 +109,8 @@ const EMAIL_TYPES: EmailTypeMeta[] = [
     defaultCTA: 'Verify Email Address',
     subjectField: 'subject_email_verification',
     ctaField: 'cta_email_verification',
+    customField: 'custom_email_verification',
+    tags: [...COMMON_TAGS, 'VerificationURL'],
   },
   {
     key: 'download_notification',
@@ -105,6 +119,8 @@ const EMAIL_TYPES: EmailTypeMeta[] = [
     defaultCTA: 'View Transfer',
     subjectField: 'subject_download_notification',
     ctaField: 'cta_download_notification',
+    customField: 'custom_download_notification',
+    tags: [...COMMON_TAGS, 'Title', 'RecipientEmail', 'DownloadedAt', 'DownloadURL'],
   },
   {
     key: 'transfer_expiry_reminder',
@@ -113,12 +129,16 @@ const EMAIL_TYPES: EmailTypeMeta[] = [
     defaultCTA: 'Download Files Now',
     subjectField: 'subject_expiry_reminder',
     ctaField: 'cta_expiry_reminder',
+    customField: 'custom_expiry_reminder',
+    tags: [...COMMON_TAGS, 'Title', 'DownloadURL', 'ExpiresAt'],
   },
   {
     key: 'transfer_revoked',
     label: 'Transfer Revoked',
     defaultSubject: 'A {{AppName}} transfer has been revoked: {{Title}}',
     subjectField: 'subject_transfer_revoked',
+    customField: 'custom_transfer_revoked',
+    tags: [...COMMON_TAGS, 'Title', 'SenderEmail'],
   },
   {
     key: 'request_submission',
@@ -127,6 +147,8 @@ const EMAIL_TYPES: EmailTypeMeta[] = [
     defaultCTA: 'Review Submission',
     subjectField: 'subject_request_submission',
     ctaField: 'cta_request_submission',
+    customField: 'custom_request_submission',
+    tags: [...COMMON_TAGS, 'RequestName', 'Filename', 'SubmitterName', 'ReviewURL'],
   },
 ];
 
@@ -453,6 +475,90 @@ function EmailPreviewPanel({
   );
 }
 
+// ── CustomTemplateModal ───────────────────────────────────────────────────────
+
+function CustomTemplateModal({
+  typeMeta,
+  value,
+  onChange,
+  onClose,
+}: {
+  typeMeta: EmailTypeMeta;
+  value: string;
+  onChange: (v: string) => void;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = React.useState(value);
+
+  function handleSave() {
+    onChange(draft);
+    onClose();
+  }
+
+  // Close on Escape
+  React.useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{ background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 10, width: '100%', maxWidth: 860, maxHeight: '90vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 40px rgba(0,0,0,0.3)' }}>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', borderBottom: '1px solid var(--color-border)' }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 15 }}>Custom template — {typeMeta.label}</h3>
+            <p style={{ margin: '3px 0 0', fontSize: 12, color: 'var(--color-text-muted)' }}>Full HTML. Use {'{{Tag}}'} placeholders for dynamic values.</p>
+          </div>
+          <button type="button" onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: 'var(--color-text-muted)', lineHeight: 1, padding: '0 4px' }}>✕</button>
+        </div>
+
+        {/* Tags reference */}
+        <div style={{ padding: '10px 20px', borderBottom: '1px solid var(--color-border)', background: 'var(--color-bg)', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {typeMeta.tags.map((tag) => (
+            <code
+              key={tag}
+              style={{ fontSize: 11, padding: '2px 7px', borderRadius: 4, background: 'var(--color-surface)', border: '1px solid var(--color-border)', cursor: 'pointer', userSelect: 'all' }}
+              title={`Click to copy`}
+              onClick={() => navigator.clipboard?.writeText(`{{${tag}}}`).catch(() => {})}
+            >
+              {`{{${tag}}}`}
+            </code>
+          ))}
+        </div>
+
+        {/* Editor */}
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          spellCheck={false}
+          style={{ flex: 1, minHeight: 340, resize: 'none', margin: 0, padding: '14px 20px', fontFamily: 'monospace', fontSize: 13, lineHeight: 1.6, background: 'var(--color-bg)', color: 'var(--color-text)', border: 'none', outline: 'none' }}
+          placeholder={'<!DOCTYPE html>\n<html><body>\n  <p>Hello, {{SenderName}} shared files via {{AppName}}.</p>\n  <a href="{{DownloadURL}}">Download</a>\n</body></html>'}
+        />
+
+        {/* Footer */}
+        <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end', padding: '12px 20px', borderTop: '1px solid var(--color-border)' }}>
+          {draft && (
+            <button type="button" onClick={() => setDraft('')} style={{ fontSize: 13, color: '#ef4444', background: 'none', border: '1px solid #fca5a5', borderRadius: 6, padding: '6px 14px', cursor: 'pointer' }}>
+              Clear template
+            </button>
+          )}
+          <button type="button" onClick={onClose} style={{ fontSize: 13, background: 'none', border: '1px solid var(--color-border)', borderRadius: 6, padding: '6px 14px', cursor: 'pointer', color: 'var(--color-text-muted)' }}>
+            Cancel
+          </button>
+          <button type="button" onClick={handleSave} className="btn btn-primary" style={{ fontSize: 13, padding: '6px 18px' }}>
+            Apply
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Tab type ──────────────────────────────────────────────────────────────────
 
 type Tab = 'delivery' | 'colors' | 'per-type';
@@ -486,9 +592,12 @@ export default function EmailContentPage() {
   const [headingColor, setHeadingColor] = useState('');
   const [emailTextColor, setEmailTextColor] = useState('');
 
-  // --- Per-type subjects & CTAs ---
+  // --- Per-type subjects, CTAs & custom templates ---
   const [perTypeSubjects, setPerTypeSubjects] = useState<Record<string, string>>({});
   const [perTypeCTAs, setPerTypeCTAs] = useState<Record<string, string>>({});
+  const [customTemplates, setCustomTemplates] = useState<Record<string, string>>({});
+  const [customEnabled, setCustomEnabled] = useState<Record<string, boolean>>({});
+  const [modalType, setModalType] = useState<EmailTypeMeta | null>(null);
 
   // primary color for button fallback hint
   const [primaryColor, setPrimaryColor] = useState('#1E293B');
@@ -522,12 +631,19 @@ export default function EmailContentPage() {
         // Per-type
         const subjects: Record<string, string> = {};
         const ctas: Record<string, string> = {};
+        const customs: Record<string, string> = {};
+        const enabled: Record<string, boolean> = {};
         for (const t of EMAIL_TYPES) {
           subjects[t.key] = (c[t.subjectField] as string) ?? '';
           if (t.ctaField) ctas[t.key] = (c[t.ctaField] as string) ?? '';
+          const ct = (c[t.customField] as string) ?? '';
+          customs[t.key] = ct;
+          enabled[t.key] = ct !== '';
         }
         setPerTypeSubjects(subjects);
         setPerTypeCTAs(ctas);
+        setCustomTemplates(customs);
+        setCustomEnabled(enabled);
       })
       .catch(() => setError('Failed to load branding settings.'))
       .finally(() => setLoading(false));
@@ -539,6 +655,44 @@ export default function EmailContentPage() {
     previewTimerRef.current = setTimeout(() => {
       const typeMeta = EMAIL_TYPES.find((t) => t.key === previewType);
       const resolvedCTA = perTypeCTAs[previewType] || typeMeta?.defaultCTA || 'View Details';
+
+      // If custom template is active and non-empty, substitute tags and use it.
+      const customTpl = customEnabled[previewType] ? (customTemplates[previewType] ?? '') : '';
+      if (customTpl) {
+        const tags: Record<string, string> = {
+          AppName: appName || 'TenzoShare',
+          PrimaryColor: primaryColor || '#1e293b',
+          ButtonColor: buttonColor || primaryColor || '#1e293b',
+          ButtonTextColor: buttonTextColor || '#ffffff',
+          BodyBgColor: bodyBgColor || '#f1f5f9',
+          CardBgColor: cardBgColor || '#f8fafc',
+          CardBorderColor: cardBorderColor || '#e2e8f0',
+          HeadingColor: headingColor || '#1e293b',
+          TextColor: emailTextColor || '#475569',
+          EmailSenderName: senderName || appName || 'TenzoShare',
+          EmailSupportEmail: supportEmail,
+          EmailFooterText: footerText,
+          UnsubscribeURL: '#',
+          // Per-type sample values
+          SenderName: 'Alex Johnson', Title: 'Q1 2026 Reports', Message: 'Please review.',
+          DownloadURL: '#', ExpiresAt: 'Dec 31 2026', ResetURL: '#',
+          VerificationURL: '#', RecipientEmail: 'client@example.com',
+          DownloadedAt: 'May 10 2026', RequestName: 'Marketing Assets Q2',
+          Filename: 'campaign-brief.pdf', SubmitterName: 'designer@agency.com',
+          ReviewURL: '#', SenderEmail: 'alex@example.com',
+        };
+        try {
+          let html = customTpl;
+          for (const [tag, val] of Object.entries(tags)) {
+            html = html.split(`{{${tag}}}`).join(val);
+          }
+          setPreviewHtml(html);
+        } catch (err) {
+          setPreviewHtml('<p style="color:red;font-family:sans-serif;padding:20px">Preview render error.</p>');
+          console.error('Email preview error:', err);
+        }
+        return;
+      }
       const vars: PreviewVars = {
         appName: appName || 'TenzoShare',
         primaryColor: primaryColor || '#1e293b',
@@ -571,6 +725,7 @@ export default function EmailContentPage() {
     bodyBgColor, cardBgColor, cardBorderColor,
     headingColor, emailTextColor,
     headerLink, footerText, supportEmail, perTypeCTAs,
+    customEnabled, customTemplates, senderName,
   ]);
 
   async function handleSave(e: React.FormEvent) {
@@ -610,6 +765,14 @@ export default function EmailContentPage() {
         cta_email_verification: perTypeCTAs['email_verification'] ?? '',
         cta_expiry_reminder: perTypeCTAs['transfer_expiry_reminder'] ?? '',
         cta_request_submission: perTypeCTAs['request_submission'] ?? '',
+        // Per-type fully custom HTML templates (empty string = use standard branded template)
+        custom_transfer_received: customEnabled['transfer_received'] ? (customTemplates['transfer_received'] ?? '') : '',
+        custom_password_reset: customEnabled['password_reset'] ? (customTemplates['password_reset'] ?? '') : '',
+        custom_email_verification: customEnabled['email_verification'] ? (customTemplates['email_verification'] ?? '') : '',
+        custom_download_notification: customEnabled['download_notification'] ? (customTemplates['download_notification'] ?? '') : '',
+        custom_expiry_reminder: customEnabled['transfer_expiry_reminder'] ? (customTemplates['transfer_expiry_reminder'] ?? '') : '',
+        custom_transfer_revoked: customEnabled['transfer_revoked'] ? (customTemplates['transfer_revoked'] ?? '') : '',
+        custom_request_submission: customEnabled['request_submission'] ? (customTemplates['request_submission'] ?? '') : '',
       });
       setSuccess('Email settings saved successfully.');
     } catch {
@@ -877,6 +1040,75 @@ export default function EmailContentPage() {
                     </div>
                   )}
                 </div>
+
+                {/* Custom HTML template toggle */}
+                <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--color-border)' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', userSelect: 'none' }}>
+                    {/* Toggle switch */}
+                    <span
+                      role="switch"
+                      aria-checked={customEnabled[t.key] ?? false}
+                      onClick={() => {
+                        const next = !(customEnabled[t.key] ?? false);
+                        setCustomEnabled((prev) => ({ ...prev, [t.key]: next }));
+                        // When disabling, clear the preview type if it was this type to force refresh
+                      }}
+                      style={{
+                        display: 'inline-block', width: 36, height: 20, borderRadius: 10, flexShrink: 0,
+                        background: (customEnabled[t.key]) ? 'var(--color-primary, #6366f1)' : 'var(--color-border)',
+                        position: 'relative', cursor: 'pointer', transition: 'background 0.2s',
+                      }}
+                    >
+                      <span style={{
+                        position: 'absolute', top: 3, left: (customEnabled[t.key]) ? 19 : 3,
+                        width: 14, height: 14, borderRadius: '50%', background: '#fff',
+                        transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.25)',
+                      }} />
+                    </span>
+                    <span style={{ fontSize: 13 }}>Use fully custom HTML template</span>
+                    <span style={{ fontSize: 11, color: 'var(--color-text-muted)', marginLeft: 4 }}>(overrides all branded styling)</span>
+                  </label>
+
+                  {customEnabled[t.key] && (
+                    <div style={{ marginTop: 12 }}>
+                      <div style={{ display: 'flex', gap: 10, marginBottom: 8, alignItems: 'center' }}>
+                        <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+                          {customTemplates[t.key] ? `${customTemplates[t.key].length.toLocaleString()} chars` : 'No template set yet'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setModalType(t)}
+                          style={{ fontSize: 12, padding: '4px 12px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-surface)', cursor: 'pointer', color: 'var(--color-text)' }}
+                        >
+                          Open editor ↗
+                        </button>
+                        {customTemplates[t.key] && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCustomTemplates((prev) => ({ ...prev, [t.key]: '' }));
+                              setCustomEnabled((prev) => ({ ...prev, [t.key]: false }));
+                            }}
+                            style={{ fontSize: 11, color: '#ef4444', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', padding: 0 }}
+                          >
+                            clear
+                          </button>
+                        )}
+                      </div>
+                      <textarea
+                        spellCheck={false}
+                        rows={6}
+                        value={customTemplates[t.key] ?? ''}
+                        onChange={(e) => setCustomTemplates((prev) => ({ ...prev, [t.key]: e.target.value }))}
+                        placeholder={'<!DOCTYPE html>\n<html><body>\n  <p>Hello {{SenderName}}, files shared via {{AppName}}.</p>\n</body></html>'}
+                        style={{ width: '100%', fontFamily: 'monospace', fontSize: 12, resize: 'vertical', padding: '10px 12px', borderRadius: 6, border: '1px solid var(--color-border)', background: 'var(--color-bg)', color: 'var(--color-text)', boxSizing: 'border-box' }}
+                      />
+                      <p style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 6 }}>
+                        Available tags: {t.tags.map((tag) => <code key={tag} style={{ marginRight: 4 }}>{`{{${tag}}}`}</code>)}
+                      </p>
+                    </div>
+                  )}
+                </div>
               </div>
             ))}
           </div>
@@ -899,6 +1131,16 @@ export default function EmailContentPage() {
         />
       </div>
       </div>{/* end two-pane */}
+
+      {/* ── Custom template modal ─────────────────────────────────────── */}
+      {modalType && (
+        <CustomTemplateModal
+          typeMeta={modalType}
+          value={customTemplates[modalType.key] ?? ''}
+          onChange={(v) => setCustomTemplates((prev) => ({ ...prev, [modalType.key]: v }))}
+          onClose={() => setModalType(null)}
+        />
+      )}
     </div>
   );
 }

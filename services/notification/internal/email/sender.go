@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net/smtp"
+	"strings"
 	"sync"
 	"text/template"
 	"time"
@@ -62,7 +63,10 @@ func (s *Sender) Branding() BrandingData {
 }
 
 // RenderHTML renders the named email type as HTML with branding injected.
-// unsubscribeURL is embedded in the footer; pass "" to omit the unsubscribe link.
+// If a fully custom template is configured for this email type it is used
+// (with {{Tag}} substitution) instead of the standard branded layout.
+// unsubscribeURL is embedded in the footer of standard templates; it is
+// available as {{UnsubscribeURL}} in custom templates.
 // Returns an empty string on error so the plain-text fallback is always used.
 func (s *Sender) RenderHTML(emailType string, data any, unsubscribeURL string) string {
 	var b BrandingData
@@ -71,6 +75,24 @@ func (s *Sender) RenderHTML(emailType string, data any, unsubscribeURL string) s
 	} else {
 		b = defaultBranding
 	}
+
+	// Per-type custom template overrides.
+	customTemplates := map[string]string{
+		"transfer_received":        b.CustomTransferReceived,
+		"password_reset":           b.CustomPasswordReset,
+		"email_verification":       b.CustomEmailVerification,
+		"download_notification":    b.CustomDownloadNotification,
+		"transfer_expiry_reminder": b.CustomExpiryReminder,
+		"transfer_revoked":         b.CustomTransferRevoked,
+		"request_submission":       b.CustomRequestSubmission,
+	}
+	if customTpl := customTemplates[emailType]; customTpl != "" {
+		// Inject unsubscribe URL as a substitutable tag too.
+		result := renderCustomHTML(customTpl, emailType, b, data)
+		result = strings.ReplaceAll(result, "{{UnsubscribeURL}}", unsubscribeURL)
+		return result
+	}
+
 	html, err := renderHTML(emailType, b, data, unsubscribeURL)
 	if err != nil {
 		s.log.Warn("html email render failed",

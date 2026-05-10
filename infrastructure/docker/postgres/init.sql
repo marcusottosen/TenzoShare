@@ -405,6 +405,13 @@ CREATE TABLE IF NOT EXISTS admin_svc.branding_settings (
     email_cta_email_verification     TEXT NOT NULL DEFAULT '',
     email_cta_expiry_reminder        TEXT NOT NULL DEFAULT '',
     email_cta_request_submission     TEXT NOT NULL DEFAULT '',
+    email_custom_transfer_received      TEXT NOT NULL DEFAULT '',
+    email_custom_password_reset         TEXT NOT NULL DEFAULT '',
+    email_custom_email_verification     TEXT NOT NULL DEFAULT '',
+    email_custom_download_notification  TEXT NOT NULL DEFAULT '',
+    email_custom_expiry_reminder        TEXT NOT NULL DEFAULT '',
+    email_custom_transfer_revoked       TEXT NOT NULL DEFAULT '',
+    email_custom_request_submission     TEXT NOT NULL DEFAULT '',
     updated_at         TIMESTAMPTZ  NOT NULL DEFAULT now(),
     CONSTRAINT branding_settings_singleton CHECK (id = 1)
 );
@@ -438,5 +445,5 @@ CREATE TABLE IF NOT EXISTS admin_svc.smtp_settings (
 INSERT INTO admin_svc.smtp_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
 
 INSERT INTO admin_svc.schema_migrations (name) VALUES
-  ('001_branding_settings.sql'), ('002_branding_extend.sql'), ('003_branding_dark_mode.sql'), ('004_platform_settings.sql'), ('005_smtp_settings.sql'), ('006_platform_urls.sql'), ('007_email_branding.sql'), ('008_email_content.sql')
+  ('001_branding_settings.sql'), ('002_branding_extend.sql'), ('003_branding_dark_mode.sql'), ('004_platform_settings.sql'), ('005_smtp_settings.sql'), ('006_platform_urls.sql'), ('007_email_branding.sql'), ('008_email_content.sql'), ('009_custom_email_templates.sql')
 ON CONFLICT DO NOTHING;

@@ -1895,6 +1895,14 @@ type BrandingConfig struct {
 	CTAEmailVerification    string `json:"cta_email_verification"`
 	CTAExpiryReminder       string `json:"cta_expiry_reminder"`
 	CTARequestSubmission    string `json:"cta_request_submission"`
+	// Per-type fully custom HTML templates (empty = use standard branded template)
+	CustomTransferReceived     string `json:"custom_transfer_received"`
+	CustomPasswordReset        string `json:"custom_password_reset"`
+	CustomEmailVerification    string `json:"custom_email_verification"`
+	CustomDownloadNotification string `json:"custom_download_notification"`
+	CustomExpiryReminder       string `json:"custom_expiry_reminder"`
+	CustomTransferRevoked      string `json:"custom_transfer_revoked"`
+	CustomRequestSubmission    string `json:"custom_request_submission"`
 }
 
 func scanBranding(c fiber.Ctx) (BrandingConfig, error) {
@@ -1911,7 +1919,10 @@ func scanBranding(c fiber.Ctx) (BrandingConfig, error) {
 		       email_subject_download_notification, email_subject_expiry_reminder, email_subject_transfer_revoked,
 		       email_subject_request_submission,
 		       email_cta_transfer_received, email_cta_download_notification, email_cta_password_reset,
-		       email_cta_email_verification, email_cta_expiry_reminder, email_cta_request_submission
+		       email_cta_email_verification, email_cta_expiry_reminder, email_cta_request_submission,
+		       email_custom_transfer_received, email_custom_password_reset, email_custom_email_verification,
+		       email_custom_download_notification, email_custom_expiry_reminder, email_custom_transfer_revoked,
+		       email_custom_request_submission
 		FROM admin_svc.branding_settings WHERE id = 1`,
 	).Scan(&bc.PrimaryColor, &bc.SecondaryColor, &bc.PageBgColor, &bc.SurfaceColor,
 		&bc.TextColor, &bc.BorderRadius, &bc.AppName, &bc.CustomCSS, &bc.LogoDataURL, &updatedAt,
@@ -1923,7 +1934,10 @@ func scanBranding(c fiber.Ctx) (BrandingConfig, error) {
 		&bc.SubjectDownloadNotification, &bc.SubjectExpiryReminder, &bc.SubjectTransferRevoked,
 		&bc.SubjectRequestSubmission,
 		&bc.CTATransferReceived, &bc.CTADownloadNotification, &bc.CTAPasswordReset,
-		&bc.CTAEmailVerification, &bc.CTAExpiryReminder, &bc.CTARequestSubmission)
+		&bc.CTAEmailVerification, &bc.CTAExpiryReminder, &bc.CTARequestSubmission,
+		&bc.CustomTransferReceived, &bc.CustomPasswordReset, &bc.CustomEmailVerification,
+		&bc.CustomDownloadNotification, &bc.CustomExpiryReminder, &bc.CustomTransferRevoked,
+		&bc.CustomRequestSubmission)
 	if err != nil {
 		return bc, err
 	}
@@ -1996,6 +2010,14 @@ func handlePutBranding(c fiber.Ctx) error {
 		CTAEmailVerification    *string `json:"cta_email_verification"`
 		CTAExpiryReminder       *string `json:"cta_expiry_reminder"`
 		CTARequestSubmission    *string `json:"cta_request_submission"`
+		// Per-type fully custom HTML templates
+		CustomTransferReceived     *string `json:"custom_transfer_received"`
+		CustomPasswordReset        *string `json:"custom_password_reset"`
+		CustomEmailVerification    *string `json:"custom_email_verification"`
+		CustomDownloadNotification *string `json:"custom_download_notification"`
+		CustomExpiryReminder       *string `json:"custom_expiry_reminder"`
+		CustomTransferRevoked      *string `json:"custom_transfer_revoked"`
+		CustomRequestSubmission    *string `json:"custom_request_submission"`
 	}
 	if err := json.Unmarshal(c.Body(), &body); err != nil {
 		return apperrors.BadRequest("invalid JSON body")
@@ -2089,6 +2111,13 @@ func handlePutBranding(c fiber.Ctx) error {
 		    email_cta_email_verification     = COALESCE($41::text, email_cta_email_verification),
 		    email_cta_expiry_reminder        = COALESCE($42::text, email_cta_expiry_reminder),
 		    email_cta_request_submission     = COALESCE($43::text, email_cta_request_submission),
+		    email_custom_transfer_received      = COALESCE($44::text, email_custom_transfer_received),
+		    email_custom_password_reset         = COALESCE($45::text, email_custom_password_reset),
+		    email_custom_email_verification     = COALESCE($46::text, email_custom_email_verification),
+		    email_custom_download_notification  = COALESCE($47::text, email_custom_download_notification),
+		    email_custom_expiry_reminder        = COALESCE($48::text, email_custom_expiry_reminder),
+		    email_custom_transfer_revoked       = COALESCE($49::text, email_custom_transfer_revoked),
+		    email_custom_request_submission     = COALESCE($50::text, email_custom_request_submission),
 		    updated_at      = now()
 		WHERE id = 1`,
 		body.PrimaryColor,
@@ -2134,6 +2163,13 @@ func handlePutBranding(c fiber.Ctx) error {
 		body.CTAEmailVerification,
 		body.CTAExpiryReminder,
 		body.CTARequestSubmission,
+		body.CustomTransferReceived,
+		body.CustomPasswordReset,
+		body.CustomEmailVerification,
+		body.CustomDownloadNotification,
+		body.CustomExpiryReminder,
+		body.CustomTransferRevoked,
+		body.CustomRequestSubmission,
 	)
 	if err != nil {
 		return apperrors.Internal("update branding", err)
