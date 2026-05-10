@@ -19,6 +19,7 @@ import GeneralSettingsPage from './pages/GeneralSettingsPage';
 import SmtpSettingsPage from './pages/SmtpSettingsPage';
 import EmailContentPage from './pages/EmailContentPage';
 import AccountPage from './pages/AccountPage';
+import MFALoginPage from './pages/MFALoginPage';
 
 export default function App() {
   return (
@@ -26,6 +27,7 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/login/mfa" element={<MFALoginPage />} />
 
           <Route element={<ProtectedRoute />}>
             <Route element={<Layout />}>

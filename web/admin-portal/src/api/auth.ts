@@ -19,6 +19,7 @@ export interface MeResponse {
   email: string;
   role: string;
   created_at?: string;
+  mfa_enabled?: boolean;
   // per-user format prefs (null = use system default)
   date_format?: string | null;
   time_format?: string | null;
@@ -34,6 +35,13 @@ export async function login(email: string, password: string): Promise<LoginResul
 
 export async function getMe(): Promise<MeResponse> {
   return request<MeResponse>('/auth/me');
+}
+
+export async function loginMFA(userId: string, otpCode: string): Promise<TokenResponse> {
+  return request<TokenResponse>('/auth/login/mfa', {
+    method: 'POST',
+    body: JSON.stringify({ user_id: userId, otp_code: otpCode }),
+  });
 }
 
 export async function logout() {
@@ -76,5 +84,33 @@ export async function changePassword(currentPassword: string, newPassword: strin
   return request<void>('/users/me', {
     method: 'PATCH',
     body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
+}
+
+export async function setupMFA(): Promise<{ secret: string; provisioning_uri: string }> {
+  return request<{ secret: string; provisioning_uri: string }>('/auth/mfa/setup', {
+    method: 'POST',
+  });
+}
+
+export interface VerifyMFAResult {
+  mfa_enabled: boolean;
+  access_token?: string;
+  refresh_token?: string;
+  expires_in?: number;
+  token_type?: string;
+}
+
+export async function verifyMFA(otpCode: string): Promise<VerifyMFAResult> {
+  return request<VerifyMFAResult>('/auth/mfa/verify', {
+    method: 'POST',
+    body: JSON.stringify({ otp_code: otpCode }),
+  });
+}
+
+export async function disableMFA(otpCode: string): Promise<{ mfa_enabled: boolean }> {
+  return request<{ mfa_enabled: boolean }>('/auth/mfa/disable', {
+    method: 'POST',
+    body: JSON.stringify({ otp_code: otpCode }),
   });
 }
