@@ -36,7 +36,8 @@ export default function NewTransferPage() {
   // Transfer metadata
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [recipientEmail, setRecipientEmail] = useState('');
+  const [recipientEmails, setRecipientEmails] = useState<string[]>([]);
+  const [emailInput, setEmailInput] = useState('');
   const [password, setPassword] = useState('');
   const [maxDownloads, setMaxDownloads] = useState(0);
   const [viewOnly, setViewOnly] = useState(false);
@@ -167,6 +168,32 @@ export default function NewTransferPage() {
     );
   }
 
+  function isValidEmail(email: string) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+  }
+
+  function commitEmailInput() {
+    const raw = emailInput.trim().replace(/,+$/, '');
+    if (!raw) return;
+    const parts = raw.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
+    const toAdd = parts.filter(e => isValidEmail(e) && !recipientEmails.includes(e));
+    if (toAdd.length > 0) setRecipientEmails(prev => [...prev, ...toAdd]);
+    setEmailInput('');
+  }
+
+  function removeEmail(email: string) {
+    setRecipientEmails(prev => prev.filter(e => e !== email));
+  }
+
+  function handleEmailKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Enter' || e.key === ',' || e.key === 'Tab') {
+      e.preventDefault();
+      commitEmailInput();
+    } else if (e.key === 'Backspace' && emailInput === '' && recipientEmails.length > 0) {
+      setRecipientEmails(prev => prev.slice(0, -1));
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) { setError('Transfer name is required.'); return; }
@@ -178,7 +205,7 @@ export default function NewTransferPage() {
         name: name.trim(),
         description: description.trim() || undefined,
         file_ids: staged.map((f) => f.id),
-        recipient_email: recipientEmail || undefined,
+        recipient_emails: recipientEmails.length > 0 ? recipientEmails : undefined,
         password: password || undefined,
         max_downloads: maxDownloads || undefined,
         view_only: viewOnly || undefined,
@@ -399,15 +426,39 @@ export default function NewTransferPage() {
             <div className="col">
               <div className="form-group">
                 <label>
-                  Recipient email{' '}
+                  Recipient email{recipientEmails.length !== 1 ? 's' : ''}{' '}
                   <span className="text-sm" style={{ color: 'var(--color-text-muted)' }}>(optional)</span>
                 </label>
-                <input
-                  type="email"
-                  value={recipientEmail}
-                  onChange={(e) => setRecipientEmail(e.target.value)}
-                  placeholder="recipient@example.com"
-                />
+                <div
+                  className="email-chips-field"
+                  onClick={() => (document.getElementById('email-chip-input') as HTMLInputElement)?.focus()}
+                >
+                  {recipientEmails.map(email => (
+                    <span key={email} className="email-chip">
+                      {email}
+                      <button
+                        type="button"
+                        className="email-chip-remove"
+                        onClick={(e) => { e.stopPropagation(); removeEmail(email); }}
+                        aria-label={`Remove ${email}`}
+                      >×</button>
+                    </span>
+                  ))}
+                  <input
+                    id="email-chip-input"
+                    type="email"
+                    multiple
+                    className="email-chip-input"
+                    value={emailInput}
+                    onChange={e => setEmailInput(e.target.value)}
+                    onKeyDown={handleEmailKeyDown}
+                    onBlur={commitEmailInput}
+                    placeholder={recipientEmails.length === 0 ? 'recipient@example.com' : 'Add another…'}
+                  />
+                </div>
+                <p className="text-sm" style={{ color: 'var(--color-text-muted)', marginTop: 4 }}>
+                  Press Enter, comma, or Tab to add each email. Leave empty for a public link.
+                </p>
               </div>
             </div>
             <div className="col">

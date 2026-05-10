@@ -52,14 +52,17 @@ func New(svc *service.TransferService, requestSvc *service.RequestService, jwtPr
 }
 
 type createRequest struct {
-	Name           string   `json:"name"            validate:"required,min=1,max=200"`
-	Description    string   `json:"description"     validate:"max=1000"`
-	FileIDs        []string `json:"file_ids"        validate:"required,min=1,dive,uuid4"`
-	RecipientEmail string   `json:"recipient_email" validate:"omitempty,email"`
-	Password       string   `json:"password"`
-	MaxDownloads   int      `json:"max_downloads"   validate:"min=0"`
-	ViewOnly       bool     `json:"view_only"`
-	ExpiresInHours int      `json:"expires_in_hours" validate:"required,min=1,max=2160"`
+	Name            string   `json:"name"             validate:"required,min=1,max=200"`
+	Description     string   `json:"description"      validate:"max=1000"`
+	FileIDs         []string `json:"file_ids"         validate:"required,min=1,dive,uuid4"`
+	// RecipientEmails accepts multiple addresses; stored comma-separated.
+	// RecipientEmail is kept for backward-compat single-email clients.
+	RecipientEmails []string `json:"recipient_emails" validate:"omitempty,max=20,dive,email"`
+	RecipientEmail  string   `json:"recipient_email"  validate:"omitempty,email"`
+	Password        string   `json:"password"`
+	MaxDownloads    int      `json:"max_downloads"    validate:"min=0"`
+	ViewOnly        bool     `json:"view_only"`
+	ExpiresInHours  int      `json:"expires_in_hours" validate:"required,min=1,max=2160"`
 }
 
 // Create POST /api/v1/transfers
@@ -82,13 +85,20 @@ func (h *Handler) Create(c fiber.Ctx) error {
 		return apperrors.Validation(err.Error())
 	}
 
+	// Merge both fields: prefer the array, fall back to the single-address field.
+	allEmails := req.RecipientEmails
+	if len(allEmails) == 0 && req.RecipientEmail != "" {
+		allEmails = []string{req.RecipientEmail}
+	}
+	recipientEmail := strings.Join(allEmails, ",")
+
 	result, err := h.svc.Create(c.Context(), service.CreateParams{
 		OwnerID:        ownerID,
 		SenderEmail:    senderEmail,
 		Name:           req.Name,
 		Description:    req.Description,
 		FileIDs:        req.FileIDs,
-		RecipientEmail: req.RecipientEmail,
+		RecipientEmail: recipientEmail,
 		Password:       req.Password,
 		MaxDownloads:   req.MaxDownloads,
 		ViewOnly:       req.ViewOnly,
@@ -226,6 +236,15 @@ func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 	}
 	if t.RecipientEmail != "" {
 		m["recipient_email"] = t.RecipientEmail
+		// Also expose as an array for multi-recipient-aware clients.
+		parts := strings.Split(t.RecipientEmail, ",")
+		emails := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if s := strings.TrimSpace(p); s != "" {
+				emails = append(emails, s)
+			}
+		}
+		m["recipient_emails"] = emails
 	}
 	if t.ExpiresAt != nil {
 		m["expires_at"] = t.ExpiresAt
@@ -297,6 +316,47 @@ func (h *Handler) DownloadURL(c fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"url": presignURL, "expires_in": 900, "view_only": viewOnly})
+}
+
+// UpdateRecipients PATCH /api/v1/transfers/:id/recipients
+// Replaces the recipient list for a transfer. Owner only.
+func (h *Handler) UpdateRecipients(c fiber.Ctx) error {
+	ownerID, _ := c.Locals("userID").(string)
+	if ownerID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	transferID := c.Params("id")
+
+	var body struct {
+		Emails []string `json:"emails" validate:"omitempty,max=20,dive,email"`
+	}
+	if err := c.Bind().JSON(&body); err != nil {
+		return apperrors.BadRequest("invalid JSON")
+	}
+	if err := h.validate.Struct(body); err != nil {
+		return apperrors.Validation(err.Error())
+	}
+
+	t, err := h.svc.UpdateRecipients(c.Context(), transferID, ownerID, body.Emails)
+	if err != nil {
+		return err
+	}
+	return c.JSON(transferResponse(t, nil))
+}
+
+// ResendNotification POST /api/v1/transfers/:id/resend
+// Re-sends the transfer_received email to all current recipients. Owner only.
+func (h *Handler) ResendNotification(c fiber.Ctx) error {
+	ownerID, _ := c.Locals("userID").(string)
+	if ownerID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	transferID := c.Params("id")
+
+	if err := h.svc.ResendNotification(c.Context(), transferID, ownerID); err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"message": "notification queued"})
 }
 
 // ListRecipients GET /api/v1/transfers/:id/recipients

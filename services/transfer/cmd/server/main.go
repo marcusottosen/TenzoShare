@@ -104,6 +104,8 @@ func main() {
 	v1.Get("/", h.List)
 	v1.Get("/:id", h.Get)
 	v1.Get("/:id/recipients", h.ListRecipients)
+	v1.Patch("/:id/recipients", h.UpdateRecipients)
+	v1.Post("/:id/resend", h.ResendNotification)
 	v1.Delete("/:id", h.Revoke)
 
 	// File request endpoints (auth required — owner manages requests)

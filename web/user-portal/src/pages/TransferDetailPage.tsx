@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
-import { useParams, useNavigate, Link } from 'react-router';
+import React, { useEffect, useRef, useState } from 'react';
+import { useParams, Link, useNavigate } from 'react-router';
 import { fmt } from '../utils/dateFormat';
-import { getTransfer, revokeTransfer, type Transfer } from '../api/transfers';
+import { getTransfer, revokeTransfer, updateTransferRecipients, resendTransferEmail, type Transfer } from '../api/transfers';
 import { getFile, presignFile, type FileRecord } from '../api/files';
 import { getToken } from '../api/client';
 import { isPreviewable, IconEye, FilePreviewModal } from '../components/FilePreviewModal';
@@ -224,12 +224,20 @@ function fmtBytes(b: number): string {
 
 export default function TransferDetailPage() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const [transfer, setTransfer] = useState<Transfer | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
   const [revoking, setRevoking] = useState(false);
+
+  // Recipients state
+  const [recipients, setRecipients] = useState<string[]>([]);
+  const [addingEmail, setAddingEmail] = useState('');
+  const [recipientError, setRecipientError] = useState('');
+  const [savingRecipients, setSavingRecipients] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [resendSuccess, setResendSuccess] = useState(false);
+  const resendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function handleCopy() {
     if (!transfer) return;
@@ -242,7 +250,16 @@ export default function TransferDetailPage() {
   useEffect(() => {
     if (!id) return;
     getTransfer(id)
-      .then(setTransfer)
+      .then((t) => {
+        setTransfer(t);
+        setRecipients(
+          t.recipient_emails && t.recipient_emails.length > 0
+            ? t.recipient_emails
+            : t.recipient_email
+              ? t.recipient_email.split(',').map((e) => e.trim()).filter(Boolean)
+              : []
+        );
+      })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, [id]);
@@ -253,11 +270,73 @@ export default function TransferDetailPage() {
     setRevoking(true);
     try {
       await revokeTransfer(transfer.id);
-      setTransfer({ ...transfer, is_revoked: true });
+      setTransfer({ ...transfer, is_revoked: true, status: 'revoked' });
     } catch (err: any) {
       alert(err.message);
     } finally {
       setRevoking(false);
+    }
+  }
+
+  function addEmailToList() {
+    const email = addingEmail.trim().toLowerCase();
+    if (!email) return;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setRecipientError('Invalid email address');
+      return;
+    }
+    if (recipients.includes(email)) {
+      setRecipientError('Already in the list');
+      return;
+    }
+    if (recipients.length >= 20) {
+      setRecipientError('Maximum 20 recipients');
+      return;
+    }
+    setRecipientError('');
+    setRecipients((prev) => [...prev, email]);
+    setAddingEmail('');
+  }
+
+  function removeEmail(email: string) {
+    setRecipients((prev) => prev.filter((e) => e !== email));
+  }
+
+  async function handleSaveRecipients() {
+    if (!transfer) return;
+    setSavingRecipients(true);
+    setRecipientError('');
+    try {
+      // Detect newly added emails so we can notify them.
+      const newlyAdded = recipients.filter((e) => !savedRecipients.includes(e));
+      const updated = await updateTransferRecipients(transfer.id, recipients);
+      setTransfer(updated);
+      // Resend the notification if any new recipients were added.
+      if (newlyAdded.length > 0) {
+        try { await resendTransferEmail(transfer.id); } catch { /* best-effort */ }
+        setResendSuccess(true);
+        if (resendTimerRef.current) clearTimeout(resendTimerRef.current);
+        resendTimerRef.current = setTimeout(() => setResendSuccess(false), 3000);
+      }
+    } catch (err: any) {
+      setRecipientError(err.message ?? 'Failed to update recipients');
+    } finally {
+      setSavingRecipients(false);
+    }
+  }
+
+  async function handleResend() {
+    if (!transfer) return;
+    setResending(true);
+    try {
+      await resendTransferEmail(transfer.id);
+      setResendSuccess(true);
+      if (resendTimerRef.current) clearTimeout(resendTimerRef.current);
+      resendTimerRef.current = setTimeout(() => setResendSuccess(false), 3000);
+    } catch (err: any) {
+      alert(err.message ?? 'Failed to resend notification');
+    } finally {
+      setResending(false);
     }
   }
 
@@ -266,117 +345,218 @@ export default function TransferDetailPage() {
   if (!transfer) return null;
 
   const publicUrl = buildDownloadUrl(transfer.slug);
+  const isActive = !transfer.is_revoked && transfer.status !== 'revoked'
+    && transfer.status !== 'expired'
+    && !(transfer.expires_at && new Date(transfer.expires_at) < new Date());
+
+  const savedRecipients = (
+    transfer.recipient_emails && transfer.recipient_emails.length > 0
+      ? transfer.recipient_emails
+      : transfer.recipient_email
+        ? transfer.recipient_email.split(',').map((e) => e.trim()).filter(Boolean)
+        : []
+  );
+  const recipientsChanged = JSON.stringify([...recipients].sort()) !== JSON.stringify([...savedRecipients].sort());
+  const newlyAdded = recipients.filter((e) => !savedRecipients.includes(e));
+
+  function statusBadge() {
+    if (transfer!.is_revoked || transfer!.status === 'revoked')
+      return <span className="badge badge-red">Revoked</span>;
+    if (transfer!.status === 'exhausted' || (transfer!.max_downloads > 0 && transfer!.download_count >= transfer!.max_downloads))
+      return <span className="badge badge-yellow">Exhausted</span>;
+    if (transfer!.expires_at && new Date(transfer!.expires_at) < new Date())
+      return <span className="badge badge-gray">Expired</span>;
+    return <span className="badge badge-green">Active</span>;
+  }
 
   return (
     <div className="page">
+
+      {/* ── Page header ── */}
       <div className="page-header">
         <div>
-          <Link to="/" className="text-link text-sm">← Transfers</Link>
-          <h1 className="page-title" style={{ marginTop: 4, marginBottom: 0 }}>Transfer details</h1>
+          <Link to="/" className="text-link text-sm">← All transfers</Link>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 6 }}>
+            <h1 className="page-title">{transfer.name || 'Transfer details'}</h1>
+            {statusBadge()}
+          </div>
+          {transfer.description && (
+            <p style={{ margin: '4px 0 0', color: 'var(--color-text-muted)', fontSize: 14 }}>{transfer.description}</p>
+          )}
         </div>
-        {!transfer.is_revoked && (
+        {!transfer.is_revoked && isActive && (
           <button className="btn btn-danger" onClick={handleRevoke} disabled={revoking}>
             {revoking ? 'Revoking…' : 'Revoke transfer'}
           </button>
         )}
       </div>
 
-      <div className="card">
-        <div className="card-header"><h2 className="card-title">Info</h2></div>
-        <table style={{ width: 'auto', border: 'none' }}>
-          <tbody>
-            <tr>
-              <td style={{ paddingLeft: 0, fontWeight: 500, width: 160 }}>Status</td>
-              <td style={{ paddingLeft: 0 }}>
-                {transfer.is_revoked || transfer.status === 'revoked' ? (
-                  <span className="badge badge-red">Revoked</span>
-                ) : transfer.status === 'exhausted' || (transfer.max_downloads > 0 && transfer.download_count >= transfer.max_downloads) ? (
-                  <span className="badge badge-yellow">Exhausted</span>
-                ) : transfer.expires_at && new Date(transfer.expires_at) < new Date() ? (
-                  <span className="badge badge-gray">Expired</span>
-                ) : (
-                  <span className="badge badge-green">Active</span>
-                )}
-              </td>
-            </tr>
-            <tr>
-              <td style={{ paddingLeft: 0, fontWeight: 500 }}>Name</td>
-              <td style={{ paddingLeft: 0 }}>{transfer.name || '—'}</td>
-            </tr>
-            {transfer.description && (
-              <tr>
-                <td style={{ paddingLeft: 0, fontWeight: 500 }}>Description</td>
-                <td style={{ paddingLeft: 0 }}>{transfer.description}</td>
-              </tr>
-            )}
-            <tr>
-              <td style={{ paddingLeft: 0, fontWeight: 500 }}>Public link</td>
-              <td style={{ paddingLeft: 0 }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <a href={publicUrl} target="_blank" rel="noreferrer" className="text-link">
-                    {publicUrl}
-                  </a>
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    onClick={handleCopy}
-                  >
-                    {copied ? 'Copied!' : 'Copy'}
-                  </button>
-                </span>
-              </td>
-            </tr>
-            <tr>
-              <td style={{ paddingLeft: 0, fontWeight: 500 }}>Recipient</td>
-              <td style={{ paddingLeft: 0 }}>{transfer.recipient_email ?? '—'}</td>
-            </tr>
-            <tr>
-              <td style={{ paddingLeft: 0, fontWeight: 500 }}>Password</td>
-              <td style={{ paddingLeft: 0 }}>{transfer.has_password ? 'Yes' : 'No'}</td>
-            </tr>
-            <tr>
-              <td style={{ paddingLeft: 0, fontWeight: 500 }}>Mode</td>
-              <td style={{ paddingLeft: 0 }}>
-                {transfer.view_only ? (
-                  <span className="badge-view-only" style={{ fontSize: 12, padding: '2px 8px', gap: 5 }}>
-                    👁 View only — recipients cannot download
-                  </span>
-                ) : (
-                  <span style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>Standard (download allowed)</span>
-                )}
-              </td>
-            </tr>
-            <tr>
-              <td style={{ paddingLeft: 0, fontWeight: 500 }}>{transfer.view_only ? 'Views' : 'Downloads'}</td>
-              <td style={{ paddingLeft: 0 }}>
-                {transfer.download_count}
-                {transfer.max_downloads > 0 && ` / ${transfer.max_downloads}`}
-              </td>
-            </tr>
-            <tr>
-              <td style={{ paddingLeft: 0, fontWeight: 500 }}>Total size</td>
-              <td style={{ paddingLeft: 0 }}>
-                {transfer.total_size_bytes != null
-                  ? `${fmtBytes(transfer.total_size_bytes)}${transfer.file_count != null ? ` (${transfer.file_count} file${transfer.file_count !== 1 ? 's' : ''})` : ''}`
-                  : '—'}
-              </td>
-            </tr>
-            <tr>
-              <td style={{ paddingLeft: 0, fontWeight: 500 }}>Expires</td>
-              <td style={{ paddingLeft: 0 }}>{transfer.expires_at ? fmt(transfer.expires_at) : 'Never'}</td>
-            </tr>
-            <tr>
-              <td style={{ paddingLeft: 0, fontWeight: 500 }}>Created</td>
-              <td style={{ paddingLeft: 0 }}>{fmt(transfer.created_at)}</td>
-            </tr>
-          </tbody>
-        </table>
+      {/* ── Stat strip ── */}
+      <div className="stat-cards" style={{ marginBottom: 16 }}>
+        {[
+          { label: transfer.view_only ? 'Views' : 'Downloads', value: transfer.max_downloads > 0 ? `${transfer.download_count} / ${transfer.max_downloads}` : String(transfer.download_count) },
+          { label: 'Files', value: String(transfer.file_count ?? transfer.file_ids?.length ?? '—') },
+          { label: 'Total size', value: transfer.total_size_bytes != null ? fmtBytes(transfer.total_size_bytes) : '—' },
+          { label: 'Expires', value: transfer.expires_at ? fmt(transfer.expires_at) : 'Never' },
+        ].map(({ label, value }) => (
+          <div key={label} className="stat-card" style={{ display: 'block' }}>
+            <div className="stat-card-label">{label}</div>
+            <div className="stat-card-value" style={{ fontSize: 22 }}>{value}</div>
+          </div>
+        ))}
       </div>
 
+      {/* ── Details ── */}
+      <div className="card">
+        <div className="card-header">
+          <span className="card-title">Details</span>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2px 32px' }}>
+          {([
+            ['Mode', transfer.view_only ? '👁 View only (no download)' : 'Standard — download allowed'],
+            ['Password', transfer.has_password ? '🔒 Protected' : 'None'],
+            ['Created', fmt(transfer.created_at)],
+            ['Expires', transfer.expires_at ? fmt(transfer.expires_at) : 'Never'],
+          ] as [string, string][]).map(([label, value]) => (
+            <div key={label} style={{ display: 'flex', flexDirection: 'column', padding: '10px 0', borderBottom: '1px solid var(--color-border)' }}>
+              <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--color-text-muted)', marginBottom: 3 }}>{label}</span>
+              <span style={{ fontSize: 14, color: 'var(--color-text-primary)' }}>{value}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Share link */}
+        <div style={{ marginTop: 20 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--color-text-muted)', marginBottom: 8 }}>Share link</div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: 8, padding: '10px 14px' }}>
+            <a href={publicUrl} target="_blank" rel="noreferrer" className="text-link"
+              style={{ fontSize: 13, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {publicUrl}
+            </a>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={handleCopy} style={{ flexShrink: 0 }}>
+              {copied ? '✓ Copied' : 'Copy link'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Recipients ── */}
+      <div className="card">
+        <div className="card-header">
+          <span className="card-title">
+            Recipients
+            {recipients.length > 0 && (
+              <span className="badge badge-gray" style={{ marginLeft: 8, fontWeight: 500, fontSize: 11, verticalAlign: 'middle' }}>
+                {recipients.length}
+              </span>
+            )}
+          </span>
+        </div>
+
+        {/* Recipient chips */}
+        {recipients.length > 0 ? (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+            {recipients.map((email) => (
+              <span key={email} style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                background: 'var(--color-bg)', border: '1px solid var(--color-border)',
+                borderRadius: 20, padding: '5px 8px 5px 14px', fontSize: 13,
+              }}>
+                {email}
+                <button
+                  type="button"
+                  onClick={() => removeEmail(email)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '0 2px', lineHeight: 1, color: 'var(--color-text-muted)', fontSize: 16, display: 'flex', alignItems: 'center', borderRadius: 3 }}
+                  title={`Remove ${email}`}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        ) : (
+          <p style={{ margin: '0 0 16px', fontSize: 14, color: 'var(--color-text-muted)' }}>
+            No recipients set — anyone with the link can access this transfer.
+          </p>
+        )}
+
+        {/* Add email row */}
+        <div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              type="email"
+              value={addingEmail}
+              onChange={(e) => { setAddingEmail(e.target.value); setRecipientError(''); }}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addEmailToList(); } }}
+              placeholder="Enter an email address…"
+              style={{ flex: 1 }}
+            />
+            <button type="button" className="btn btn-secondary" onClick={addEmailToList}>
+              Add
+            </button>
+          </div>
+          {recipientError && (
+            <p style={{ fontSize: 12, color: 'var(--color-error-text)', margin: '6px 0 0' }}>{recipientError}</p>
+          )}
+        </div>
+
+        {/* Pending changes banner */}
+        {recipientsChanged && (
+          <div style={{
+            marginTop: 16, padding: '14px 16px',
+            background: 'var(--color-info-bg)', border: '1px solid var(--color-info-border)',
+            borderRadius: 8,
+          }}>
+            {newlyAdded.length > 0 ? (
+              <p style={{ margin: '0 0 10px', fontSize: 13, color: 'var(--color-info-text)' }}>
+                <strong>{newlyAdded.length} new recipient{newlyAdded.length > 1 ? 's' : ''}</strong> will receive the file notification email when you apply these changes.
+              </p>
+            ) : (
+              <p style={{ margin: '0 0 10px', fontSize: 13, color: 'var(--color-info-text)' }}>You have unsaved changes to the recipient list.</p>
+            )}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="button" className="btn btn-primary btn-sm" onClick={handleSaveRecipients} disabled={savingRecipients}>
+                {savingRecipients ? 'Updating…' : newlyAdded.length > 0 ? 'Update recipients & notify' : 'Update recipients'}
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => { setRecipients(savedRecipients); setRecipientError(''); }}
+                disabled={savingRecipients}
+              >
+                Discard
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Resend section — only when no pending changes and there are recipients */}
+        {isActive && recipients.length > 0 && !recipientsChanged && (
+          <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--color-text-primary)', marginBottom: 2 }}>Resend notification email</div>
+              <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Re-send the download link to all current recipients.</div>
+              {resendSuccess && <div style={{ fontSize: 12, color: 'var(--color-success)', marginTop: 4 }}>✓ Email queued for delivery.</div>}
+            </div>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={handleResend}
+              disabled={resending}
+              style={{ flexShrink: 0 }}
+            >
+              {resending ? 'Sending…' : 'Resend email'}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* ── Files ── */}
       {transfer.file_ids && transfer.file_ids.length > 0 && (
         <div className="card">
           <div className="card-header">
-            <h2 className="card-title">Files ({transfer.file_ids.length})</h2>
+            <span className="card-title">Files ({transfer.file_ids.length})</span>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 12 }}>
             {transfer.file_ids.map((fid) => (

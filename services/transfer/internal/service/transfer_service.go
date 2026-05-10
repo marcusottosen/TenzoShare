@@ -33,6 +33,7 @@ type transferRepository interface {
 	Revoke(ctx context.Context, id, ownerID string) error
 	GetTransfersNeedingReminder(ctx context.Context) ([]*domain.Transfer, error)
 	MarkReminderSent(ctx context.Context, id string) error
+	UpdateRecipientEmail(ctx context.Context, id, ownerID, recipientEmail string) error
 }
 
 // TransferService handles business logic for creating and accessing transfers.
@@ -150,6 +151,17 @@ func (s *TransferService) publishEmailNotification(ctx context.Context, t *domai
 		return
 	}
 
+	// Support comma-separated multiple recipients.
+	var recipients []string
+	for _, r := range strings.Split(t.RecipientEmail, ",") {
+		if addr := strings.TrimSpace(r); addr != "" {
+			recipients = append(recipients, addr)
+		}
+	}
+	if len(recipients) == 0 {
+		return
+	}
+
 	downloadURL := s.cfg.App.BaseURL + "/t/" + t.Slug
 	var expiresAt string
 	if t.ExpiresAt != nil {
@@ -172,7 +184,7 @@ func (s *TransferService) publishEmailNotification(ctx context.Context, t *domai
 
 	ev := map[string]any{
 		"type": "transfer_received",
-		"to":   []string{t.RecipientEmail},
+		"to":   recipients,
 		"data": json.RawMessage(data),
 	}
 	go func() {
@@ -417,6 +429,60 @@ func (s *TransferService) publishRevokedEmail(ctx context.Context, t *domain.Tra
 			s.log.Warn("failed to publish transfer_revoked email", zap.Error(err))
 		}
 	}()
+}
+
+// UpdateRecipients replaces the recipient list for a transfer (owner only).
+// emails may be empty to make the transfer public-link-only.
+func (s *TransferService) UpdateRecipients(ctx context.Context, id, ownerID string, emails []string) (*domain.Transfer, error) {
+	t, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if t.OwnerID != ownerID {
+		return nil, apperrors.Forbidden("access denied")
+	}
+
+	// Deduplicate and normalise.
+	seen := map[string]struct{}{}
+	var unique []string
+	for _, e := range emails {
+		if e = strings.TrimSpace(e); e != "" {
+			if _, dup := seen[e]; !dup {
+				seen[e] = struct{}{}
+				unique = append(unique, e)
+			}
+		}
+	}
+	recipientEmail := strings.Join(unique, ",")
+
+	if err := s.repo.UpdateRecipientEmail(ctx, id, ownerID, recipientEmail); err != nil {
+		return nil, err
+	}
+	t.RecipientEmail = recipientEmail
+	return t, nil
+}
+
+// ResendNotification re-publishes the transfer_received email to all current recipients.
+// Only the owner may call this; the transfer must be active (not revoked/expired).
+func (s *TransferService) ResendNotification(ctx context.Context, id, ownerID string) error {
+	t, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if t.OwnerID != ownerID {
+		return apperrors.Forbidden("access denied")
+	}
+	if t.IsRevoked {
+		return apperrors.BadRequest("cannot resend: transfer is revoked")
+	}
+	if t.ExpiresAt != nil && time.Now().After(*t.ExpiresAt) {
+		return apperrors.BadRequest("cannot resend: transfer has expired")
+	}
+	if t.RecipientEmail == "" {
+		return apperrors.BadRequest("no recipients to notify")
+	}
+	s.publishEmailNotification(ctx, t)
+	return nil
 }
 
 // SendExpiryReminders queries transfers expiring within 24 hours that haven't

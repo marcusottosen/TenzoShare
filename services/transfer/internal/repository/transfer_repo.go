@@ -353,3 +353,18 @@ func (r *TransferRepository) MarkReminderSent(ctx context.Context, id string) er
 	}
 	return nil
 }
+
+// UpdateRecipientEmail replaces the recipient_email field (comma-separated) for a transfer.
+// Only the owner may do this.
+func (r *TransferRepository) UpdateRecipientEmail(ctx context.Context, id, ownerID, recipientEmail string) error {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE transfer.transfers SET recipient_email = $1 WHERE id = $2 AND owner_id = $3
+	`, recipientEmail, id, ownerID)
+	if err != nil {
+		return apperrors.Internal("update recipient_email", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperrors.NotFound("transfer not found")
+	}
+	return nil
+}

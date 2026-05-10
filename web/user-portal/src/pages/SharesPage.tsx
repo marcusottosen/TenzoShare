@@ -252,7 +252,12 @@ function MySharesTab() {
                 </td>
                 <td><TransferBadge t={t} /></td>
                 <td style={{ fontSize: 13, color: 'var(--color-text-muted)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {t.recipient_email ?? <em>anyone</em>}
+                  {t.recipient_emails && t.recipient_emails.length > 0
+                    ? t.recipient_emails.length === 1
+                      ? t.recipient_emails[0]
+                      : <span title={t.recipient_emails.join(', ')}>{t.recipient_emails[0]} <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>+{t.recipient_emails.length - 1} more</span></span>
+                    : t.recipient_email ?? <em>anyone</em>
+                  }
                 </td>
                 <td style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>
                   <span title={t.view_only ? 'Views' : 'Downloads'} style={{ color: t.view_only ? 'var(--color-primary)' : undefined }}>
