@@ -2181,12 +2181,13 @@ func handlePutBranding(c fiber.Ctx) error {
 // ── Platform settings ────────────────────────────────────────────────────────
 
 type PlatformConfig struct {
-	DateFormat  string `json:"date_format"`
-	TimeFormat  string `json:"time_format"`
-	Timezone    string `json:"timezone"`
-	PortalURL   string `json:"portal_url"`
-	DownloadURL string `json:"download_url"`
-	UpdatedAt   string `json:"updated_at"`
+	DateFormat             string `json:"date_format"`
+	TimeFormat             string `json:"time_format"`
+	Timezone               string `json:"timezone"`
+	PortalURL              string `json:"portal_url"`
+	DownloadURL            string `json:"download_url"`
+	LinkProtectionPolicy   string `json:"link_protection_policy"`
+	UpdatedAt              string `json:"updated_at"`
 }
 
 func handleGetPlatformConfig(c fiber.Ctx) error { return handleGetPlatformConfigPublic(c) }
@@ -2195,9 +2196,9 @@ func handleGetPlatformConfigPublic(c fiber.Ctx) error {
 	var p PlatformConfig
 	var updatedAt time.Time
 	err := db.QueryRow(c.Context(), `
-		SELECT date_format, time_format, timezone, portal_url, download_url, updated_at
+		SELECT date_format, time_format, timezone, portal_url, download_url, link_protection_policy, updated_at
 		FROM admin_svc.platform_settings WHERE id = 1`,
-	).Scan(&p.DateFormat, &p.TimeFormat, &p.Timezone, &p.PortalURL, &p.DownloadURL, &updatedAt)
+	).Scan(&p.DateFormat, &p.TimeFormat, &p.Timezone, &p.PortalURL, &p.DownloadURL, &p.LinkProtectionPolicy, &updatedAt)
 	if err != nil {
 		return apperrors.Internal("get platform config", err)
 	}
@@ -2207,11 +2208,12 @@ func handleGetPlatformConfigPublic(c fiber.Ctx) error {
 
 func handlePutPlatformConfig(c fiber.Ctx) error {
 	var body struct {
-		DateFormat  *string `json:"date_format"`
-		TimeFormat  *string `json:"time_format"`
-		Timezone    *string `json:"timezone"`
-		PortalURL   *string `json:"portal_url"`
-		DownloadURL *string `json:"download_url"`
+		DateFormat            *string `json:"date_format"`
+		TimeFormat            *string `json:"time_format"`
+		Timezone              *string `json:"timezone"`
+		PortalURL             *string `json:"portal_url"`
+		DownloadURL           *string `json:"download_url"`
+		LinkProtectionPolicy  *string `json:"link_protection_policy"`
 	}
 	if err := json.Unmarshal(c.Body(), &body); err != nil {
 		return apperrors.BadRequest("invalid JSON body")
@@ -2223,16 +2225,22 @@ func handlePutPlatformConfig(c fiber.Ctx) error {
 	if body.TimeFormat != nil && *body.TimeFormat != "12h" && *body.TimeFormat != "24h" {
 		return apperrors.BadRequest("time_format must be '12h' or '24h'")
 	}
+	validPolicies := map[string]bool{"none": true, "password": true, "email": true, "either": true}
+	if body.LinkProtectionPolicy != nil && !validPolicies[*body.LinkProtectionPolicy] {
+		return apperrors.BadRequest("link_protection_policy must be one of: none, password, email, either")
+	}
 	_, err := db.Exec(c.Context(), `
 		UPDATE admin_svc.platform_settings SET
-		    date_format  = COALESCE($1, date_format),
-		    time_format  = COALESCE($2, time_format),
-		    timezone     = COALESCE($3, timezone),
-		    portal_url   = COALESCE($4, portal_url),
-		    download_url = COALESCE($5, download_url),
-		    updated_at   = now()
+		    date_format             = COALESCE($1, date_format),
+		    time_format             = COALESCE($2, time_format),
+		    timezone                = COALESCE($3, timezone),
+		    portal_url              = COALESCE($4, portal_url),
+		    download_url            = COALESCE($5, download_url),
+		    link_protection_policy  = COALESCE($6, link_protection_policy),
+		    updated_at              = now()
 		WHERE id = 1`,
 		body.DateFormat, body.TimeFormat, body.Timezone, body.PortalURL, body.DownloadURL,
+		body.LinkProtectionPolicy,
 	)
 	if err != nil {
 		return apperrors.Internal("update platform config", err)

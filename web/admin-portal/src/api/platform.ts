@@ -7,6 +7,7 @@ export interface PlatformConfig {
   timezone: string;
   portal_url: string;
   download_url: string;
+  link_protection_policy?: 'none' | 'password' | 'email' | 'either';
   updated_at?: string;
 }
 

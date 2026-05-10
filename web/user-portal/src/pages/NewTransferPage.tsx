@@ -4,6 +4,7 @@ import { listFiles, uploadFile, type FileRecord, type UploadProgress } from '../
 import { createTransfer } from '../api/transfers';
 import { listContacts, upsertContact, type Contact } from '../api/contacts';
 import { getNotificationPrefs } from '../api/auth';
+import { getPlatformConfig } from '../api/platform';
 import { pendingUploadStore } from '../stores/pendingUpload';
 import { pendingFileStore } from '../stores/pendingFileStore';
 
@@ -53,6 +54,9 @@ export default function NewTransferPage() {
   const [suggestionIdx, setSuggestionIdx] = useState(-1);
   const suggestionsRef = useRef<HTMLDivElement>(null);
 
+  // Admin link protection policy
+  const [linkPolicy, setLinkPolicyState] = useState<'none' | 'password' | 'email' | 'either'>('none');
+
   // Files staged for this transfer
   const [staged, setStaged] = useState<StagedFile[]>([]);
 
@@ -84,6 +88,7 @@ export default function NewTransferPage() {
   useEffect(() => {
     listContacts().then(setContacts).catch(() => {});
     getNotificationPrefs().then((p) => setAutoSaveContacts(p.auto_save_contacts ?? true)).catch(() => {});
+    getPlatformConfig().then((c) => setLinkPolicyState(c.link_protection_policy ?? 'none')).catch(() => {});
   }, []);
 
   // Consume any files forwarded from the dashboard upload zone
@@ -290,6 +295,14 @@ export default function NewTransferPage() {
         </div>
       </div>
       {error && <div className="alert alert-error">{error}</div>}
+      {linkPolicy !== 'none' && (
+        <div className="alert" style={{ background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.25)', color: 'var(--color-text-primary)', marginBottom: 12 }}>
+          <strong>Link protection required:</strong>{' '}
+          {linkPolicy === 'password' && 'All transfers on this platform must be protected with a password.'}
+          {linkPolicy === 'email' && 'All transfers on this platform must include at least one recipient email.'}
+          {linkPolicy === 'either' && 'All transfers on this platform must be protected with a password or include at least one recipient email.'}
+        </div>
+      )}
 
       <form onSubmit={handleSubmit}>
 

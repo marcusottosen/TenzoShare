@@ -433,16 +433,18 @@ CREATE TABLE IF NOT EXISTS admin_svc.branding_settings (
 INSERT INTO admin_svc.branding_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS admin_svc.platform_settings (
-    id          INT         PRIMARY KEY DEFAULT 1,
-    date_format TEXT        NOT NULL DEFAULT 'EU',
-    time_format TEXT        NOT NULL DEFAULT '24h',
-    timezone    TEXT        NOT NULL DEFAULT 'UTC',
-    portal_url  TEXT        NOT NULL DEFAULT '',
-    download_url TEXT       NOT NULL DEFAULT '',
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    id                      INT         PRIMARY KEY DEFAULT 1,
+    date_format             TEXT        NOT NULL DEFAULT 'EU',
+    time_format             TEXT        NOT NULL DEFAULT '24h',
+    timezone                TEXT        NOT NULL DEFAULT 'UTC',
+    portal_url              TEXT        NOT NULL DEFAULT '',
+    download_url            TEXT        NOT NULL DEFAULT '',
+    link_protection_policy  TEXT        NOT NULL DEFAULT 'none',
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT platform_settings_singleton   CHECK (id = 1),
     CONSTRAINT platform_settings_date_format CHECK (date_format IN ('ISO', 'EU', 'US', 'DE', 'LONG')),
-    CONSTRAINT platform_settings_time_format CHECK (time_format IN ('12h', '24h'))
+    CONSTRAINT platform_settings_time_format CHECK (time_format IN ('12h', '24h')),
+    CONSTRAINT platform_settings_link_policy CHECK (link_protection_policy IN ('none', 'password', 'email', 'either'))
 );
 INSERT INTO admin_svc.platform_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
 
@@ -460,5 +462,5 @@ CREATE TABLE IF NOT EXISTS admin_svc.smtp_settings (
 INSERT INTO admin_svc.smtp_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
 
 INSERT INTO admin_svc.schema_migrations (name) VALUES
-  ('001_branding_settings.sql'), ('002_branding_extend.sql'), ('003_branding_dark_mode.sql'), ('004_platform_settings.sql'), ('005_smtp_settings.sql'), ('006_platform_urls.sql'), ('007_email_branding.sql'), ('008_email_content.sql'), ('009_custom_email_templates.sql')
+  ('001_branding_settings.sql'), ('002_branding_extend.sql'), ('003_branding_dark_mode.sql'), ('004_platform_settings.sql'), ('005_smtp_settings.sql'), ('006_platform_urls.sql'), ('007_link_protection.sql'), ('007_email_branding.sql'), ('008_email_content.sql'), ('009_custom_email_templates.sql')
 ON CONFLICT DO NOTHING;

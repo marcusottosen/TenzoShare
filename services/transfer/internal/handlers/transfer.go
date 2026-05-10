@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-playground/validator/v10"
@@ -28,15 +29,57 @@ import (
 // that the requested file no longer exists (soft-deleted by admin or retention worker).
 var errFileDeleted = errors.New("file no longer available")
 
+// policyCache holds the link_protection_policy fetched from the admin service,
+// refreshed at most every 5 minutes.
+type policyCache struct {
+	mu        sync.Mutex
+	value     string
+	fetchedAt time.Time
+	adminURL  string
+}
+
+func (pc *policyCache) get(ctx context.Context) string {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	if time.Since(pc.fetchedAt) < 5*time.Minute && pc.value != "" {
+		return pc.value
+	}
+	// Fetch from admin public endpoint.
+	reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodGet, pc.adminURL+"/api/v1/platform/config", nil)
+	if err != nil {
+		return "none"
+	}
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return "none" // fail-open: don't block transfers if admin is down
+	}
+	defer resp.Body.Close()
+	var cfg struct {
+		LinkProtectionPolicy string `json:"link_protection_policy"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
+		return "none"
+	}
+	if cfg.LinkProtectionPolicy == "" {
+		cfg.LinkProtectionPolicy = "none"
+	}
+	pc.value = cfg.LinkProtectionPolicy
+	pc.fetchedAt = time.Now()
+	return pc.value
+}
+
 type Handler struct {
 	svc           *service.TransferService
 	requestSvc    *service.RequestService
 	validate      *validator.Validate
 	jwtPrivateKey *rsa.PrivateKey
 	storageURL    string
+	policy        *policyCache
 }
 
-func New(svc *service.TransferService, requestSvc *service.RequestService, jwtPrivateKeyPEM, storageURL string) *Handler {
+func New(svc *service.TransferService, requestSvc *service.RequestService, jwtPrivateKeyPEM, storageURL, adminURL string) *Handler {
 	privKey, err := jwtkeys.ParsePrivateKey(jwtPrivateKeyPEM)
 	if err != nil {
 		// panic at startup — private key is required for service-to-service tokens
@@ -48,6 +91,7 @@ func New(svc *service.TransferService, requestSvc *service.RequestService, jwtPr
 		validate:      validator.New(),
 		jwtPrivateKey: privKey,
 		storageURL:    storageURL,
+		policy:        &policyCache{adminURL: adminURL},
 	}
 }
 
@@ -92,6 +136,22 @@ func (h *Handler) Create(c fiber.Ctx) error {
 		allEmails = []string{req.RecipientEmail}
 	}
 	recipientEmail := strings.Join(allEmails, ",")
+
+	// Enforce admin link-protection policy.
+	switch h.policy.get(c.Context()) {
+	case "password":
+		if req.Password == "" {
+			return apperrors.Validation("this platform requires all transfers to be protected by a password")
+		}
+	case "email":
+		if len(allEmails) == 0 {
+			return apperrors.Validation("this platform requires all transfers to have at least one recipient email")
+		}
+	case "either":
+		if req.Password == "" && len(allEmails) == 0 {
+			return apperrors.Validation("this platform requires all transfers to have a password or at least one recipient email")
+		}
+	}
 
 	result, err := h.svc.Create(c.Context(), service.CreateParams{
 		OwnerID:          ownerID,

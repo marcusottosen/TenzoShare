@@ -70,7 +70,8 @@ func main() {
 	svc := service.New(repo, cfg, jsClient, log)
 	storageURL := getEnvOr("STORAGE_SERVICE_URL", "http://tenzoshare-storage:8083")
 	requestSvc := service.NewRequestService(requestRepo, cfg, jsClient, log, storageURL)
-	h := handlers.New(svc, requestSvc, cfg.JWT.PrivateKeyPEM, storageURL)
+	adminURL := getEnvOr("ADMIN_SERVICE_URL", "http://tenzoshare-admin:8087")
+	h := handlers.New(svc, requestSvc, cfg.JWT.PrivateKeyPEM, storageURL, adminURL)
 
 	pubKey, err := jwtkeys.ParsePublicKey(cfg.JWT.PublicKeyPEM)
 	if err != nil {

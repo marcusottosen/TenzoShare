@@ -5,6 +5,7 @@ export interface PlatformConfig {
   date_format: DateFormat;
   time_format: TimeFormat;
   timezone: string;
+  link_protection_policy?: 'none' | 'password' | 'email' | 'either';
   updated_at?: string;
 }
 

@@ -22,6 +22,7 @@ export default function GeneralSettingsPage() {
   const [timezone, setTimezone] = useState('UTC');
   const [portalUrl, setPortalUrl] = useState('');
   const [downloadUrl, setDownloadUrl] = useState('');
+  const [linkPolicy, setLinkPolicy] = useState<'none' | 'password' | 'email' | 'either'>('none');
 
   useEffect(() => {
     getPlatformConfig()
@@ -32,6 +33,7 @@ export default function GeneralSettingsPage() {
         setTimezone(c.timezone);
         setPortalUrl(c.portal_url ?? '');
         setDownloadUrl(c.download_url ?? '');
+        setLinkPolicy(c.link_protection_policy ?? 'none');
       })
       .catch(() => setError('Failed to load platform settings.'));
   }, []);
@@ -42,11 +44,12 @@ export default function GeneralSettingsPage() {
     setError(null);
     setSaved(false);
     try {
-      const updated = await updatePlatformConfig({ date_format: dateFormat, time_format: timeFormat, timezone, portal_url: portalUrl, download_url: downloadUrl });
+      const updated = await updatePlatformConfig({ date_format: dateFormat, time_format: timeFormat, timezone, portal_url: portalUrl, download_url: downloadUrl, link_protection_policy: linkPolicy });
       setConfig(updated);
       setActivePrefs({ dateFormat: updated.date_format, timeFormat: updated.time_format, timezone: updated.timezone });
       setPortalUrl(updated.portal_url ?? '');
       setDownloadUrl(updated.download_url ?? '');
+      setLinkPolicy(updated.link_protection_policy ?? 'none');
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch {
@@ -156,12 +159,6 @@ export default function GeneralSettingsPage() {
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button type="submit" className="btn btn-primary" disabled={saving}>
-            {saving ? 'Saving…' : 'Save changes'}
-          </button>
-        </div>
-
         <div className="card" style={{ marginTop: 20, marginBottom: 20 }}>
           <div className="card-header">
             <h2 className="card-title">Platform URLs</h2>
@@ -170,36 +167,56 @@ export default function GeneralSettingsPage() {
             </p>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 20, marginTop: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginTop: 16 }}>
+            {/* Portal URL */}
             <div>
-              <label className="form-label" htmlFor="portal_url">Portal URL</label>
-              <input
-                id="portal_url"
-                type="url"
-                className="form-input"
-                value={portalUrl}
-                onChange={(e) => setPortalUrl(e.target.value)}
-                placeholder="https://app.example.com"
-                style={{ maxWidth: 480 }}
-              />
-              <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>
-                Used in email-verification and password-reset links (user portal). Example: <code>http://192.168.10.150:3000</code>
+              <label htmlFor="portal_url" style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 6, color: 'var(--color-text-primary)' }}>
+                User Portal URL
+              </label>
+              <div style={{ position: 'relative' }}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+                  style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', width: 15, height: 15, color: 'var(--color-text-muted)', pointerEvents: 'none' }}>
+                  <circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" />
+                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+                </svg>
+                <input
+                  id="portal_url"
+                  type="text"
+                  className="form-input"
+                  value={portalUrl}
+                  onChange={(e) => setPortalUrl(e.target.value)}
+                  placeholder="https://app.example.com"
+                  style={{ paddingLeft: 32, width: '100%' }}
+                />
+              </div>
+              <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 6, lineHeight: 1.5 }}>
+                Used in verification and password-reset email links.
               </p>
             </div>
 
+            {/* Download URL */}
             <div>
-              <label className="form-label" htmlFor="download_url">Download URL</label>
-              <input
-                id="download_url"
-                type="url"
-                className="form-input"
-                value={downloadUrl}
-                onChange={(e) => setDownloadUrl(e.target.value)}
-                placeholder="https://app.example.com"
-                style={{ maxWidth: 480 }}
-              />
-              <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>
-                Used in transfer download links. Example: <code>http://192.168.10.150:3003</code>
+              <label htmlFor="download_url" style={{ display: 'block', fontSize: 13, fontWeight: 500, marginBottom: 6, color: 'var(--color-text-primary)' }}>
+                Download URL
+              </label>
+              <div style={{ position: 'relative' }}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+                  style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', width: 15, height: 15, color: 'var(--color-text-muted)', pointerEvents: 'none' }}>
+                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                </svg>
+                <input
+                  id="download_url"
+                  type="text"
+                  className="form-input"
+                  value={downloadUrl}
+                  onChange={(e) => setDownloadUrl(e.target.value)}
+                  placeholder="https://app.example.com"
+                  style={{ paddingLeft: 32, width: '100%' }}
+                />
+              </div>
+              <p style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 6, lineHeight: 1.5 }}>
+                Used in transfer download links sent to recipients.
               </p>
             </div>
           </div>
@@ -210,6 +227,45 @@ export default function GeneralSettingsPage() {
             Last updated: {new Date(config.updated_at).toLocaleString()}
           </p>
         )}
+
+        <div className="card" style={{ marginTop: 20, marginBottom: 20 }}>
+          <div className="card-header">
+            <h2 className="card-title">Transfer Link Protection</h2>
+            <p style={{ fontSize: 13, color: 'var(--color-text-muted)', marginTop: 2 }}>
+              Require all transfer links to be protected. Open (public) links are blocked when a policy is active.
+            </p>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 16 }}>
+            {([
+              ['none',     'No requirement',          'Users may create unprotected links (default).'],
+              ['password', 'Password required',       'Every transfer must have a password set before it can be created.'],
+              ['email',    'Recipient email required', 'Every transfer must include at least one recipient email address.'],
+              ['either',   'Password or email',       'Every transfer must have a password OR at least one recipient email.'],
+            ] as const).map(([val, label, desc]) => (
+              <label key={val} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer', padding: '10px 12px', borderRadius: 8, border: `1px solid ${linkPolicy === val ? 'var(--color-primary)' : 'var(--color-border)'}`, background: linkPolicy === val ? 'var(--color-primary-light, rgba(99,102,241,0.06))' : 'transparent' }}>
+                <input
+                  type="radio"
+                  name="link_policy"
+                  value={val}
+                  checked={linkPolicy === val}
+                  onChange={() => setLinkPolicy(val)}
+                  style={{ marginTop: 2 }}
+                />
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--color-text-primary)' }}>{label}</div>
+                  <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 2 }}>{desc}</div>
+                </div>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 10, marginBottom: 8 }}>
+          <button type="submit" className="btn btn-primary" disabled={saving}>
+            {saving ? 'Saving…' : 'Save changes'}
+          </button>
+        </div>
       </form>
     </div>
   );
