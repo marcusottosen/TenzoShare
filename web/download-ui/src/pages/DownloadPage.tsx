@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { TransferPublic, FileInfo } from '../types';
-import { fetchTransfer, fetchDownloadUrl, TransferApiError } from '../api/transfer';
+import { fetchTransfer, fetchDownloadUrl, requestAccessLink, TransferApiError } from '../api/transfer';
 import { getLogoUrl, getAppName } from '../branding';
 
 // ─── Icon components ───────────────────────────────────────────────────────
@@ -188,7 +188,8 @@ type View =
   | { kind: 'loading' }
   | { kind: 'error'; message: string; status?: number }
   | { kind: 'password'; slug: string }
-  | { kind: 'ready'; transfer: TransferPublic; password?: string };
+  | { kind: 'token-expired'; slug: string }
+  | { kind: 'ready'; transfer: TransferPublic; password?: string; recipientToken?: string };
 
 // ---------------------------------------------------------------------------
 // DownloadPage
@@ -196,31 +197,44 @@ type View =
 
 export default function DownloadPage() {
   const slug = resolveSlug();
+  // Read the recipient magic-link token from the URL (?rt=...) — present when
+  // the user arrives via an email link. Stored in state so it survives re-renders.
+  const [recipientToken] = useState<string | null>(
+    () => new URLSearchParams(window.location.search).get('rt'),
+  );
   const [view, setView] = useState<View>({ kind: 'loading' });
   const [passwordInput, setPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [downloading, setDownloading] = useState<Record<string, boolean>>({});
   const [downloadErrors, setDownloadErrors] = useState<Record<string, string>>({});
   const [viewer, setViewer] = useState<ViewerModal | null>(null);
+  // Resend-link form state (shown when token has expired).
+  const [resendEmail, setResendEmail] = useState('');
+  const [resendStatus, setResendStatus] = useState<'idle' | 'sending' | 'sent'>('idle');
 
-  // Initial fetch — no password yet.
+  // Initial fetch — use recipient token if present, otherwise fall back to open/password flow.
   useEffect(() => {
     if (!slug) {
       setView({ kind: 'error', message: 'No transfer link found. Check your URL.' });
       return;
     }
-    fetchTransfer(slug)
-      .then((t) => setView({ kind: 'ready', transfer: t }))
+    fetchTransfer(slug, undefined, recipientToken ?? undefined)
+      .then((t) => setView({ kind: 'ready', transfer: t, recipientToken: recipientToken ?? undefined }))
       .catch((err: unknown) => {
         if (err instanceof TransferApiError && err.status === 401) {
-          setView({ kind: 'password', slug });
+          // If we had a token and it was rejected, it has expired.
+          if (recipientToken) {
+            setView({ kind: 'token-expired', slug });
+          } else {
+            setView({ kind: 'password', slug });
+          }
         } else if (err instanceof TransferApiError) {
           setView({ kind: 'error', message: err.message, status: err.status });
         } else {
           setView({ kind: 'error', message: 'Failed to load transfer.' });
         }
       });
-  }, [slug]);
+  }, [slug, recipientToken]);
 
   // Submit password form.
   const handlePasswordSubmit = useCallback(
@@ -241,11 +255,29 @@ export default function DownloadPage() {
     [view, passwordInput],
   );
 
+  // Resend magic-link access email.
+  const handleResendLink = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!slug || resendStatus !== 'idle') return;
+      setResendStatus('sending');
+      try {
+        await requestAccessLink(slug, resendEmail);
+      } catch {
+        // Swallow — always show success to avoid email enumeration.
+      } finally {
+        setResendStatus('sent');
+      }
+    },
+    [slug, resendEmail, resendStatus],
+  );
+
   // Core action: either opens the in-page viewer modal or triggers a browser download.
   const handleAction = useCallback(
     async (fileId: string, action: 'download' | 'preview') => {
       if (!slug) return;
       const password = view.kind === 'ready' ? view.password : undefined;
+      const rt = view.kind === 'ready' ? view.recipientToken : undefined;
       const isViewOnly = view.kind === 'ready' && view.transfer.view_only;
       const file =
         view.kind === 'ready' && view.transfer.files
@@ -255,7 +287,7 @@ export default function DownloadPage() {
       setDownloading((d) => ({ ...d, [fileId]: true }));
       setDownloadErrors((d) => { const n = { ...d }; delete n[fileId]; return n; });
       try {
-        const result = await fetchDownloadUrl(slug, fileId, password);
+        const result = await fetchDownloadUrl(slug, fileId, password, rt);
         const effectivelyViewOnly = isViewOnly || !!result.view_only;
         if (shouldPreview || effectivelyViewOnly) {
           const downloadUrl = result.url;
@@ -319,6 +351,49 @@ export default function DownloadPage() {
           <h2 className="tenzo-title">{errorTitle(view.status)}</h2>
           <p className="tenzo-subtitle">{view.message}</p>
         </div>
+      </Layout>
+    );
+  }
+
+  if (view.kind === 'token-expired') {
+    return (
+      <Layout>
+        <div className="state-icon state-icon-warn" style={{ margin: '0 auto 20px' }}>
+          <IconLock />
+        </div>
+        <h2 className="tenzo-title" style={{ textAlign: 'center' }}>Your access link has expired</h2>
+        <p className="tenzo-subtitle" style={{ textAlign: 'center', marginBottom: 24 }}>
+          The link in your email is no longer valid. Enter your email address to receive a new access link.
+        </p>
+        {resendStatus === 'sent' ? (
+          <div className="alert" style={{ background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.3)', color: '#15803d', textAlign: 'center', padding: '14px 18px', borderRadius: 10 }}>
+            <strong>Check your inbox.</strong> If that email is a recipient of this transfer, a new link has been sent.
+          </div>
+        ) : (
+          <form onSubmit={handleResendLink}>
+            <div className="form-group">
+              <label htmlFor="resend-email">Your email address</label>
+              <input
+                id="resend-email"
+                type="email"
+                className="tenzo-input"
+                placeholder="you@example.com"
+                value={resendEmail}
+                onChange={(e) => setResendEmail(e.target.value)}
+                autoFocus
+                required
+              />
+            </div>
+            <button
+              type="submit"
+              className="btn btn-primary btn-full btn-lg"
+              style={{ marginTop: 8 }}
+              disabled={resendStatus === 'sending'}
+            >
+              {resendStatus === 'sending' ? 'Sending…' : 'Send new access link'}
+            </button>
+          </form>
+        )}
       </Layout>
     );
   }

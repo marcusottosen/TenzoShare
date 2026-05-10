@@ -368,3 +368,49 @@ func (r *TransferRepository) UpdateRecipientEmail(ctx context.Context, id, owner
 	}
 	return nil
 }
+
+// StoreRecipientToken upserts a recipient magic-link token for a (transfer, email) pair.
+// If a token already exists for this pair it is replaced (one active token per recipient).
+func (r *TransferRepository) StoreRecipientToken(ctx context.Context, tok *domain.RecipientToken) error {
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO transfer.recipient_tokens (transfer_id, email, token_hash, expires_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (transfer_id, email) DO UPDATE
+			SET token_hash = EXCLUDED.token_hash,
+			    expires_at = EXCLUDED.expires_at,
+			    created_at = now()
+	`, tok.TransferID, tok.Email, tok.TokenHash, tok.ExpiresAt)
+	if err != nil {
+		return apperrors.Internal("store recipient token", err)
+	}
+	return nil
+}
+
+// GetRecipientTokenByHash looks up a recipient token by its SHA-256 hash.
+// Returns NotFound if the hash does not match any stored token.
+func (r *TransferRepository) GetRecipientTokenByHash(ctx context.Context, tokenHash string) (*domain.RecipientToken, error) {
+	tok := &domain.RecipientToken{}
+	err := r.db.QueryRow(ctx, `
+		SELECT id, transfer_id, email, token_hash, expires_at, created_at
+		FROM transfer.recipient_tokens
+		WHERE token_hash = $1
+	`, tokenHash).Scan(&tok.ID, &tok.TransferID, &tok.Email, &tok.TokenHash, &tok.ExpiresAt, &tok.CreatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apperrors.NotFound("recipient token not found")
+		}
+		return nil, apperrors.Internal("get recipient token", err)
+	}
+	return tok, nil
+}
+
+// DeleteRecipientToken removes all tokens for a (transfer, email) pair.
+func (r *TransferRepository) DeleteRecipientToken(ctx context.Context, transferID, email string) error {
+	_, err := r.db.Exec(ctx, `
+		DELETE FROM transfer.recipient_tokens WHERE transfer_id = $1 AND email = $2
+	`, transferID, email)
+	if err != nil {
+		return apperrors.Internal("delete recipient token", err)
+	}
+	return nil
+}

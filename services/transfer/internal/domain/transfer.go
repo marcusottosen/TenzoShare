@@ -46,3 +46,15 @@ type TransferFile struct {
 	TransferID string
 	FileID     string
 }
+
+// RecipientToken is a per-recipient magic link token for email-shared transfers.
+// The raw token is sent once (embedded in the email link as ?rt=<token>).
+// Only the SHA-256 hash is persisted.
+type RecipientToken struct {
+	ID         string
+	TransferID string
+	Email      string
+	TokenHash  string // hex(SHA-256(raw token))
+	ExpiresAt  time.Time
+	CreatedAt  time.Time
+}

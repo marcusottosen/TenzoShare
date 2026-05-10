@@ -205,6 +205,18 @@ func (r *stubTransferRepo) UpdateRecipientEmail(_ context.Context, id, ownerID, 
 	return nil
 }
 
+func (r *stubTransferRepo) StoreRecipientToken(_ context.Context, tok *domain.RecipientToken) error {
+	return nil
+}
+
+func (r *stubTransferRepo) GetRecipientTokenByHash(_ context.Context, tokenHash string) (*domain.RecipientToken, error) {
+	return nil, apperrors.NotFound("recipient token not found")
+}
+
+func (r *stubTransferRepo) DeleteRecipientToken(_ context.Context, transferID, email string) error {
+	return nil
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func newTestTransferService(repo transferRepository) *TransferService {

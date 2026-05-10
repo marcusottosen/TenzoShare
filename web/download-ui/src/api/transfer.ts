@@ -86,9 +86,12 @@ function buildURL(path: string, params?: Record<string, string>): string {
 /**
  * Fetch the public metadata for a transfer.
  *
- * @param slug     The short token from the share URL (e.g. "AbCdEfGh1234").
- * @param password Optional password.  Omit on first call — the response
- *                 `has_password` field tells you whether one is required.
+ * @param slug           The short token from the share URL (e.g. "AbCdEfGh1234").
+ * @param password       Optional password. Omit on first call — the response
+ *                       `has_password` field tells you whether one is required.
+ * @param recipientToken Optional magic-link token from the email link (?rt=...).
+ *                       When provided the server validates the token and bypasses
+ *                       the password requirement.
  *
  * @throws {TransferApiError} status 401 if a password is required but not
  *   provided, 403 if expired/revoked/download-limit-reached, 404 if not found.
@@ -96,9 +99,12 @@ function buildURL(path: string, params?: Record<string, string>): string {
 export async function fetchTransfer(
   slug: string,
   password?: string,
+  recipientToken?: string,
 ): Promise<TransferPublic> {
-  const params = password ? { password } : undefined;
-  const url = buildURL(`${API_BASE}/t/${encodeURIComponent(slug)}`, params);
+  const params: Record<string, string> = {};
+  if (recipientToken) params['rt'] = recipientToken;
+  else if (password) params['password'] = password;
+  const url = buildURL(`${API_BASE}/t/${encodeURIComponent(slug)}`, Object.keys(params).length ? params : undefined);
   const res = await fetch(url);
   const body = await handleResponse<{ transfer: TransferPublic }>(res);
   return body.transfer;
@@ -107,12 +113,12 @@ export async function fetchTransfer(
 /**
  * Obtain a presigned download URL for a single file in a transfer.
  *
- * The server re-validates the slug and password on every call, so the URL is
- * only issued for transfers that are still valid at request time.
+ * The server re-validates the slug and password/token on every call.
  *
- * @param slug     Transfer slug.
- * @param fileId   UUID of the file to download (from `TransferPublic.file_ids`).
- * @param password Transfer password, if the transfer is password-protected.
+ * @param slug           Transfer slug.
+ * @param fileId         UUID of the file to download.
+ * @param password       Transfer password, if the transfer is password-protected.
+ * @param recipientToken Magic-link token from the email link, if present.
  *
  * @throws {TransferApiError} same conditions as `fetchTransfer`, plus 404 if
  *   the file does not belong to this transfer.
@@ -121,12 +127,29 @@ export async function fetchDownloadUrl(
   slug: string,
   fileId: string,
   password?: string,
+  recipientToken?: string,
 ): Promise<FileDownloadUrl> {
-  const params = password ? { password } : undefined;
+  const params: Record<string, string> = {};
+  if (recipientToken) params['rt'] = recipientToken;
+  else if (password) params['password'] = password;
   const url = buildURL(
     `${API_BASE}/t/${encodeURIComponent(slug)}/files/${encodeURIComponent(fileId)}/download`,
-    params,
+    Object.keys(params).length ? params : undefined,
   );
   const res = await fetch(url);
   return handleResponse<FileDownloadUrl>(res);
+}
+
+/**
+ * Request a new magic-link access email for an expired recipient link.
+ * Always resolves (server never reveals whether the email is a recipient).
+ */
+export async function requestAccessLink(slug: string, email: string): Promise<void> {
+  const url = buildURL(`${API_BASE}/t/${encodeURIComponent(slug)}/request-access`);
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+  await handleResponse<unknown>(res);
 }

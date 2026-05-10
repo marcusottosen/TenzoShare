@@ -234,11 +234,28 @@ CREATE TABLE IF NOT EXISTS transfer.file_download_counts (
 );
 CREATE INDEX IF NOT EXISTS idx_file_dl_counts_transfer ON transfer.file_download_counts (transfer_id);
 
+-- Per-recipient magic link tokens. Each email recipient gets a unique token
+-- embedded in the email link (?rt=<token>). The token bypasses password checks.
+CREATE TABLE IF NOT EXISTS transfer.recipient_tokens (
+    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    transfer_id UUID        NOT NULL REFERENCES transfer.transfers(id) ON DELETE CASCADE,
+    email       TEXT        NOT NULL,
+    token_hash  TEXT        NOT NULL UNIQUE,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT recipient_tokens_email_length CHECK (char_length(email) <= 320)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_recipient_tokens_transfer_email
+    ON transfer.recipient_tokens(transfer_id, email);
+CREATE INDEX IF NOT EXISTS idx_recipient_tokens_expires_at
+    ON transfer.recipient_tokens(expires_at);
+
 INSERT INTO transfer.schema_migrations (name) VALUES
   ('001_init.sql'), ('002_add_name_description.sql'), ('003_file_requests.sql'),
   ('004_sender_email.sql'), ('005_file_download_counts.sql'), ('006_view_only.sql'),
   ('007_reminder_sent_at.sql'), ('008_request_notify_emails.sql'),
-  ('009_request_notify_on_upload.sql'), ('010_transfer_notify_on_download.sql')
+  ('009_request_notify_on_upload.sql'), ('010_transfer_notify_on_download.sql'),
+  ('011_recipient_tokens.sql')
 ON CONFLICT DO NOTHING;
 
 -- =============================================================================

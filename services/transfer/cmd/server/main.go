@@ -94,6 +94,7 @@ func main() {
 
 	// Public: access a transfer by slug (downloaders, no auth required)
 	app.Get("/api/v1/t/:slug", h.Access)
+	app.Post("/api/v1/t/:slug/request-access", h.RequestAccess)
 	app.Get("/api/v1/t/:slug/files/:fileId/download", h.DownloadURL)
 	app.Get("/api/v1/transfers/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "service": "transfer"})

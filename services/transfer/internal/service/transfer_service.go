@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"time"
@@ -34,6 +36,9 @@ type transferRepository interface {
 	GetTransfersNeedingReminder(ctx context.Context) ([]*domain.Transfer, error)
 	MarkReminderSent(ctx context.Context, id string) error
 	UpdateRecipientEmail(ctx context.Context, id, ownerID, recipientEmail string) error
+	StoreRecipientToken(ctx context.Context, tok *domain.RecipientToken) error
+	GetRecipientTokenByHash(ctx context.Context, tokenHash string) (*domain.RecipientToken, error)
+	DeleteRecipientToken(ctx context.Context, transferID, email string) error
 }
 
 // TransferService handles business logic for creating and accessing transfers.
@@ -148,6 +153,9 @@ func (s *TransferService) publishAudit(ctx context.Context, action, ownerID, tra
 }
 
 // publishEmailNotification publishes a transfer_received email event.
+// For each recipient email, a unique magic-link token is generated and embedded
+// in the download URL (?rt=<token>), so each recipient gets a personalised
+// secure link that does not require a password.
 func (s *TransferService) publishEmailNotification(ctx context.Context, t *domain.Transfer) {
 	if s.js == nil || t.RecipientEmail == "" {
 		return
@@ -164,36 +172,59 @@ func (s *TransferService) publishEmailNotification(ctx context.Context, t *domai
 		return
 	}
 
-	downloadURL := s.cfg.App.BaseURL + "/t/" + t.Slug
 	var expiresAt string
+	var tokenExpiry time.Time
 	if t.ExpiresAt != nil {
 		expiresAt = t.ExpiresAt.Format(time.RFC1123)
+		tokenExpiry = *t.ExpiresAt
+	} else {
+		tokenExpiry = time.Now().Add(30 * 24 * time.Hour)
 	}
 
 	senderName := t.SenderEmail
 	if senderName == "" {
 		senderName = "a TenzoShare user"
 	}
-	data, _ := json.Marshal(map[string]any{
-		"SenderName":  senderName,
-		"Slug":        t.Slug,
-		"Title":       t.Name,
-		"Message":     t.Description,
-		"DownloadURL": downloadURL,
-		"ExpiresAt":   expiresAt,
-		"HasPassword": t.PasswordHash != "",
-	})
 
-	ev := map[string]any{
-		"type": "transfer_received",
-		"to":   recipients,
-		"data": json.RawMessage(data),
-	}
-	go func() {
-		if err := s.js.Publish(ctx, "NOTIFICATIONS.email", ev); err != nil {
-			s.log.Warn("failed to publish email notification", zap.Error(err))
+	// Publish one email per recipient so each gets their own personalised link.
+	for _, email := range recipients {
+		rawToken, tokenHash, err := s.generateTokenHash()
+		if err != nil {
+			s.log.Warn("failed to generate recipient token", zap.String("email", email), zap.Error(err))
+			continue
 		}
-	}()
+		tok := &domain.RecipientToken{
+			TransferID: t.ID,
+			Email:      email,
+			TokenHash:  tokenHash,
+			ExpiresAt:  tokenExpiry,
+		}
+		if err := s.repo.StoreRecipientToken(ctx, tok); err != nil {
+			s.log.Warn("failed to store recipient token", zap.String("email", email), zap.Error(err))
+			continue
+		}
+		downloadURL := s.cfg.App.BaseURL + "/t/" + t.Slug + "?rt=" + rawToken
+		data, _ := json.Marshal(map[string]any{
+			"SenderName":  senderName,
+			"Slug":        t.Slug,
+			"Title":       t.Name,
+			"Message":     t.Description,
+			"DownloadURL": downloadURL,
+			"ExpiresAt":   expiresAt,
+			"HasPassword": t.PasswordHash != "",
+		})
+		addr := email // capture for goroutine
+		ev := map[string]any{
+			"type": "transfer_received",
+			"to":   []string{addr},
+			"data": json.RawMessage(data),
+		}
+		go func() {
+			if err := s.js.Publish(ctx, "NOTIFICATIONS.email", ev); err != nil {
+				s.log.Warn("failed to publish email notification", zap.Error(err))
+			}
+		}()
+	}
 }
 
 // publishDownloadNotificationEmail notifies the transfer owner when a file is downloaded.
@@ -533,4 +564,150 @@ func (s *TransferService) SendExpiryReminders(ctx context.Context) {
 			s.log.Warn("failed to mark reminder sent", zap.String("transfer_id", tID), zap.Error(err))
 		}
 	}
+}
+
+// generateTokenHash generates a new random recipient token.
+// Returns (rawToken, hexSHA256Hash, error).
+// rawToken is the base64url value embedded in email links.
+// hexSHA256Hash is stored in the DB.
+func (s *TransferService) generateTokenHash() (string, string, error) {
+	rawToken, err := crypto.RandomToken(32)
+	if err != nil {
+		return "", "", err
+	}
+	h := sha256.Sum256([]byte(rawToken))
+	return rawToken, hex.EncodeToString(h[:]), nil
+}
+
+// ValidateRecipientToken validates a raw magic-link token (?rt=) against the DB.
+// On success it returns the full AccessResult (bypassing any password check).
+// Returns Unauthorized if the token is invalid or expired.
+func (s *TransferService) ValidateRecipientToken(ctx context.Context, slug, rawToken string) (*AccessResult, error) {
+	h := sha256.Sum256([]byte(rawToken))
+	tokenHash := hex.EncodeToString(h[:])
+
+	tok, err := s.repo.GetRecipientTokenByHash(ctx, tokenHash)
+	if err != nil {
+		// NotFound → return a generic invalid message to avoid oracle attacks.
+		return nil, apperrors.Unauthorized("invalid or expired access link — request a new one")
+	}
+
+	if time.Now().After(tok.ExpiresAt) {
+		return nil, apperrors.Unauthorized("access link has expired — request a new one")
+	}
+
+	// Fetch the transfer and validate its live state.
+	t, err := s.repo.GetBySlug(ctx, slug)
+	if err != nil {
+		return nil, err
+	}
+	if t.ID != tok.TransferID {
+		return nil, apperrors.Unauthorized("invalid or expired access link — request a new one")
+	}
+	if t.IsRevoked {
+		return nil, apperrors.Forbidden("this transfer has been revoked")
+	}
+	if t.ExpiresAt != nil && time.Now().After(*t.ExpiresAt) {
+		return nil, apperrors.Forbidden("this transfer has expired")
+	}
+
+	fileIDs, err := s.repo.GetFileIDs(ctx, t.ID)
+	if err != nil {
+		return nil, err
+	}
+	fileInfos, err := s.repo.GetFileInfos(ctx, t.ID)
+	if err != nil {
+		return nil, err
+	}
+	var fileCounts map[string]int
+	if t.MaxDownloads > 0 {
+		fileCounts, _ = s.repo.GetFileDownloadCounts(ctx, t.ID)
+		if fileCounts == nil {
+			fileCounts = make(map[string]int)
+		}
+	}
+	return &AccessResult{Transfer: t, FileIDs: fileIDs, FileInfos: fileInfos, FileDownloadCounts: fileCounts}, nil
+}
+
+// RegenerateRecipientToken generates a new magic-link token for a recipient email
+// and re-sends the transfer_received email. Called when a recipient's link has expired.
+// Rate limiting is enforced at the handler layer.
+func (s *TransferService) RegenerateRecipientToken(ctx context.Context, slug, email string) error {
+	t, err := s.repo.GetBySlug(ctx, slug)
+	if err != nil {
+		return err
+	}
+	if t.IsRevoked {
+		return apperrors.Forbidden("this transfer has been revoked")
+	}
+	if t.ExpiresAt != nil && time.Now().After(*t.ExpiresAt) {
+		return apperrors.Forbidden("this transfer has expired")
+	}
+
+	// Verify the email is among the original recipients.
+	found := false
+	for _, r := range strings.Split(t.RecipientEmail, ",") {
+		if strings.EqualFold(strings.TrimSpace(r), strings.TrimSpace(email)) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		// Return success anyway — don't leak which emails are recipients.
+		return nil
+	}
+
+	var tokenExpiry time.Time
+	if t.ExpiresAt != nil {
+		tokenExpiry = *t.ExpiresAt
+	} else {
+		tokenExpiry = time.Now().Add(30 * 24 * time.Hour)
+	}
+
+	rawToken, tokenHash, err := s.generateTokenHash()
+	if err != nil {
+		return apperrors.Internal("generate recipient token", err)
+	}
+	tok := &domain.RecipientToken{
+		TransferID: t.ID,
+		Email:      email,
+		TokenHash:  tokenHash,
+		ExpiresAt:  tokenExpiry,
+	}
+	if err := s.repo.StoreRecipientToken(ctx, tok); err != nil {
+		return err
+	}
+
+	if s.js == nil {
+		return nil
+	}
+	downloadURL := s.cfg.App.BaseURL + "/t/" + t.Slug + "?rt=" + rawToken
+	var expiresAt string
+	if t.ExpiresAt != nil {
+		expiresAt = t.ExpiresAt.Format(time.RFC1123)
+	}
+	senderName := t.SenderEmail
+	if senderName == "" {
+		senderName = "a TenzoShare user"
+	}
+	data, _ := json.Marshal(map[string]any{
+		"SenderName":  senderName,
+		"Slug":        t.Slug,
+		"Title":       t.Name,
+		"Message":     t.Description,
+		"DownloadURL": downloadURL,
+		"ExpiresAt":   expiresAt,
+		"HasPassword": t.PasswordHash != "",
+	})
+	ev := map[string]any{
+		"type": "transfer_received",
+		"to":   []string{email},
+		"data": json.RawMessage(data),
+	}
+	go func() {
+		if err := s.js.Publish(ctx, "NOTIFICATIONS.email", ev); err != nil {
+			s.log.Warn("failed to publish resend access email", zap.Error(err))
+		}
+	}()
+	return nil
 }

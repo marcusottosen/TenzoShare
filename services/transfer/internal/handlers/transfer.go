@@ -238,18 +238,25 @@ func (h *Handler) Revoke(c fiber.Ctx) error {
 }
 
 // Access is the public (unauthenticated) download-info endpoint.
-// GET /api/v1/t/:slug  — optionally with ?password=
+// GET /api/v1/t/:slug  — optionally with ?password= or ?rt= (recipient token)
 // Does NOT increment any counter — viewing the download page is not a download.
 // Returns per-file download counts (file_download_counts map) when max_downloads > 0
 // so the download UI can show per-file availability without requiring an attempt.
 func (h *Handler) Access(c fiber.Ctx) error {
 	slug := c.Params("slug")
-	password := c.Query("password")
 
-	result, err := h.svc.Validate(c.Context(), service.AccessParams{
-		Slug:     slug,
-		Password: password,
-	})
+	var result *service.AccessResult
+	var err error
+
+	if rt := c.Query("rt"); rt != "" {
+		// Recipient magic-link token path — bypasses password requirement.
+		result, err = h.svc.ValidateRecipientToken(c.Context(), slug, rt)
+	} else {
+		result, err = h.svc.Validate(c.Context(), service.AccessParams{
+			Slug:     slug,
+			Password: c.Query("password"),
+		})
+	}
 	if err != nil {
 		return err
 	}
@@ -276,6 +283,35 @@ func (h *Handler) Access(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"transfer": resp,
 	})
+}
+
+// RequestAccess handles POST /api/v1/t/:slug/request-access.
+// A recipient whose magic-link has expired can submit their email to get a new link.
+// We never reveal whether the email is actually a recipient (prevents enumeration).
+func (h *Handler) RequestAccess(c fiber.Ctx) error {
+	slug := c.Params("slug")
+	var body struct {
+		Email string `json:"email"`
+	}
+	if err := c.Bind().JSON(&body); err != nil || body.Email == "" {
+		return apperrors.BadRequest("email is required")
+	}
+	// Normalise + basic validation.
+	body.Email = strings.ToLower(strings.TrimSpace(body.Email))
+	if !strings.Contains(body.Email, "@") {
+		return apperrors.BadRequest("invalid email address")
+	}
+
+	// Fire-and-forget: always return 200 regardless of outcome (no oracle).
+	go func() {
+		ctx := context.Background()
+		if err := h.svc.RegenerateRecipientToken(ctx, slug, body.Email); err != nil {
+			// Log only — do not surface error to caller.
+			_ = err
+		}
+	}()
+
+	return c.JSON(fiber.Map{"message": "If that email is a recipient of this transfer, a new access link has been sent."})
 }
 
 func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
@@ -320,10 +356,10 @@ func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 
 // DownloadURL returns a presigned download URL for a single file in a public transfer.
 //
-// GET /api/v1/t/:slug/files/:fileId/download[?password=...]
+// GET /api/v1/t/:slug/files/:fileId/download[?password=...][?rt=...]
 //
 // This endpoint:
-//  1. Validates the transfer (slug, optional password, expiry, revocation).
+//  1. Validates the transfer (slug, optional password or recipient token, expiry, revocation).
 //  2. Confirms the requested file belongs to this transfer.
 //  3. Atomically checks and increments the per-file download counter. If the
 //     file's individual limit is reached the request is rejected with 403.
@@ -335,7 +371,19 @@ func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 func (h *Handler) DownloadURL(c fiber.Ctx) error {
 	slug := c.Params("slug")
 	fileID := c.Params("fileId")
-	password := c.Query("password")
+
+	// If a recipient token is provided, validate it first to bypass the password.
+	// We still call AttemptFileDownload for limit enforcement; pass empty password
+	// when the token was valid (transfer has already been verified above).
+	var password string
+	if rt := c.Query("rt"); rt != "" {
+		if _, err := h.svc.ValidateRecipientToken(c.Context(), slug, rt); err != nil {
+			return err
+		}
+		// Token valid — password not needed.
+	} else {
+		password = c.Query("password")
+	}
 
 	// AttemptFileDownload validates the transfer, confirms file ownership, and
 	// atomically enforces the per-file download limit.
