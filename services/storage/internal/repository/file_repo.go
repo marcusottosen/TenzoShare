@@ -202,6 +202,23 @@ func (r *FileRepository) GetStorageConfig(ctx context.Context) (*domain.StorageC
 	return &cfg, nil
 }
 
+// GetUserQuotaOverride returns the per-user quota override for ownerID from
+// admin_svc.user_quotas. Returns (quotaBytes, true, nil) if an override exists,
+// or (0, false, nil) if no override is set (caller should use global default).
+func (r *FileRepository) GetUserQuotaOverride(ctx context.Context, ownerID string) (int64, bool, error) {
+	var quotaBytes int64
+	err := r.db.QueryRow(ctx,
+		`SELECT quota_bytes FROM admin_svc.user_quotas WHERE user_id = $1`, ownerID,
+	).Scan(&quotaBytes)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, apperrors.Internal("get user quota override", err)
+	}
+	return quotaBytes, true, nil
+}
+
 // InvalidateConfigCache forces the next GetStorageConfig call to hit the DB.
 func (r *FileRepository) InvalidateConfigCache() {
 	r.cfgMu.Lock()

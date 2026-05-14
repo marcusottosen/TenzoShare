@@ -228,6 +228,35 @@ export async function updateStorageConfig(body: {
   });
 }
 
+export interface UserQuota {
+  has_override: boolean;
+  quota_bytes?: number;
+  updated_at?: string;
+  updated_by?: string;
+}
+
+export async function getUserQuota(userId: string): Promise<UserQuota> {
+  return request<UserQuota>(`/admin/users/${userId}/quota`);
+}
+
+export async function setUserQuota(userId: string, quotaBytes: number | null): Promise<{ ok: boolean; has_override: boolean; quota_bytes?: number }> {
+  return request<{ ok: boolean; has_override: boolean; quota_bytes?: number }>(`/admin/users/${userId}/quota`, {
+    method: 'PUT',
+    body: JSON.stringify({ quota_bytes: quotaBytes }),
+  });
+}
+
+export interface QuotaOverride {
+  user_id: string;
+  quota_bytes: number;
+  updated_at: string;
+  updated_by: string;
+}
+
+export async function listUserQuotas(): Promise<{ overrides: QuotaOverride[] }> {
+  return request<{ overrides: QuotaOverride[] }>('/admin/quotas');
+}
+
 export interface AdminFileRow {
   id: string;
   owner_id: string;

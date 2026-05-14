@@ -197,6 +197,9 @@ func main() {
 	v1.Post("/users/:id/reset-password", handleResetPassword)
 	v1.Post("/users/:id/set-password", handleSetPassword)
 	v1.Delete("/users/:id/mfa", handleResetUserMFA)
+	v1.Get("/users/:id/quota", handleGetUserQuota)
+	v1.Put("/users/:id/quota", handlePutUserQuota)
+	v1.Get("/quotas", handleListUserQuotas)
 	v1.Get("/stats", handleGetStats)
 	v1.Get("/system/health", handleSystemHealth)
 	v1.Get("/storage/usage", handleListStorageUsage)
@@ -585,6 +588,111 @@ func handleSetPassword(c fiber.Ctx) error {
 	}
 	publishAdminAudit(c, "admin.user_password_set", id, map[string]any{"target_user_id": id})
 	return c.JSON(fiber.Map{"ok": true})
+}
+
+// ── Per-user quota overrides ──────────────────────────────────────────────────
+
+// GET /api/v1/admin/quotas — returns all per-user quota overrides
+func handleListUserQuotas(c fiber.Ctx) error {
+	type quotaRow struct {
+		UserID     string    `json:"user_id"`
+		QuotaBytes int64     `json:"quota_bytes"`
+		UpdatedAt  time.Time `json:"updated_at"`
+		UpdatedBy  string    `json:"updated_by"`
+	}
+	rows, err := db.Query(c.Context(), `SELECT user_id, quota_bytes, updated_at, updated_by FROM admin_svc.user_quotas ORDER BY updated_at DESC`)
+	if err != nil {
+		return apperrors.Internal("list quotas", err)
+	}
+	defer rows.Close()
+	var overrides []quotaRow
+	for rows.Next() {
+		var r quotaRow
+		if err := rows.Scan(&r.UserID, &r.QuotaBytes, &r.UpdatedAt, &r.UpdatedBy); err != nil {
+			return apperrors.Internal("scan quota row", err)
+		}
+		overrides = append(overrides, r)
+	}
+	if overrides == nil {
+		overrides = []quotaRow{}
+	}
+	return c.JSON(fiber.Map{"overrides": overrides})
+}
+
+// GET /api/v1/admin/users/:id/quota
+func handleGetUserQuota(c fiber.Ctx) error {
+	id := c.Params("id")
+	var quotaBytes int64
+	var updatedAt time.Time
+	var updatedBy string
+	err := db.QueryRow(c.Context(),
+		`SELECT quota_bytes, updated_at, updated_by FROM admin_svc.user_quotas WHERE user_id = $1`, id,
+	).Scan(&quotaBytes, &updatedAt, &updatedBy)
+	if err != nil {
+		// No override row — return has_override: false (not an error)
+		return c.JSON(fiber.Map{"has_override": false})
+	}
+	return c.JSON(fiber.Map{
+		"has_override": true,
+		"quota_bytes":  quotaBytes,
+		"updated_at":   updatedAt,
+		"updated_by":   updatedBy,
+	})
+}
+
+// PUT /api/v1/admin/users/:id/quota
+// Body: {"quota_bytes": <number>} to set a custom quota, or {"quota_bytes": null} to remove the override.
+func handlePutUserQuota(c fiber.Ctx) error {
+	id := c.Params("id")
+
+	var body struct {
+		QuotaBytes *int64 `json:"quota_bytes"`
+	}
+	if err := c.Bind().JSON(&body); err != nil {
+		return apperrors.BadRequest("invalid request body")
+	}
+
+	// Verify the user exists in auth.users first
+	var exists bool
+	if err := db.QueryRow(c.Context(), "SELECT EXISTS(SELECT 1 FROM auth.users WHERE id = $1)", id).Scan(&exists); err != nil {
+		return apperrors.Internal("check user", err)
+	}
+	if !exists {
+		return apperrors.NotFound("user not found")
+	}
+
+	callerEmail := adminCallerEmail(c)
+
+	if body.QuotaBytes == nil {
+		// Remove the override — user falls back to global default
+		_, err := db.Exec(c.Context(), `DELETE FROM admin_svc.user_quotas WHERE user_id = $1`, id)
+		if err != nil {
+			return apperrors.Internal("remove quota override", err)
+		}
+		publishAdminAudit(c, "admin.user_quota_reset", id, map[string]any{"target_user_id": id})
+		return c.JSON(fiber.Map{"ok": true, "has_override": false})
+	}
+
+	if *body.QuotaBytes <= 0 {
+		return apperrors.BadRequest("quota_bytes must be greater than 0")
+	}
+
+	_, err := db.Exec(c.Context(), `
+		INSERT INTO admin_svc.user_quotas (user_id, quota_bytes, updated_at, updated_by)
+		VALUES ($1, $2, now(), $3)
+		ON CONFLICT (user_id) DO UPDATE
+		  SET quota_bytes = EXCLUDED.quota_bytes,
+		      updated_at  = EXCLUDED.updated_at,
+		      updated_by  = EXCLUDED.updated_by`,
+		id, *body.QuotaBytes, callerEmail)
+	if err != nil {
+		return apperrors.Internal("upsert quota override", err)
+	}
+	publishAdminAudit(c, "admin.user_quota_set", id, map[string]any{
+		"target_user_id": id,
+		"quota_bytes":    *body.QuotaBytes,
+	})
+	return c.JSON(fiber.Map{"ok": true, "has_override": true, "quota_bytes": *body.QuotaBytes})
 }
 
 // GET /api/v1/admin/stats
@@ -2181,13 +2289,13 @@ func handlePutBranding(c fiber.Ctx) error {
 // ── Platform settings ────────────────────────────────────────────────────────
 
 type PlatformConfig struct {
-	DateFormat             string `json:"date_format"`
-	TimeFormat             string `json:"time_format"`
-	Timezone               string `json:"timezone"`
-	PortalURL              string `json:"portal_url"`
-	DownloadURL            string `json:"download_url"`
-	LinkProtectionPolicy   string `json:"link_protection_policy"`
-	UpdatedAt              string `json:"updated_at"`
+	DateFormat           string `json:"date_format"`
+	TimeFormat           string `json:"time_format"`
+	Timezone             string `json:"timezone"`
+	PortalURL            string `json:"portal_url"`
+	DownloadURL          string `json:"download_url"`
+	LinkProtectionPolicy string `json:"link_protection_policy"`
+	UpdatedAt            string `json:"updated_at"`
 }
 
 func handleGetPlatformConfig(c fiber.Ctx) error { return handleGetPlatformConfigPublic(c) }
@@ -2208,12 +2316,12 @@ func handleGetPlatformConfigPublic(c fiber.Ctx) error {
 
 func handlePutPlatformConfig(c fiber.Ctx) error {
 	var body struct {
-		DateFormat            *string `json:"date_format"`
-		TimeFormat            *string `json:"time_format"`
-		Timezone              *string `json:"timezone"`
-		PortalURL             *string `json:"portal_url"`
-		DownloadURL           *string `json:"download_url"`
-		LinkProtectionPolicy  *string `json:"link_protection_policy"`
+		DateFormat           *string `json:"date_format"`
+		TimeFormat           *string `json:"time_format"`
+		Timezone             *string `json:"timezone"`
+		PortalURL            *string `json:"portal_url"`
+		DownloadURL          *string `json:"download_url"`
+		LinkProtectionPolicy *string `json:"link_protection_policy"`
 	}
 	if err := json.Unmarshal(c.Body(), &body); err != nil {
 		return apperrors.BadRequest("invalid JSON body")

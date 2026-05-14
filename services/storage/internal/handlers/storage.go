@@ -93,15 +93,19 @@ func (h *Handler) Upload(c fiber.Ctx) error {
 		// not immediately exceed quota. Prevents fully uploading a file to MinIO
 		// only to delete it after the post-upload quota check.
 		if cfg.QuotaEnabled && cfg.QuotaBytesPerUser > 0 && cl > 0 {
+			effectiveQuota := cfg.QuotaBytesPerUser
+			if userQuota, ok, _ := h.repo.GetUserQuotaOverride(c.Context(), ownerID); ok {
+				effectiveQuota = userQuota
+			}
 			usage, uErr := h.repo.GetUsageByOwner(c.Context(), ownerID)
-			if uErr == nil && usage.TotalBytes+cl > cfg.QuotaBytesPerUser {
-				remaining := cfg.QuotaBytesPerUser - usage.TotalBytes
+			if uErr == nil && usage.TotalBytes+cl > effectiveQuota {
+				remaining := effectiveQuota - usage.TotalBytes
 				if remaining < 0 {
 					remaining = 0
 				}
 				return apperrors.BadRequest(fmt.Sprintf(
 					"storage quota would be exceeded: %s remaining of %s",
-					fmtBytes(remaining), fmtBytes(cfg.QuotaBytesPerUser),
+					fmtBytes(remaining), fmtBytes(effectiveQuota),
 				))
 			}
 		}
@@ -237,22 +241,26 @@ func (h *Handler) Upload(c fiber.Ctx) error {
 	// before the stream is fully consumed. If the quota is violated we delete
 	// the just-uploaded object and return an error.
 	if cfgErr == nil && cfg.QuotaEnabled && cfg.QuotaBytesPerUser > 0 {
+		effectiveQuota := cfg.QuotaBytesPerUser
+		if userQuota, ok, _ := h.repo.GetUserQuotaOverride(c.Context(), ownerID); ok {
+			effectiveQuota = userQuota
+		}
 		usage, uErr := h.repo.GetUsageByOwner(c.Context(), ownerID)
-		if uErr == nil && usage.TotalBytes+plaintextSize > cfg.QuotaBytesPerUser {
+		if uErr == nil && usage.TotalBytes+plaintextSize > effectiveQuota {
 			_ = h.backend.Delete(c.Context(), objectKey)
 			msg := fmt.Sprintf("storage quota exceeded: %s used of %s",
 				fmtBytes(usage.TotalBytes),
-				fmtBytes(cfg.QuotaBytesPerUser),
+				fmtBytes(effectiveQuota),
 			)
 			h.log.Warn("upload rejected: quota exceeded",
 				zap.String("owner_id", ownerID),
 				zap.String("filename", filename),
 				zap.Int64("size", plaintextSize),
 				zap.Int64("used", usage.TotalBytes),
-				zap.Int64("quota", cfg.QuotaBytesPerUser),
+				zap.Int64("quota", effectiveQuota),
 			)
 			h.publishAuditFail(c.Context(), "storage.upload_rejected", ownerID, "quota_exceeded",
-				map[string]any{"filename": filename, "size": plaintextSize, "used": usage.TotalBytes, "quota": cfg.QuotaBytesPerUser})
+				map[string]any{"filename": filename, "size": plaintextSize, "used": usage.TotalBytes, "quota": effectiveQuota})
 			return apperrors.BadRequest(msg)
 		}
 	}

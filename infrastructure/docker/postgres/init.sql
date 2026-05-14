@@ -478,6 +478,14 @@ CREATE TABLE IF NOT EXISTS admin_svc.smtp_settings (
 );
 INSERT INTO admin_svc.smtp_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
 
+CREATE TABLE IF NOT EXISTS admin_svc.user_quotas (
+    user_id     UUID        PRIMARY KEY,
+    quota_bytes BIGINT      NOT NULL CHECK (quota_bytes > 0),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by  TEXT        NOT NULL DEFAULT ''
+);
+
 INSERT INTO admin_svc.schema_migrations (name) VALUES
-  ('001_branding_settings.sql'), ('002_branding_extend.sql'), ('003_branding_dark_mode.sql'), ('004_platform_settings.sql'), ('005_smtp_settings.sql'), ('006_platform_urls.sql'), ('007_link_protection.sql'), ('007_email_branding.sql'), ('008_email_content.sql'), ('009_custom_email_templates.sql')
+  ('001_branding_settings.sql'), ('002_branding_extend.sql'), ('003_branding_dark_mode.sql'), ('004_platform_settings.sql'), ('005_smtp_settings.sql'), ('006_platform_urls.sql'), ('007_link_protection.sql'), ('007_email_branding.sql'), ('008_email_content.sql'), ('009_custom_email_templates.sql'),
+  ('010_user_quotas.sql')
 ON CONFLICT DO NOTHING;
