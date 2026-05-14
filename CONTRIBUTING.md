@@ -1,6 +1,6 @@
 # Contributing to TenzoShare
 
-Thank you for your interest in contributing! Please read the detailed guide at [docs/development/contributing.md](docs/development/contributing.md).
+Thank you for your interest in contributing! Please read the detailed guide at [docs/development/local-development.md](docs/development/local-development.md).
 
 ## Quick Summary
 
