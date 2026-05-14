@@ -8,12 +8,15 @@ import "time"
 type FileRequest struct {
 	ID              string
 	OwnerID         string
+	OwnerEmail      string // joined from auth.users at read time; not stored in transfer schema
 	Slug            string
 	Name            string
 	Description     string
 	AllowedTypes    string // comma-separated MIME prefixes; empty = all types accepted
 	MaxSizeMB       int    // 0 = unlimited
 	MaxFiles        int    // 0 = unlimited
+	NotifyEmails    string // comma-separated addresses to email the upload link on creation
+	NotifyOnUpload  bool   // true = email the owner when a guest submits a file
 	ExpiresAt       time.Time
 	IsActive        bool
 	CreatedAt       time.Time

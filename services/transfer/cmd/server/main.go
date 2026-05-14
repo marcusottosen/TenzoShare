@@ -22,6 +22,8 @@ import (
 	"github.com/tenzoshare/tenzoshare/shared/pkg/logger"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/telemetry"
+
+	svcmigrations "github.com/tenzoshare/tenzoshare/services/transfer/migrations"
 )
 
 func main() {
@@ -46,6 +48,10 @@ func main() {
 	}
 	defer pool.Close()
 
+	if err := database.RunMigrations(ctx, pool, svcmigrations.Migrations, "transfer"); err != nil {
+		log.Fatal("database migrations failed", zap.Error(err))
+	}
+
 	repo := repository.NewTransferRepository(pool)
 	requestRepo := repository.NewRequestRepository(pool)
 
@@ -64,7 +70,8 @@ func main() {
 	svc := service.New(repo, cfg, jsClient, log)
 	storageURL := getEnvOr("STORAGE_SERVICE_URL", "http://tenzoshare-storage:8083")
 	requestSvc := service.NewRequestService(requestRepo, cfg, jsClient, log, storageURL)
-	h := handlers.New(svc, requestSvc, cfg.JWT.PrivateKeyPEM, storageURL)
+	adminURL := getEnvOr("ADMIN_SERVICE_URL", "http://tenzoshare-admin:8087")
+	h := handlers.New(svc, requestSvc, cfg.JWT.PrivateKeyPEM, storageURL, adminURL)
 
 	pubKey, err := jwtkeys.ParsePublicKey(cfg.JWT.PublicKeyPEM)
 	if err != nil {
@@ -87,6 +94,7 @@ func main() {
 
 	// Public: access a transfer by slug (downloaders, no auth required)
 	app.Get("/api/v1/t/:slug", h.Access)
+	app.Post("/api/v1/t/:slug/request-access", h.RequestAccess)
 	app.Get("/api/v1/t/:slug/files/:fileId/download", h.DownloadURL)
 	app.Get("/api/v1/transfers/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "service": "transfer"})
@@ -98,6 +106,8 @@ func main() {
 	v1.Get("/", h.List)
 	v1.Get("/:id", h.Get)
 	v1.Get("/:id/recipients", h.ListRecipients)
+	v1.Patch("/:id/recipients", h.UpdateRecipients)
+	v1.Post("/:id/resend", h.ResendNotification)
 	v1.Delete("/:id", h.Revoke)
 
 	// File request endpoints (auth required — owner manages requests)
@@ -105,6 +115,8 @@ func main() {
 	requests.Post("/", h.CreateFileRequest)
 	requests.Get("/", h.ListFileRequests)
 	requests.Get("/:id", h.GetFileRequest)
+	requests.Patch("/:id/recipients", h.UpdateRequestRecipients)
+	requests.Post("/:id/resend", h.ResendRequestInvite)
 	requests.Delete("/:id", h.DeactivateFileRequest)
 
 	// Public file request endpoints (no auth — guests view and upload)
@@ -124,6 +136,20 @@ func main() {
 				} else if n > 0 {
 					log.Info("expired stale transfers", zap.Int64("count", n))
 				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Background goroutine: send expiry reminder emails every hour.
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				svc.SendExpiryReminders(ctx)
 			case <-ctx.Done():
 				return
 			}

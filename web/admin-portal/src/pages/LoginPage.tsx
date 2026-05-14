@@ -17,8 +17,8 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const result = await login(email, password);
-      if (result.mfa_required) {
-        setError('MFA is required. Use the user portal to complete MFA login.');
+      if (result.mfa_required && result.user_id) {
+        navigate('/login/mfa', { state: { userId: result.user_id } });
         return;
       }
       if (result.access_token && result.refresh_token) {

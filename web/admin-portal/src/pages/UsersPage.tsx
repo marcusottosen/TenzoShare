@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { fmt } from '../utils/dateFormat';
 import {
   listUsers, createUser, updateUser, deleteUser, unlockUser, verifyUserEmail,
-  resetUserPassword, setUserPassword,
-  listStorageUsage,
-  type AdminUser, type StorageUserUsage,
+  resetUserPassword, setUserPassword, resetUserMFA,
+  listStorageUsage, getUserQuota, setUserQuota, listUserQuotas,
+  type AdminUser, type StorageUserUsage, type UserQuota, type QuotaOverride,
 } from '../api/admin';
 import { useSortState } from '../hooks/useSort';
 import { SortHeader } from '../components/SortHeader';
@@ -11,10 +12,6 @@ import { SortHeader } from '../components/SortHeader';
 type UserSortKey = 'email' | 'role' | 'is_active' | 'created_at' | 'last_login_at';
 
 const PAGE_SIZE = 50;
-
-function fmt(date: string) {
-  return new Date(date).toLocaleDateString();
-}
 
 function fmtBytes(n: number): string {
   if (n === 0) return '0 B';
@@ -141,6 +138,15 @@ function UserDetailModal({
   const [copied, setCopied] = useState(false);
   // delete confirm
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // per-user quota override
+  const [quota, setQuota] = useState<UserQuota | null>(null);
+  const [editingQuota, setEditingQuota] = useState(false);
+  const [quotaInput, setQuotaInput] = useState('');
+  const [quotaBusy, setQuotaBusy] = useState(false);
+
+  useEffect(() => {
+    getUserQuota(user.id).then(setQuota).catch(() => setQuota({ has_override: false }));
+  }, [user.id]);
 
   function act<T>(fn: () => Promise<T>, onOk: (v: T) => void) {
     setBusy(true);
@@ -247,9 +253,114 @@ function UserDetailModal({
               ? <span title={`${storage.file_count} file${storage.file_count !== 1 ? 's' : ''}`}>{fmtBytes(storage.total_bytes)}</span>
               : <span style={{ color: 'var(--color-text-muted)' }}>—</span>}
           </Row>
-          <Row label="Joined">{new Date(user.created_at).toLocaleString()}</Row>
+          <Row label="Storage quota">
+            {quota === null ? (
+              <span style={{ color: 'var(--color-text-muted)' }}>Loading…</span>
+            ) : editingQuota ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={quotaInput}
+                    onChange={(e) => setQuotaInput(e.target.value)}
+                    placeholder="e.g. 5"
+                    style={{ width: 90, fontSize: 13, padding: '3px 8px' }}
+                    autoFocus
+                  />
+                  <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>GB</span>
+                  <button
+                    className="btn btn-sm btn-primary"
+                    disabled={quotaBusy || quotaInput === ''}
+                    onClick={async () => {
+                      const gb = parseFloat(quotaInput);
+                      if (isNaN(gb) || gb <= 0) return;
+                      setQuotaBusy(true);
+                      try {
+                        const res = await setUserQuota(user.id, Math.round(gb * 1024 * 1024 * 1024));
+                        setQuota({ has_override: res.has_override, quota_bytes: res.quota_bytes });
+                        setEditingQuota(false);
+                        flash('Custom quota saved');
+                      } catch (e: any) {
+                        setActionError(e.message);
+                      } finally {
+                        setQuotaBusy(false);
+                      }
+                    }}
+                  >
+                    Save
+                  </button>
+                  <button
+                    className="btn btn-sm btn-secondary"
+                    disabled={quotaBusy}
+                    onClick={() => setEditingQuota(false)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+                {quota.has_override && (
+                  <button
+                    className="btn btn-sm btn-secondary"
+                    disabled={quotaBusy}
+                    style={{ alignSelf: 'flex-start', color: 'var(--color-danger, #ef4444)' }}
+                    onClick={async () => {
+                      setQuotaBusy(true);
+                      try {
+                        await setUserQuota(user.id, null);
+                        setQuota({ has_override: false });
+                        setEditingQuota(false);
+                        flash('Quota reset to global default');
+                      } catch (e: any) {
+                        setActionError(e.message);
+                      } finally {
+                        setQuotaBusy(false);
+                      }
+                    }}
+                  >
+                    Reset to global default
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                {quota.has_override && quota.quota_bytes !== undefined
+                  ? <span className="badge badge-orange">Custom: {fmtBytes(quota.quota_bytes)}</span>
+                  : <span style={{ color: 'var(--color-text-muted)', fontSize: 12 }}>Global default</span>}
+                <button
+                  className="btn btn-sm btn-secondary"
+                  onClick={() => {
+                    setQuotaInput(quota.has_override && quota.quota_bytes !== undefined
+                      ? (quota.quota_bytes / (1024 * 1024 * 1024)).toFixed(2)
+                      : '');
+                    setEditingQuota(true);
+                  }}
+                >
+                  Edit
+                </button>
+              </div>
+            )}
+          </Row>
+          <Row label="Joined">{fmt(user.created_at)}</Row>
           <Row label="Last login">
-            {user.last_login_at ? new Date(user.last_login_at).toLocaleString() : <span style={{ color: 'var(--color-text-muted)' }}>Never</span>}
+            {user.last_login_at ? fmt(user.last_login_at) : <span style={{ color: 'var(--color-text-muted)' }}>Never</span>}
+          </Row>
+          <Row label="MFA (TOTP)">
+            <span className={`badge ${user.mfa_enabled ? 'badge-green' : 'badge-gray'}`} style={{ marginRight: 8 }}>
+              {user.mfa_enabled ? 'Enabled' : 'Disabled'}
+            </span>
+            {user.mfa_enabled && (
+              <button
+                className="btn btn-sm btn-secondary"
+                disabled={busy}
+                onClick={() => act(
+                  () => resetUserMFA(user.id),
+                  () => { patch({ mfa_enabled: false }); flash('MFA reset'); }
+                )}
+              >
+                Reset MFA
+              </button>
+            )}
           </Row>
 
           {/* ── Password section ── */}
@@ -344,6 +455,36 @@ function UserDetailModal({
   );
 }
 
+// ── Column picker ────────────────────────────────────────────────────────────
+
+type ColKey = 'role' | 'status' | 'mfa' | 'storage_used' | 'file_count' | 'failed_logins' | 'joined' | 'last_login' | 'storage_quota';
+
+const ALL_COLUMNS: { key: ColKey; label: string; defaultOn: boolean }[] = [
+  { key: 'role',          label: 'Role',          defaultOn: true  },
+  { key: 'status',        label: 'Status',        defaultOn: true  },
+  { key: 'mfa',           label: 'MFA',           defaultOn: true  },
+  { key: 'storage_used',  label: 'Storage Used',  defaultOn: true  },
+  { key: 'storage_quota', label: 'Storage Quota', defaultOn: true  },
+  { key: 'file_count',    label: 'File Count',    defaultOn: false },
+  { key: 'failed_logins', label: 'Failed Logins', defaultOn: false },
+  { key: 'joined',        label: 'Joined',        defaultOn: true  },
+  { key: 'last_login',    label: 'Last Login',    defaultOn: true  },
+];
+
+const COLS_LS_KEY = 'tenzo_users_columns';
+
+function loadColPrefs(): Set<ColKey> {
+  try {
+    const raw = localStorage.getItem(COLS_LS_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw) as string[];
+      const valid = arr.filter((k): k is ColKey => ALL_COLUMNS.some(c => c.key === k));
+      if (valid.length) return new Set(valid);
+    }
+  } catch { /* ignore */ }
+  return new Set(ALL_COLUMNS.filter(c => c.defaultOn).map(c => c.key));
+}
+
 // ── Users Page ────────────────────────────────────────────────────────────────
 
 export default function UsersPage() {
@@ -358,13 +499,37 @@ export default function UsersPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [viewTarget, setViewTarget] = useState<AdminUser | null>(null);
   const [storageMap, setStorageMap] = useState<Map<string, StorageUserUsage>>(new Map());
+  const [quotaMap, setQuotaMap] = useState<Map<string, QuotaOverride>>(new Map());
   const sort = useSortState<UserSortKey>('created_at', 'desc', () => setPage(0));
+  const [visibleCols, setVisibleCols] = useState<Set<ColKey>>(loadColPrefs);
+  const [colPickerOpen, setColPickerOpen] = useState(false);
+  const colPickerRef = React.useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!colPickerOpen) return;
+    function handler(e: MouseEvent) {
+      if (colPickerRef.current && !colPickerRef.current.contains(e.target as Node)) {
+        setColPickerOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [colPickerOpen]);
+
+  function toggleCol(key: ColKey) {
+    setVisibleCols(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      localStorage.setItem(COLS_LS_KEY, JSON.stringify([...next]));
+      return next;
+    });
+  }
 
   const load = useCallback(async (offset = 0) => {
     setLoading(true);
     setError('');
     try {
-      const [usersRes, storageRes] = await Promise.all([
+      const [usersRes, storageRes, quotasRes] = await Promise.all([
         listUsers({
           limit: PAGE_SIZE,
           offset,
@@ -374,12 +539,16 @@ export default function UsersPage() {
           sort_dir: sort.sortDir,
         }),
         listStorageUsage({ limit: 200 }),
+        listUserQuotas(),
       ]);
       setUsers(usersRes.users ?? []);
       setTotal(usersRes.total ?? 0);
       const map = new Map<string, StorageUserUsage>();
       for (const u of storageRes.usage ?? []) map.set(u.user_id, u);
       setStorageMap(map);
+      const qmap = new Map<string, QuotaOverride>();
+      for (const q of quotasRes.overrides ?? []) qmap.set(q.user_id, q);
+      setQuotaMap(qmap);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -420,6 +589,7 @@ export default function UsersPage() {
   }
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
+  const vis = visibleCols;
 
   return (
     <div className="page">
@@ -475,9 +645,74 @@ export default function UsersPage() {
       {error && <div className="alert alert-error">{error}</div>}
       {success && <div className="alert alert-success">{success}</div>}
 
-      <div className="text-sm mb-16">
-        {loading ? 'Loading…' : `${total} user(s) total`}
-        {totalPages > 1 && ` — page ${page + 1} of ${totalPages}`}
+      <div className="text-sm mb-16" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span>
+          {loading ? 'Loading…' : `${total} user(s) total`}
+          {totalPages > 1 && ` — page ${page + 1} of ${totalPages}`}
+        </span>
+
+        {/* ── Column picker ── */}
+        <div ref={colPickerRef} style={{ position: 'relative' }}>
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={() => setColPickerOpen(o => !o)}
+            style={{ display: 'flex', alignItems: 'center', gap: 5 }}
+          >
+            Columns
+            <span style={{ fontSize: 10, opacity: 0.6 }}>{colPickerOpen ? '▲' : '▼'}</span>
+          </button>
+          {colPickerOpen && (
+            <div style={{
+              position: 'absolute', right: 0, top: 'calc(100% + 4px)', zIndex: 200,
+              background: 'var(--color-surface)', border: '1px solid var(--color-border)',
+              borderRadius: 8, padding: '6px 0', minWidth: 190,
+              boxShadow: '0 4px 20px rgba(0,0,0,0.35)',
+            }}>
+              <div style={{ padding: '4px 14px 7px', fontSize: 11, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600 }}>
+                Visible columns
+              </div>
+              {ALL_COLUMNS.map(col => (
+                <label
+                  key={col.key}
+                  style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '5px 14px', cursor: 'pointer', fontSize: 13, userSelect: 'none' }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={vis.has(col.key)}
+                    onChange={() => toggleCol(col.key)}
+                    style={{ cursor: 'pointer', width: 14, height: 14 }}
+                  />
+                  {col.label}
+                </label>
+              ))}
+              <div style={{ margin: '6px 14px 4px', borderTop: '1px solid var(--color-border)' }} />
+              <div style={{ display: 'flex', gap: 6, padding: '2px 14px 4px' }}>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  style={{ fontSize: 11, padding: '2px 10px' }}
+                  onClick={() => {
+                    const all = new Set(ALL_COLUMNS.map(c => c.key));
+                    setVisibleCols(all);
+                    localStorage.setItem(COLS_LS_KEY, JSON.stringify([...all]));
+                  }}
+                >
+                  Show all
+                </button>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  style={{ fontSize: 11, padding: '2px 10px' }}
+                  onClick={() => {
+                    const defaults = new Set(ALL_COLUMNS.filter(c => c.defaultOn).map(c => c.key));
+                    setVisibleCols(defaults);
+                    localStorage.setItem(COLS_LS_KEY, JSON.stringify([...defaults]));
+                  }}
+                >
+                  Reset
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {!loading && users.length === 0 ? (
@@ -488,55 +723,102 @@ export default function UsersPage() {
             <thead>
               <tr>
                 <SortHeader label="User" sortKey="email" sort={sort} />
-                <SortHeader label="Role" sortKey="role" sort={sort} />
-                <SortHeader label="Status" sortKey="is_active" sort={sort} />
-                <th>Storage</th>
-                <SortHeader label="Joined" sortKey="created_at" sort={sort} />
-                <SortHeader label="Last Login" sortKey="last_login_at" sort={sort} />
+                {vis.has('role') && <SortHeader label="Role" sortKey="role" sort={sort} />}
+                {vis.has('status') && <SortHeader label="Status" sortKey="is_active" sort={sort} />}
+                {vis.has('mfa') && <th>MFA</th>}
+                {vis.has('storage_used') && <th>Storage Used</th>}
+                {vis.has('storage_quota') && <th>Quota</th>}
+                {vis.has('file_count') && <th>Files</th>}
+                {vis.has('failed_logins') && <th>Failed Logins</th>}
+                {vis.has('joined') && <SortHeader label="Joined" sortKey="created_at" sort={sort} />}
+                {vis.has('last_login') && <SortHeader label="Last Login" sortKey="last_login_at" sort={sort} />}
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {users.map((u) => (
-                <tr key={u.id} style={{ cursor: 'default' }}>
-                  <td>
-                    <div style={{ fontWeight: 500 }}>{u.email}</div>
-                    <div className="text-sm mono" style={{ color: '#aaa' }}>{u.id}</div>
-                  </td>
-                  <td>
-                    <span className={`badge ${u.role === 'admin' ? 'badge-orange' : 'badge-gray'}`}>{u.role}</span>
-                  </td>
-                  <td>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                      <span className={`badge ${u.is_active ? 'badge-green' : 'badge-red'}`} style={{ width: 'fit-content' }}>
-                        {u.is_active ? 'Active' : 'Disabled'}
-                      </span>
-                      <span className={`badge ${u.email_verified ? 'badge-green' : 'badge-gray'}`} style={{ width: 'fit-content' }}>
-                        {u.email_verified ? '✓ Email' : 'Unverified'}
-                      </span>
-                      {isLocked(u) && <span className="badge badge-red" style={{ width: 'fit-content' }}>Locked</span>}
-                    </div>
-                  </td>
-                  <td className="text-sm">
-                    {(() => {
-                      const s = storageMap.get(u.id);
-                      if (!s) return <span style={{ color: '#aaa' }}>—</span>;
-                      return <span title={`${s.file_count} file${s.file_count !== 1 ? 's' : ''}`}>{fmtBytes(s.total_bytes)}</span>;
-                    })()}
-                  </td>
-                  <td className="text-sm">{fmt(u.created_at)}</td>
-                  <td className="text-sm">
-                    {u.last_login_at
-                      ? <span title={new Date(u.last_login_at).toLocaleString()}>{fmt(u.last_login_at)}</span>
-                      : <span style={{ color: '#aaa' }}>Never</span>}
-                  </td>
-                  <td style={{ textAlign: 'right' }}>
-                    <button className="btn btn-sm btn-secondary" onClick={() => setViewTarget(u)}>
-                      View
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {users.map((u) => {
+                const s = storageMap.get(u.id);
+                const q = quotaMap.get(u.id);
+                return (
+                  <tr key={u.id} style={{ cursor: 'default' }}>
+                    <td>
+                      <div style={{ fontWeight: 500 }}>{u.email}</div>
+                      <div className="text-sm mono" style={{ color: '#aaa' }}>{u.id}</div>
+                    </td>
+                    {vis.has('role') && (
+                      <td>
+                        <span className={`badge ${u.role === 'admin' ? 'badge-orange' : 'badge-gray'}`}>{u.role}</span>
+                      </td>
+                    )}
+                    {vis.has('status') && (
+                      <td>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                          <span className={`badge ${u.is_active ? 'badge-green' : 'badge-red'}`} style={{ width: 'fit-content' }}>
+                            {u.is_active ? 'Active' : 'Disabled'}
+                          </span>
+                          <span className={`badge ${u.email_verified ? 'badge-green' : 'badge-gray'}`} style={{ width: 'fit-content' }}>
+                            {u.email_verified ? '✓ Email' : 'Unverified'}
+                          </span>
+                          {isLocked(u) && <span className="badge badge-red" style={{ width: 'fit-content' }}>Locked</span>}
+                        </div>
+                      </td>
+                    )}
+                    {vis.has('mfa') && (
+                      <td>
+                        <span className={`badge ${u.mfa_enabled ? 'badge-green' : 'badge-gray'}`}>
+                          {u.mfa_enabled ? 'On' : 'Off'}
+                        </span>
+                      </td>
+                    )}
+                    {vis.has('storage_used') && (
+                      <td className="text-sm">
+                        {s
+                          ? <span title={`${s.file_count} file${s.file_count !== 1 ? 's' : ''}`}>{fmtBytes(s.total_bytes)}</span>
+                          : <span style={{ color: '#aaa' }}>—</span>}
+                      </td>
+                    )}
+                    {vis.has('storage_quota') && (
+                      <td className="text-sm">
+                        {q
+                          ? <span className="badge badge-orange" title={`Set by ${q.updated_by}`}>Custom: {fmtBytes(q.quota_bytes)}</span>
+                          : <span style={{ color: '#aaa' }}>Default</span>}
+                      </td>
+                    )}
+                    {vis.has('file_count') && (
+                      <td className="text-sm">
+                        {s
+                          ? `${s.file_count} file${s.file_count !== 1 ? 's' : ''}`
+                          : <span style={{ color: '#aaa' }}>—</span>}
+                      </td>
+                    )}
+                    {vis.has('failed_logins') && (
+                      <td className="text-sm">
+                        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                          {u.failed_login_attempts > 0
+                            ? <span className="badge badge-orange">{u.failed_login_attempts}</span>
+                            : <span style={{ color: '#aaa' }}>0</span>}
+                          {isLocked(u) && <span className="badge badge-red">Locked</span>}
+                        </div>
+                      </td>
+                    )}
+                    {vis.has('joined') && (
+                      <td className="text-sm">{fmt(u.created_at)}</td>
+                    )}
+                    {vis.has('last_login') && (
+                      <td className="text-sm">
+                        {u.last_login_at
+                          ? <span title={fmt(u.last_login_at)}>{fmt(u.last_login_at)}</span>
+                          : <span style={{ color: '#aaa' }}>Never</span>}
+                      </td>
+                    )}
+                    <td style={{ textAlign: 'right' }}>
+                      <button className="btn btn-sm btn-secondary" onClick={() => setViewTarget(u)}>
+                        View
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

@@ -1,6 +1,12 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import { createFileRequest } from '../api/requests';
+import { listContacts, upsertContact, type Contact } from '../api/contacts';
+import { getNotificationPrefs } from '../api/auth';
+
+function isValidEmail(e: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.trim());
+}
 
 export default function RequestsPage() {
   const navigate = useNavigate();
@@ -9,25 +15,113 @@ export default function RequestsPage() {
   const [allowedTypes, setAllowedTypes] = useState('');
   const [maxSizeMB, setMaxSizeMB] = useState('');
   const [expiresInHrs, setExpiresInHrs] = useState('72');
+  const [notifyOnUpload, setNotifyOnUpload] = useState(true);
+  const [recipientEmails, setRecipientEmails] = useState<string[]>([]);
+  const [emailInput, setEmailInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // Contacts for autocomplete
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [autoSaveContacts, setAutoSaveContacts] = useState(true);
+  const [suggestions, setSuggestions] = useState<Contact[]>([]);
+  const [suggestionIdx, setSuggestionIdx] = useState(-1);
+  const suggestionsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    listContacts().then(setContacts).catch(() => {});
+    getNotificationPrefs().then((p) => setAutoSaveContacts(p.auto_save_contacts ?? true)).catch(() => {});
+  }, []);
+
+  function commitEmailInput() {
+    const val = emailInput.trim().replace(/,+$/, '');
+    if (!val) return;
+    const parts = val.split(',').map((s) => s.trim()).filter(Boolean);
+    const valid: string[] = [];
+    const invalid: string[] = [];
+    for (const p of parts) {
+      if (isValidEmail(p) && !recipientEmails.includes(p)) valid.push(p);
+      else if (!isValidEmail(p)) invalid.push(p);
+    }
+    if (invalid.length) {
+      setError(`Invalid email(s): ${invalid.join(', ')}`);
+      return;
+    }
+    setRecipientEmails((prev) => [...prev, ...valid]);
+    setEmailInput('');
+    setSuggestions([]);
+    setSuggestionIdx(-1);
+  }
+
+  function computeSuggestions(val: string) {
+    if (!val.trim()) { setSuggestions([]); return; }
+    const q = val.trim().toLowerCase();
+    setSuggestions(
+      contacts.filter(
+        (c) =>
+          !recipientEmails.includes(c.email) &&
+          (c.email.toLowerCase().includes(q) || c.name.toLowerCase().includes(q)),
+      ).slice(0, 6),
+    );
+    setSuggestionIdx(-1);
+  }
+
+  function pickSuggestion(email: string) {
+    if (!recipientEmails.includes(email)) {
+      setRecipientEmails((prev) => [...prev, email]);
+    }
+    setEmailInput('');
+    setSuggestions([]);
+    setSuggestionIdx(-1);
+  }
+
+  function removeEmail(email: string) {
+    setRecipientEmails((prev) => prev.filter((e) => e !== email));
+  }
+
+  function handleEmailKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (suggestions.length > 0) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setSuggestionIdx(i => Math.min(i + 1, suggestions.length - 1)); return; }
+      if (e.key === 'ArrowUp')   { e.preventDefault(); setSuggestionIdx(i => Math.max(i - 1, -1)); return; }
+      if ((e.key === 'Enter' || e.key === 'Tab') && suggestionIdx >= 0) {
+        e.preventDefault();
+        pickSuggestion(suggestions[suggestionIdx].email);
+        return;
+      }
+      if (e.key === 'Escape') { setSuggestions([]); setSuggestionIdx(-1); return; }
+    }
+    if (e.key === 'Enter' || e.key === ',' || e.key === 'Tab') {
+      e.preventDefault();
+      commitEmailInput();
+    } else if (e.key === 'Backspace' && emailInput === '' && recipientEmails.length > 0) {
+      setRecipientEmails((prev) => prev.slice(0, -1));
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    // Commit any partially typed email before submitting
+    if (emailInput.trim()) commitEmailInput();
     if (!name.trim()) { setError('Name is required.'); return; }
     const hrs = parseInt(expiresInHrs, 10);
     if (!hrs || hrs < 1) { setError('Expiry must be at least 1 hour.'); return; }
     setError('');
     setLoading(true);
     try {
-      await createFileRequest({
+      const req = await createFileRequest({
         name: name.trim(),
         description: description.trim() || undefined,
         allowed_types: allowedTypes.trim() || undefined,
         max_size_mb: maxSizeMB ? parseInt(maxSizeMB, 10) : undefined,
         expires_in_hours: hrs,
+        recipient_emails: recipientEmails.length > 0 ? recipientEmails : undefined,
+        notify_on_upload: notifyOnUpload,
       });
-      navigate('/shares');
+      // Auto-save recipient emails to contacts
+      if (autoSaveContacts && recipientEmails.length > 0) {
+        await Promise.allSettled(recipientEmails.map((email) => upsertContact(email)));
+      }
+      navigate(`/requests/${req.id}`);
     } catch (err: unknown) {
       setError((err as Error).message ?? 'Failed to create request.');
     } finally {
@@ -74,6 +168,69 @@ export default function RequestsPage() {
             />
           </div>
 
+          <div className="form-group">
+            <label>Send link to (optional)</label>
+            <div className="email-chips-field">
+              {recipientEmails.map((email) => (
+                <span key={email} className="email-chip">
+                  {email}
+                  <button
+                    type="button"
+                    className="email-chip-remove"
+                    onClick={() => removeEmail(email)}
+                    aria-label={`Remove ${email}`}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              <input
+                type="text"
+                className="email-chip-input"
+                value={emailInput}
+                onChange={(e) => { setEmailInput(e.target.value); computeSuggestions(e.target.value); }}
+                onKeyDown={handleEmailKeyDown}
+                onBlur={() => { setTimeout(() => { setSuggestions([]); setSuggestionIdx(-1); }, 150); commitEmailInput(); }}
+                placeholder={recipientEmails.length === 0 ? 'recipient@example.com' : ''}
+                autoComplete="off"
+              />
+            </div>
+            {suggestions.length > 0 && (
+              <div
+                ref={suggestionsRef}
+                style={{
+                  background: 'var(--color-card-bg, #fff)',
+                  border: '1px solid var(--color-border)',
+                  borderRadius: 6,
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+                  overflow: 'hidden',
+                  marginTop: 2,
+                }}
+              >
+                {suggestions.map((ct, i) => (
+                  <div
+                    key={ct.id}
+                    onMouseDown={(e) => { e.preventDefault(); pickSuggestion(ct.email); }}
+                    style={{
+                      padding: '8px 12px',
+                      cursor: 'pointer',
+                      background: i === suggestionIdx ? 'var(--color-primary-light, rgba(99,102,241,0.08))' : 'transparent',
+                      fontSize: 13,
+                      display: 'flex',
+                      flexDirection: 'column',
+                    }}
+                  >
+                    <span>{ct.email}</span>
+                    {ct.name && <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{ct.name}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+            <small style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+              Press Enter, comma, or Tab to add. Recipients will receive the upload link via email.
+            </small>
+          </div>
+
           <div className="row" style={{ gap: 12 }}>
             <div className="form-group" style={{ flex: 1 }}>
               <label>Allowed file types</label>
@@ -112,6 +269,34 @@ export default function RequestsPage() {
             <small style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
               1 day = 24 hrs · 1 week = 168 hrs · max 1 year = 8760 hrs
             </small>
+          </div>
+
+          <div style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 12,
+            padding: '14px 16px',
+            background: 'var(--color-input-bg)',
+            border: `1px solid ${notifyOnUpload ? 'var(--color-primary)' : 'var(--color-border)'}`,
+            borderRadius: 8,
+            marginBottom: 16,
+            transition: 'all 0.15s',
+          }}>
+            <input
+              id="notify-on-upload"
+              type="checkbox"
+              checked={notifyOnUpload}
+              onChange={(e) => setNotifyOnUpload(e.target.checked)}
+              style={{ marginTop: 2, flexShrink: 0, cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+            />
+            <div style={{ flex: 1 }}>
+              <label htmlFor="notify-on-upload" style={{ fontWeight: 600, fontSize: 13, cursor: 'pointer', display: 'block', marginBottom: 2 }}>
+                Notify me when a file is uploaded
+              </label>
+              <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: 0, lineHeight: 1.5 }}>
+                You will receive an email each time a guest submits a file to this request.
+              </p>
+            </div>
           </div>
 
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 8 }}>

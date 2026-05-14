@@ -130,6 +130,54 @@ func (c *Client) Close() {
 	_ = c.nc.Drain()
 }
 
+// SubscribeLast is like Subscribe but uses DeliverLastPolicy so the handler is
+// called immediately with the most-recently-stored message on the subject (if
+// any). Subsequent messages are delivered as they arrive. Ideal for config
+// subjects where only the latest value matters.
+func (c *Client) SubscribeLast(
+	ctx context.Context,
+	streamName, consumerName, filterSubject string,
+	handler func(subject string, data []byte) error,
+) error {
+	cons, err := c.js.CreateOrUpdateConsumer(ctx, streamName, jetstream.ConsumerConfig{
+		Durable:       consumerName,
+		FilterSubject: filterSubject,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		DeliverPolicy: jetstream.DeliverLastPolicy,
+		MaxDeliver:    5,
+		AckWait:       30 * time.Second,
+	})
+	if err != nil {
+		return fmt.Errorf("jetstream: create consumer %q on %q: %w", consumerName, streamName, err)
+	}
+
+	msgCtx, err := cons.Messages()
+	if err != nil {
+		return fmt.Errorf("jetstream: start message iter: %w", err)
+	}
+	defer msgCtx.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+		msg, err := msgCtx.Next()
+		if err != nil {
+			if errors.Is(err, jetstream.ErrMsgIteratorClosed) {
+				return nil
+			}
+			continue
+		}
+		if handlerErr := handler(msg.Subject(), msg.Data()); handlerErr != nil {
+			_ = msg.Nak()
+		} else {
+			_ = msg.Ack()
+		}
+	}
+}
+
 // TenzoShare standard streams — call EnsureStreams at service startup for any
 // service that produces or consumes events.
 var TenzoStreams = []StreamDef{
@@ -147,6 +195,11 @@ var TenzoStreams = []StreamDef{
 		Name:     "UPLOADS",
 		Subjects: []string{"UPLOADS.*"},
 		MaxAge:   7 * 24 * time.Hour,
+	},
+	{
+		Name:     "CONFIG",
+		Subjects: []string{"CONFIG.*"},
+		MaxAge:   0, // keep forever — config messages are small and must survive restarts
 	},
 }
 

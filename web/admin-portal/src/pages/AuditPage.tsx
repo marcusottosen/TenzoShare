@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
+import { fmt } from '../utils/dateFormat';
 import { listAuditEvents, type AuditEvent, type AuditFilters } from '../api/audit';
 import { listUsers, type AdminUser } from '../api/admin';
 import { useSortState } from '../hooks/useSort';
@@ -6,9 +7,7 @@ import { SortHeader } from '../components/SortHeader';
 
 type AuditSortKey = 'created_at' | 'source' | 'action' | 'severity';
 
-function fmt(date: string) {
-  return new Date(date).toLocaleString();
-}
+// fmt imported from utils/dateFormat
 
 const PAGE_SIZE = 50;
 

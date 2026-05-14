@@ -307,22 +307,6 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # ── MailHog — local dev SMTP ─────────────────────────────────────────────────
-  mailhog:
-    image: mailhog/mailhog:v1.0.1
-    container_name: tenzoshare-mailhog
-    restart: unless-stopped
-    ports:
-      - "1025:1025"   # SMTP
-      - "8025:8025"   # Web UI
-    networks:
-      - tenzoshare-net
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
   # ── Notification (8085) ───────────────────────────────────────────────────────
   notification:
     build:
@@ -336,15 +320,11 @@ services:
       PORT: "8085"
       POSTGRES_HOST: db
       NATS_URL: nats://nats:4222
-      SMTP_HOST: mailhog
-      SMTP_PORT: "1025"
     depends_on:
       db:
         condition: service_healthy
       nats:
         condition: service_healthy
-      mailhog:
-        condition: service_started
     networks:
       - tenzoshare-net
     labels:
@@ -407,7 +387,7 @@ services:
       - tenzoshare-net
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.admin.rule=PathPrefix(`/api/v1/admin`) || PathPrefix(`/api/v1/branding`)"
+      - "traefik.http.routers.admin.rule=PathPrefix(`/api/v1/admin`) || PathPrefix(`/api/v1/branding`) || PathPrefix(`/api/v1/platform`)"
       - "traefik.http.services.admin.loadbalancer.server.port=8087"
     logging:
       driver: json-file

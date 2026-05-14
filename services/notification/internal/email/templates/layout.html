@@ -1,0 +1,95 @@
+{{ define "layout" }}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <title>{{ .AppName }}</title>
+</head>
+<body style="margin:0;padding:0;background-color:{{ .BodyBgColor }};font-family:Arial,Helvetica,sans-serif;-webkit-font-smoothing:antialiased;">
+  <!--[if mso]>
+  <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">
+  <![endif]-->
+  <table width="100%" cellpadding="0" cellspacing="0" role="presentation"
+         style="min-width:100%;background-color:{{ .BodyBgColor }};padding:40px 16px;">
+    <tr>
+      <td align="center" valign="top">
+        <!--[if mso]>
+        <table width="580" cellpadding="0" cellspacing="0"><tr><td>
+        <![endif]-->
+        <table cellpadding="0" cellspacing="0" role="presentation"
+               style="width:100%;max-width:580px;">
+
+          <!-- ── Logo / Header ──────────────────────────────────── -->
+          <tr>
+            <td style="background-color:{{ .PrimaryColor }};border-radius:10px 10px 0 0;padding:28px 32px;text-align:center;">
+              {{ if .EmailHeaderLink }}
+              <a href="{{ .EmailHeaderLink }}" style="text-decoration:none;">
+              {{ end }}
+              {{ if .LogoURL }}
+              <img src="{{ .LogoURL }}" alt="{{ .AppName }}"
+                   style="height:44px;max-width:200px;display:block;margin:0 auto;border:0;" />
+              {{ else }}
+              <span style="color:#ffffff;font-size:24px;font-weight:700;letter-spacing:0.4px;
+                           font-family:Arial,Helvetica,sans-serif;">{{ .AppName }}</span>
+              {{ end }}
+              {{ if .EmailHeaderLink }}
+              </a>
+              {{ end }}
+            </td>
+          </tr>
+
+          <!-- ── Content ───────────────────────────────────────── -->
+          <tr>
+            <td style="background-color:#ffffff;padding:36px 32px;
+                       border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0;">
+              {{ template "content" . }}
+            </td>
+          </tr>
+
+          <!-- ── Footer ────────────────────────────────────────── -->
+          <tr>
+            <td style="background-color:{{ .CardBgColor }};border:1px solid {{ .CardBorderColor }};border-top:none;
+                       border-radius:0 0 10px 10px;padding:20px 32px;text-align:center;">
+              {{ if .EmailFooterText }}
+              <p style="margin:0;font-size:12px;color:#94a3b8;line-height:1.6;
+                        font-family:Arial,Helvetica,sans-serif;">
+                {{ .EmailFooterText }}
+              </p>
+              {{ else }}
+              <p style="margin:0;font-size:12px;color:#94a3b8;line-height:1.6;
+                        font-family:Arial,Helvetica,sans-serif;">
+                This email was sent by <strong style="color:#64748b;">{{ .AppName }}</strong>.<br>
+                If you did not expect this email, you can safely ignore it.
+              </p>
+              {{ end }}
+              {{ if .EmailSupportEmail }}
+              <p style="margin:6px 0 0;font-size:12px;color:#94a3b8;font-family:Arial,Helvetica,sans-serif;">
+                Questions? Contact us at
+                <a href="mailto:{{ .EmailSupportEmail }}" style="color:#64748b;text-decoration:underline;">{{ .EmailSupportEmail }}</a>
+              </p>
+              {{ end }}
+              {{ if .UnsubscribeURL }}
+              <p style="margin:8px 0 0;font-size:11px;color:#cbd5e1;font-family:Arial,Helvetica,sans-serif;">
+                <a href="{{ .UnsubscribeURL }}" style="color:#94a3b8;text-decoration:underline;">Unsubscribe</a>
+                from these notifications.
+              </p>
+              {{ end }}
+              {{ if .ShowPoweredBy }}
+              <p style="margin:8px 0 0;font-size:11px;color:#cbd5e1;font-family:Arial,Helvetica,sans-serif;">
+                Powered by <a href="https://github.com/tenzoshare" style="color:#94a3b8;text-decoration:none;">TenzoShare</a>
+              </p>
+              {{ end }}
+            </td>
+          </tr>
+
+        </table>
+        <!--[if mso]></td></tr></table><![endif]-->
+      </td>
+    </tr>
+  </table>
+  <!--[if mso]></td></tr></table><![endif]-->
+</body>
+</html>
+{{ end }}

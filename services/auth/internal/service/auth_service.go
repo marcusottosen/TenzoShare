@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"sync"
@@ -35,6 +36,16 @@ const (
 
 	passwordResetRateLimit       = 5
 	passwordResetRateLimitWindow = 1 * time.Hour
+
+	// MFA endpoint rate limits (per user ID, not per IP — prevents account enumeration).
+	mfaSetupRateLimit         = 3 // 3 setup attempts
+	mfaSetupRateLimitWindow   = 10 * time.Minute
+	mfaVerifyRateLimit        = 5 // 5 verify attempts
+	mfaVerifyRateLimitWindow  = 5 * time.Minute
+	mfaDisableRateLimit       = 3 // 3 disable attempts
+	mfaDisableRateLimitWindow = 15 * time.Minute
+	mfaLoginRateLimit         = 5 // 5 /login/mfa attempts per user_id
+	mfaLoginRateLimitWindow   = 15 * time.Minute
 
 	lockoutConfigTTL = 60 * time.Second
 )
@@ -78,10 +89,25 @@ type userRepository interface {
 	UpdatePassword(ctx context.Context, userID, newHash string) error
 	RecordFailedLogin(ctx context.Context, userID string, maxAttempts int, lockDuration time.Duration) error
 	RecordSuccessfulLogin(ctx context.Context, userID string) error
-	GetLockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration, err error)
+	GetLockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration, requireMFA bool, requireEmailVerification bool, err error)
 	CreateAPIKey(ctx context.Context, userID, name, keyHash, keyPrefix string, expiresAt *time.Time) (*domain.APIKey, error)
 	ListAPIKeys(ctx context.Context, userID string) ([]*domain.APIKey, error)
 	DeleteAPIKey(ctx context.Context, id, userID string) error
+	UpdatePreferences(ctx context.Context, userID string, dateFormat, timeFormat, timezone *string) error
+	DisableMFA(ctx context.Context, userID string) error
+	StoreEmailVerificationToken(ctx context.Context, userID, rawToken string, expiresAt time.Time) error
+	ConsumeEmailVerificationToken(ctx context.Context, rawToken string) (string, error)
+	SetEmailVerified(ctx context.Context, userID string) error
+	// notification compliance
+	SetNotificationsOptOut(ctx context.Context, email string, optOut bool) error
+	UpdateNotificationPrefs(ctx context.Context, userID string, prefs domain.NotificationPrefs) error
+	GetNotificationStatus(ctx context.Context, email string) (optOut bool, prefs domain.NotificationPrefs, err error)
+	// contacts
+	UpsertContact(ctx context.Context, userID, email, name string) (*domain.Contact, error)
+	ListContacts(ctx context.Context, userID string) ([]*domain.Contact, error)
+	UpdateContact(ctx context.Context, id, userID, name string) (*domain.Contact, error)
+	DeleteContact(ctx context.Context, id, userID string) error
+	UpdateAutoSaveContacts(ctx context.Context, userID string, enabled bool) error
 }
 
 type AuthService struct {
@@ -94,10 +120,12 @@ type AuthService struct {
 	publicKey  *rsa.PublicKey
 	mfaKey     []byte // 32-byte AES key derived from PASSWORD_PEPPER
 
-	lockoutMu          sync.Mutex
-	cachedMaxAttempts  int
-	cachedLockDuration time.Duration
-	lockoutCachedAt    time.Time
+	lockoutMu                      sync.Mutex
+	cachedMaxAttempts              int
+	cachedLockDuration             time.Duration
+	cachedRequireMFA               bool
+	cachedRequireEmailVerification bool
+	lockoutCachedAt                time.Time
 }
 
 func New(
@@ -169,21 +197,23 @@ func deriveMFAKey(pepper string) ([]byte, error) {
 
 // lockoutConfig returns the current lockout policy, reading from DB if the
 // cached values are older than lockoutConfigTTL (60 s).
-func (s *AuthService) lockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration) {
+func (s *AuthService) lockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration, requireMFA bool, requireEmailVerification bool) {
 	s.lockoutMu.Lock()
 	defer s.lockoutMu.Unlock()
 	if time.Since(s.lockoutCachedAt) < lockoutConfigTTL && s.cachedMaxAttempts > 0 {
-		return s.cachedMaxAttempts, s.cachedLockDuration
+		return s.cachedMaxAttempts, s.cachedLockDuration, s.cachedRequireMFA, s.cachedRequireEmailVerification
 	}
-	ma, ld, err := s.repo.GetLockoutConfig(ctx)
+	ma, ld, rmfa, rcev, err := s.repo.GetLockoutConfig(ctx)
 	if err != nil {
 		s.log.Warn("lockoutConfig: could not read auth_settings, using fallback", zap.Error(err))
-		return 10, 15 * time.Minute
+		return 10, 15 * time.Minute, false, false
 	}
 	s.cachedMaxAttempts = ma
 	s.cachedLockDuration = ld
+	s.cachedRequireMFA = rmfa
+	s.cachedRequireEmailVerification = rcev
 	s.lockoutCachedAt = time.Now()
-	return ma, ld
+	return ma, ld, rmfa, rcev
 }
 
 func (s *AuthService) EnsureBootstrapAdmin(ctx context.Context, email, password string) error {
@@ -226,65 +256,108 @@ func (s *AuthService) Register(ctx context.Context, email, password, clientIP st
 	s.publishAudit(ctx, AuditEvent{
 		Action: "register", UserID: user.ID, Email: user.Email, Success: true, Timestamp: time.Now(),
 	})
+	go s.sendVerificationEmail(user.ID, user.Email)
 	return user, nil
 }
 
-func (s *AuthService) Login(ctx context.Context, email, password, clientIP string) (*TokenPair, *domain.User, error) {
+func (s *AuthService) Login(ctx context.Context, email, password, clientIP string) (*TokenPair, *domain.User, bool, error) {
 	if clientIP != "" {
 		limited, err := s.checkRateLimit(ctx, clientIP)
 		if err != nil {
 			s.log.Warn("rate limit check failed", zap.Error(err))
 		} else if limited {
-			return nil, nil, apperrors.RateLimit("too many login attempts; try again in 15 minutes")
+			return nil, nil, false, apperrors.RateLimit("too many login attempts; try again in 15 minutes")
 		}
 	}
 
 	user, err := s.repo.GetByEmail(ctx, email)
 	if err != nil {
 		s.recordIPAttempt(ctx, clientIP)
-		return nil, nil, apperrors.Unauthorized("invalid credentials")
+		return nil, nil, false, apperrors.Unauthorized("invalid credentials")
 	}
 
 	if !user.IsActive {
-		return nil, nil, apperrors.Unauthorized("account is disabled")
+		return nil, nil, false, apperrors.Unauthorized("account is disabled")
 	}
 
 	if user.IsLocked() {
-		return nil, nil, apperrors.Unauthorized("account is temporarily locked; try again later")
+		return nil, nil, false, apperrors.Unauthorized("account is temporarily locked; try again later")
 	}
 
 	ok, err := crypto.VerifyPassword(password, user.PasswordHash, s.cfg.App.Pepper)
 	if err != nil || !ok {
-		maxAttempts, lockDur := s.lockoutConfig(ctx)
+		maxAttempts, lockDur, _, _ := s.lockoutConfig(ctx)
 		_ = s.repo.RecordFailedLogin(ctx, user.ID, maxAttempts, lockDur)
 		s.recordIPAttempt(ctx, clientIP)
 		s.publishAudit(ctx, AuditEvent{
 			Action: "login", UserID: user.ID, Email: email, ClientIP: clientIP,
 			Success: false, Reason: "invalid credentials", Timestamp: time.Now(),
 		})
-		return nil, nil, apperrors.Unauthorized("invalid credentials")
+		return nil, nil, false, apperrors.Unauthorized("invalid credentials")
 	}
 
 	if user.MFAEnabled {
-		return nil, user, apperrors.Unauthorized("mfa_required")
+		return nil, user, false, apperrors.Unauthorized("mfa_required")
 	}
 
+	// If admin requires MFA but user hasn't set it up, issue a setup-only token
+	// (short-lived, MFASetupRequired=true in claims) rather than full access tokens.
+	// The BlockIfMFASetupPending middleware enforces that this token can only reach
+	// /mfa/setup and /mfa/verify.
+	_, _, requireMFA, requireEmailVerification := s.lockoutConfig(ctx)
+
+	if requireEmailVerification && !user.EmailVerified {
+		s.publishAudit(ctx, AuditEvent{
+			Action: "login", UserID: user.ID, Email: email, ClientIP: clientIP,
+			Success: false, Reason: "email_not_verified", Timestamp: time.Now(),
+		})
+		return nil, nil, false, apperrors.Forbidden("email_not_verified")
+	}
+
+	mfaSetupRequired := requireMFA && !user.MFAEnabled
+
 	_ = s.repo.RecordSuccessfulLogin(ctx, user.ID)
+
+	if mfaSetupRequired {
+		setupToken, err := s.signSetupOnlyToken(user)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		setupPair := &TokenPair{
+			AccessToken: setupToken,
+			ExpiresIn:   int64((10 * time.Minute).Seconds()),
+		}
+		s.publishAudit(ctx, AuditEvent{
+			Action: "login", UserID: user.ID, Email: email, ClientIP: clientIP,
+			Success: true, Timestamp: time.Now(),
+		})
+		return setupPair, user, true, nil
+	}
+
 	pair, err := s.issueTokenPair(ctx, user)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 	s.publishAudit(ctx, AuditEvent{
 		Action: "login", UserID: user.ID, Email: email, ClientIP: clientIP,
 		Success: true, Timestamp: time.Now(),
 	})
-	return pair, user, nil
+	return pair, user, false, nil
 }
 
 func (s *AuthService) LoginWithMFA(ctx context.Context, userID, otpCode string) (*TokenPair, error) {
+	// Rate limit per user_id to prevent brute force of 6-digit TOTP codes.
+	if limited, _ := s.checkRateLimitGeneric(ctx, "ratelimit:mfa_login:"+userID, mfaLoginRateLimit, mfaLoginRateLimitWindow); limited {
+		return nil, apperrors.RateLimit("too many MFA attempts; try again in 15 minutes")
+	}
+
 	user, err := s.repo.GetByID(ctx, userID)
 	if err != nil {
 		return nil, apperrors.Unauthorized("invalid credentials")
+	}
+
+	if !user.IsActive {
+		return nil, apperrors.Unauthorized("account is disabled")
 	}
 
 	mfaSecret, err := s.repo.GetMFASecret(ctx, userID)
@@ -343,9 +416,21 @@ func (s *AuthService) Logout(ctx context.Context, userID string) error {
 }
 
 func (s *AuthService) SetupMFA(ctx context.Context, userID string) (*MFASetupResult, error) {
+	// Rate limit: prevent rapid secret-generation (amplifies replacement attacks).
+	if limited, _ := s.checkRateLimitGeneric(ctx, "ratelimit:mfa_setup:"+userID, mfaSetupRateLimit, mfaSetupRateLimitWindow); limited {
+		return nil, apperrors.RateLimit("too many MFA setup requests; try again later")
+	}
+
 	user, err := s.repo.GetByID(ctx, userID)
 	if err != nil {
 		return nil, err
+	}
+
+	// Prevent secret-replacement: if MFA is already enabled, the user must
+	// disable it first (which requires a current OTP). This stops an attacker
+	// who has the session from silently replacing the TOTP secret.
+	if user.MFAEnabled {
+		return nil, apperrors.Conflict("MFA is already enabled; disable it first")
 	}
 
 	key, err := totp.Generate(totp.GenerateOpts{
@@ -372,10 +457,55 @@ func (s *AuthService) SetupMFA(ctx context.Context, userID string) (*MFASetupRes
 	}, nil
 }
 
-func (s *AuthService) VerifyMFA(ctx context.Context, userID, otpCode string) error {
+func (s *AuthService) VerifyMFA(ctx context.Context, userID, otpCode string) (*TokenPair, error) {
+	// Rate limit to prevent brute-force of 6-digit codes during setup.
+	if limited, _ := s.checkRateLimitGeneric(ctx, "ratelimit:mfa_verify:"+userID, mfaVerifyRateLimit, mfaVerifyRateLimitWindow); limited {
+		return nil, apperrors.RateLimit("too many MFA verification attempts; try again in 5 minutes")
+	}
+
 	mfaSecret, err := s.repo.GetMFASecret(ctx, userID)
 	if err != nil {
-		return err
+		return nil, err
+	}
+
+	encKey := s.mfaEncryptionKey()
+	rawSecret, err := crypto.Decrypt(mfaSecret.Secret, encKey)
+	if err != nil {
+		return nil, apperrors.Internal("decrypt mfa secret", err)
+	}
+
+	if !totp.Validate(otpCode, string(rawSecret)) {
+		return nil, apperrors.Unauthorized("invalid OTP code")
+	}
+
+	if err := s.repo.EnableMFA(ctx, userID); err != nil {
+		return nil, err
+	}
+	s.publishAudit(ctx, AuditEvent{
+		Action: "mfa_enabled", UserID: userID, Success: true, Timestamp: time.Now(),
+	})
+
+	// After enabling MFA, fetch the user and issue full tokens so the client
+	// can immediately use the session (especially when coming from the
+	// mfa_setup_required flow where they only had a setup-only token).
+	user, err := s.repo.GetByID(ctx, userID)
+	if err != nil {
+		return nil, apperrors.Internal("fetch user after mfa enable", err)
+	}
+	return s.issueTokenPair(ctx, user)
+}
+
+// DisableMFA verifies the current OTP code then removes the user's MFA secret,
+// fully disabling two-factor authentication.
+func (s *AuthService) DisableMFA(ctx context.Context, userID, otpCode string) error {
+	// Rate limit to prevent brute-force of the disable endpoint.
+	if limited, _ := s.checkRateLimitGeneric(ctx, "ratelimit:mfa_disable:"+userID, mfaDisableRateLimit, mfaDisableRateLimitWindow); limited {
+		return apperrors.RateLimit("too many MFA disable attempts; try again in 15 minutes")
+	}
+
+	mfaSecret, err := s.repo.GetMFASecret(ctx, userID)
+	if err != nil {
+		return apperrors.BadRequest("MFA is not enabled for this account")
 	}
 
 	encKey := s.mfaEncryptionKey()
@@ -388,13 +518,13 @@ func (s *AuthService) VerifyMFA(ctx context.Context, userID, otpCode string) err
 		return apperrors.Unauthorized("invalid OTP code")
 	}
 
-	err = s.repo.EnableMFA(ctx, userID)
-	if err == nil {
-		s.publishAudit(ctx, AuditEvent{
-			Action: "mfa_enabled", UserID: userID, Success: true, Timestamp: time.Now(),
-		})
+	if err := s.repo.DisableMFA(ctx, userID); err != nil {
+		return err
 	}
-	return err
+	s.publishAudit(ctx, AuditEvent{
+		Action: "mfa_disabled", UserID: userID, Success: true, Timestamp: time.Now(),
+	})
+	return nil
 }
 
 func (s *AuthService) RequestPasswordReset(ctx context.Context, email, clientIP string) (userID, resetToken string, err error) {
@@ -428,6 +558,7 @@ func (s *AuthService) RequestPasswordReset(ctx context.Context, email, clientIP 
 		Action: "password_reset_request", UserID: user.ID, Email: email,
 		Success: true, Timestamp: time.Now(),
 	})
+	s.publishPasswordResetEmail(ctx, email, token)
 	return user.ID, token, nil
 }
 
@@ -515,6 +646,33 @@ func (s *AuthService) mfaEncryptionKey() []byte {
 	return s.mfaKey
 }
 
+// signSetupOnlyToken issues a short-lived (10 min) access token with
+// MFASetupRequired=true. Tokens with this flag are blocked on all protected
+// routes except /mfa/setup and /mfa/verify by the BlockIfMFASetupPending
+// middleware.
+func (s *AuthService) signSetupOnlyToken(user *domain.User) (string, error) {
+	now := time.Now()
+	const setupTTL = 10 * time.Minute
+	claims := middleware.Claims{
+		UserID:           user.ID,
+		Email:            user.Email,
+		Role:             string(user.Role),
+		JTI:              uuid.New().String(),
+		MFASetupRequired: true,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   user.ID,
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(setupTTL)),
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	signed, err := token.SignedString(s.privateKey)
+	if err != nil {
+		return "", apperrors.Internal("sign setup-only access token", err)
+	}
+	return signed, nil
+}
+
 func (s *AuthService) checkRateLimit(ctx context.Context, clientIP string) (bool, error) {
 	if s.cache == nil {
 		return false, nil
@@ -558,6 +716,26 @@ func (s *AuthService) recordIPAttempt(ctx context.Context, clientIP string) {
 	}
 }
 
+// publishPasswordResetEmail fires a password_reset NOTIFICATIONS.email event.
+// Best-effort: errors are logged but never returned to the caller.
+func (s *AuthService) publishPasswordResetEmail(ctx context.Context, toEmail, token string) {
+	if s.js == nil {
+		return
+	}
+	resetURL := s.cfg.App.BaseURL + "/reset-password?token=" + token
+	data, _ := json.Marshal(map[string]string{"ResetURL": resetURL})
+	ev := map[string]any{
+		"type": "password_reset",
+		"to":   []string{toEmail},
+		"data": json.RawMessage(data),
+	}
+	go func() {
+		if err := s.js.Publish(ctx, "NOTIFICATIONS.email", ev); err != nil {
+			s.log.Warn("failed to publish password_reset email", zap.Error(err))
+		}
+	}()
+}
+
 func (s *AuthService) publishAudit(ctx context.Context, ev AuditEvent) {
 	if s.js == nil {
 		return
@@ -572,6 +750,19 @@ func (s *AuthService) publishAudit(ctx context.Context, ev AuditEvent) {
 // GetMe returns the full profile for the authenticated user.
 func (s *AuthService) GetMe(ctx context.Context, userID string) (*domain.User, error) {
 	return s.repo.GetByID(ctx, userID)
+}
+
+// UpdatePreferences stores per-user date/time formatting preferences.
+// Pass nil for a field to reset it to the system default.
+func (s *AuthService) UpdatePreferences(ctx context.Context, userID string, dateFormat, timeFormat, timezone *string) error {
+	validDateFormats := map[string]bool{"ISO": true, "EU": true, "US": true, "DE": true, "LONG": true}
+	if dateFormat != nil && !validDateFormats[*dateFormat] {
+		return apperrors.Validation("date_format must be one of: ISO, EU, US, DE, LONG")
+	}
+	if timeFormat != nil && *timeFormat != "12h" && *timeFormat != "24h" {
+		return apperrors.Validation("time_format must be '12h' or '24h'")
+	}
+	return s.repo.UpdatePreferences(ctx, userID, dateFormat, timeFormat, timezone)
 }
 
 // RevokeAccessToken places a token's JTI on the Redis blacklist so it cannot
@@ -685,4 +876,144 @@ func (s *AuthService) ChangePassword(ctx context.Context, p ChangePasswordParams
 		Success: true,
 	})
 	return nil
+}
+
+// ── Email verification ────────────────────────────────────────────────────────
+
+const (
+	resendVerifyRateLimit       = 3
+	resendVerifyRateLimitWindow = 1 * time.Hour
+)
+
+// sendVerificationEmail generates a 24-hour token, stores it, and publishes an
+// email_verification event to NATS. Called in a goroutine — errors are logged only.
+func (s *AuthService) sendVerificationEmail(userID, email string) {
+	ctx := context.Background()
+	token, err := crypto.RandomToken(32)
+	if err != nil {
+		s.log.Error("sendVerificationEmail: generate token", zap.Error(err))
+		return
+	}
+	expiresAt := time.Now().Add(24 * time.Hour)
+	if err := s.repo.StoreEmailVerificationToken(ctx, userID, token, expiresAt); err != nil {
+		s.log.Error("sendVerificationEmail: store token", zap.Error(err))
+		return
+	}
+	if s.js == nil {
+		return
+	}
+	verificationURL := s.cfg.App.BaseURL + "/verify-email?token=" + token
+	data, _ := json.Marshal(map[string]string{"VerificationURL": verificationURL})
+	ev := map[string]any{
+		"type": "email_verification",
+		"to":   []string{email},
+		"data": json.RawMessage(data),
+	}
+	if err := s.js.Publish(ctx, "NOTIFICATIONS.email", ev); err != nil {
+		s.log.Warn("sendVerificationEmail: publish failed", zap.Error(err))
+	}
+}
+
+// VerifyEmail consumes a verification token and marks the associated user's
+// email as verified. Returns BadRequest if the token is invalid or expired.
+func (s *AuthService) VerifyEmail(ctx context.Context, rawToken string) error {
+	if rawToken == "" {
+		return apperrors.BadRequest("token is required")
+	}
+	userID, err := s.repo.ConsumeEmailVerificationToken(ctx, rawToken)
+	if err != nil {
+		return err
+	}
+	if err := s.repo.SetEmailVerified(ctx, userID); err != nil {
+		return err
+	}
+	s.publishAudit(ctx, AuditEvent{
+		Action: "email_verified", UserID: userID, Success: true, Timestamp: time.Now(),
+	})
+	return nil
+}
+
+// ResendVerificationEmail regenerates and resends the email verification link.
+// Rate-limited to 3 requests per hour per user. Always 202 to avoid leaking info.
+func (s *AuthService) ResendVerificationEmail(ctx context.Context, email string) error {
+	if email != "" {
+		limited, _ := s.checkRateLimitGeneric(ctx, "ratelimit:resend_verify:"+email, resendVerifyRateLimit, resendVerifyRateLimitWindow)
+		if limited {
+			// Return nil (202) — don't leak that the limit was hit; same as password-reset pattern.
+			return nil
+		}
+	}
+	user, err := s.repo.GetByEmail(ctx, email)
+	if err != nil {
+		// Don't leak whether the email exists.
+		return nil
+	}
+	if user.EmailVerified {
+		// Already verified — silently succeed.
+		return nil
+	}
+	go s.sendVerificationEmail(user.ID, user.Email)
+	return nil
+}
+
+// ── Notification compliance ───────────────────────────────────────────────────
+
+// Unsubscribe sets notifications_opt_out = true for the user identified by email.
+func (s *AuthService) Unsubscribe(ctx context.Context, email string) error {
+	return s.repo.SetNotificationsOptOut(ctx, email, true)
+}
+
+// GetNotificationStatus returns opt-out + prefs for the given email (used by the
+// internal notification-prefs endpoint called by the notification service).
+func (s *AuthService) GetNotificationStatus(ctx context.Context, email string) (bool, domain.NotificationPrefs, error) {
+	return s.repo.GetNotificationStatus(ctx, email)
+}
+
+// UpdateNotificationPrefs persists the user's fine-grained notification prefs.
+func (s *AuthService) UpdateNotificationPrefs(ctx context.Context, userID string, prefs domain.NotificationPrefs) error {
+	return s.repo.UpdateNotificationPrefs(ctx, userID, prefs)
+}
+
+// GenerateUnsubscribeToken returns the HMAC-signed token for the given email
+// that can be embedded in email footers as an unsubscribe link.
+func (s *AuthService) GenerateUnsubscribeToken(email string) string {
+	return crypto.UnsubscribeToken(email, s.cfg.App.Pepper)
+}
+
+// ValidateUnsubscribeToken verifies the token signature and returns the email.
+func (s *AuthService) ValidateUnsubscribeToken(token string) (string, bool) {
+	return crypto.VerifyUnsubscribeToken(token, s.cfg.App.Pepper)
+}
+
+// Resubscribe clears the notifications_opt_out flag for the user identified by email.
+func (s *AuthService) Resubscribe(ctx context.Context, email string) error {
+	return s.repo.SetNotificationsOptOut(ctx, email, false)
+}
+
+// ── Contacts ──────────────────────────────────────────────────────────────────
+
+// UpsertContact adds or updates a contact email for the user.
+// If the email already exists the name is updated.
+func (s *AuthService) UpsertContact(ctx context.Context, userID, email, name string) (*domain.Contact, error) {
+	return s.repo.UpsertContact(ctx, userID, email, name)
+}
+
+// ListContacts returns all contacts for the user.
+func (s *AuthService) ListContacts(ctx context.Context, userID string) ([]*domain.Contact, error) {
+	return s.repo.ListContacts(ctx, userID)
+}
+
+// UpdateContact updates the display name of a contact.
+func (s *AuthService) UpdateContact(ctx context.Context, id, userID, name string) (*domain.Contact, error) {
+	return s.repo.UpdateContact(ctx, id, userID, name)
+}
+
+// DeleteContact removes a contact from the user's list.
+func (s *AuthService) DeleteContact(ctx context.Context, id, userID string) error {
+	return s.repo.DeleteContact(ctx, id, userID)
+}
+
+// UpdateAutoSaveContacts sets the auto_save_contacts preference.
+func (s *AuthService) UpdateAutoSaveContacts(ctx context.Context, userID string, enabled bool) error {
+	return s.repo.UpdateAutoSaveContacts(ctx, userID, enabled)
 }

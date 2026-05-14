@@ -22,6 +22,8 @@ import (
 	"github.com/tenzoshare/tenzoshare/shared/pkg/logger"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/telemetry"
+
+	svcmigrations "github.com/tenzoshare/tenzoshare/services/auth/migrations"
 )
 
 func main() {
@@ -44,6 +46,10 @@ func main() {
 		log.Fatal("failed to connect to database", zap.Error(err))
 	}
 	defer pool.Close()
+
+	if err := database.RunMigrations(ctx, pool, svcmigrations.Migrations, "auth"); err != nil {
+		log.Fatal("database migrations failed", zap.Error(err))
+	}
 
 	// Redis — used for IP rate limiting; non-fatal if unavailable at startup
 	cacheClient, err := cache.New(cfg.Redis)
@@ -114,6 +120,11 @@ func main() {
 	v1.Post("/refresh", h.Refresh)
 	v1.Post("/password-reset/request", h.PasswordResetRequest)
 	v1.Post("/password-reset/confirm", h.PasswordResetConfirm)
+	v1.Get("/verify-email", h.VerifyEmail)
+	v1.Post("/resend-verification", h.ResendVerification)
+	v1.Get("/unsubscribe", h.Unsubscribe) // F1: HMAC-signed token, no auth required
+	// Internal endpoint (no JWT) — notification service checks prefs before sending.
+	v1.Get("/internal/notification-prefs", h.InternalNotificationPrefs)
 
 	// Revocation check middleware — rejects tokens whose JTI is in the Redis blacklist.
 	// If Redis is unavailable cacheClient will be nil and IsTokenRevoked returns false (fail-open).
@@ -121,19 +132,36 @@ func main() {
 		return svc.IsTokenRevoked(ctx, jti)
 	})
 
-	// authenticated
-	protected := v1.Group("", middleware.JWTAuth(pubKey), revocationCheck)
+	// MFA setup/verify routes — accessible with both regular tokens AND setup-only tokens
+	// (MFASetupRequired=true claim). Must NOT have BlockIfMFASetupPending middleware.
+	mfaSetup := v1.Group("", middleware.JWTAuth(pubKey), revocationCheck)
+	mfaSetup.Post("/mfa/setup", h.MFASetup)
+	mfaSetup.Post("/mfa/verify", h.MFAVerify)
+
+	// All other authenticated routes — setup-only tokens are rejected here.
+	protected := v1.Group("", middleware.JWTAuth(pubKey), revocationCheck, middleware.BlockIfMFASetupPending())
 	protected.Post("/logout", h.Logout)
 	protected.Get("/me", h.Me)
 	protected.Patch("/me", h.UpdateMe)
-	protected.Post("/mfa/setup", h.MFASetup)
-	protected.Post("/mfa/verify", h.MFAVerify)
+	protected.Patch("/me/preferences", h.UpdatePreferences)
+	protected.Get("/me/notification-prefs", h.GetNotificationPrefs)
+	protected.Patch("/me/notification-prefs", h.UpdateNotificationPrefs)
+	// Disable requires the user to already have MFA enabled, so full token is expected.
+	protected.Post("/mfa/disable", h.MFADisable)
 
 	// API key management — /api/v1/users/apikeys
-	userRoutes := app.Group("/api/v1/users", middleware.JWTAuth(pubKey), revocationCheck)
+	// Setup-only tokens must not be able to create/list API keys.
+	userRoutes := app.Group("/api/v1/users", middleware.JWTAuth(pubKey), revocationCheck, middleware.BlockIfMFASetupPending())
 	userRoutes.Get("/apikeys", h.ListAPIKeys)
 	userRoutes.Post("/apikeys", h.CreateAPIKey)
 	userRoutes.Delete("/apikeys/:id", h.DeleteAPIKey)
+
+	// Contacts — /api/v1/users/contacts
+	userRoutes.Get("/contacts", h.ListContacts)
+	userRoutes.Post("/contacts", h.UpsertContact)
+	userRoutes.Patch("/contacts/settings", h.UpdateAutoSaveContacts) // must be before /:id
+	userRoutes.Patch("/contacts/:id", h.UpdateContact)
+	userRoutes.Delete("/contacts/:id", h.DeleteContact)
 
 	go func() {
 		log.Info("auth service starting", zap.String("port", cfg.Server.Port))

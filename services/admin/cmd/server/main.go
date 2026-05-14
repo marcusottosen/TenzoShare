@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	stdlog "log"
 	"net/http"
+	"net/smtp"
 	"os"
 	"os/signal"
 	"strconv"
@@ -26,6 +29,8 @@ import (
 	"github.com/tenzoshare/tenzoshare/shared/pkg/logger"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/telemetry"
+
+	svcmigrations "github.com/tenzoshare/tenzoshare/services/admin/migrations"
 )
 
 // ── Domain types ──────────────────────────────────────────────────────────────
@@ -36,6 +41,7 @@ type UserRow struct {
 	Role                string     `json:"role"`
 	IsActive            bool       `json:"is_active"`
 	EmailVerified       bool       `json:"email_verified"`
+	MFAEnabled          bool       `json:"mfa_enabled"`
 	FailedLoginAttempts int        `json:"failed_login_attempts"`
 	LockedUntil         *time.Time `json:"locked_until"`
 	LastLoginAt         *time.Time `json:"last_login_at"`
@@ -142,6 +148,10 @@ func main() {
 	}
 	defer db.Close()
 
+	if err := database.RunMigrations(ctx, db, svcmigrations.Migrations, "admin_svc"); err != nil {
+		log.Fatal("database migrations failed", zap.Error(err))
+	}
+
 	// NATS JetStream — optional; admin service publishes audit events but never blocks on it.
 	if cfg.NATS.URL != "" {
 		js, err = jetstream.New(cfg.NATS.URL)
@@ -186,6 +196,10 @@ func main() {
 	v1.Post("/users/:id/verify", handleVerifyEmail)
 	v1.Post("/users/:id/reset-password", handleResetPassword)
 	v1.Post("/users/:id/set-password", handleSetPassword)
+	v1.Delete("/users/:id/mfa", handleResetUserMFA)
+	v1.Get("/users/:id/quota", handleGetUserQuota)
+	v1.Put("/users/:id/quota", handlePutUserQuota)
+	v1.Get("/quotas", handleListUserQuotas)
 	v1.Get("/stats", handleGetStats)
 	v1.Get("/system/health", handleSystemHealth)
 	v1.Get("/storage/usage", handleListStorageUsage)
@@ -207,9 +221,15 @@ func main() {
 	v1.Put("/auth/config", handlePutAuthConfig)
 	v1.Get("/branding", handleGetBranding)
 	v1.Put("/branding", handlePutBranding)
+	v1.Get("/platform/config", handleGetPlatformConfig)
+	v1.Put("/platform/config", handlePutPlatformConfig)
+	v1.Get("/settings/smtp", handleGetSmtpSettings)
+	v1.Put("/settings/smtp", handlePutSmtpSettings)
+	v1.Post("/settings/smtp/test", handleTestSmtpSettings)
 
-	// Public branding endpoint — no auth required so user-facing sites can fetch it.
+	// Public endpoints — no auth required so user-facing sites can fetch them.
 	app.Get("/api/v1/branding", handleGetBrandingPublic)
+	app.Get("/api/v1/platform/config", handleGetPlatformConfigPublic)
 
 	go func() {
 		if err := app.Listen(":" + cfg.Server.Port); err != nil {
@@ -329,7 +349,7 @@ func handleListUsers(c fiber.Ctx) error {
 		return apperrors.Internal("count users", err)
 	}
 
-	dataSQL := "SELECT id, email, role, is_active, email_verified, failed_login_attempts, locked_until, last_login_at, created_at, updated_at FROM auth.users " +
+	dataSQL := "SELECT u.id, u.email, u.role, u.is_active, u.email_verified, COALESCE(m.is_enabled, false) AS mfa_enabled, u.failed_login_attempts, u.locked_until, u.last_login_at, u.created_at, u.updated_at FROM auth.users u LEFT JOIN auth.mfa_secrets m ON m.user_id = u.id " +
 		where + " ORDER BY " + orderBy + " LIMIT $" + itoa(idx) + " OFFSET $" + itoa(idx+1)
 	args = append(args, limit, offset)
 
@@ -342,7 +362,7 @@ func handleListUsers(c fiber.Ctx) error {
 	users := make([]UserRow, 0)
 	for rows.Next() {
 		var u UserRow
-		if err := rows.Scan(&u.ID, &u.Email, &u.Role, &u.IsActive, &u.EmailVerified,
+		if err := rows.Scan(&u.ID, &u.Email, &u.Role, &u.IsActive, &u.EmailVerified, &u.MFAEnabled,
 			&u.FailedLoginAttempts, &u.LockedUntil, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return apperrors.Internal("scan user row", err)
 		}
@@ -479,6 +499,27 @@ func handleUnlockUser(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"ok": true})
 }
 
+// DELETE /api/v1/admin/users/:id/mfa — remove a user's MFA secret (admin reset)
+func handleResetUserMFA(c fiber.Ctx) error {
+	id := c.Params("id")
+	// Verify user exists first
+	var exists bool
+	if err := db.QueryRow(c.Context(), "SELECT EXISTS(SELECT 1 FROM auth.users WHERE id = $1)", id).Scan(&exists); err != nil {
+		return apperrors.Internal("check user", err)
+	}
+	if !exists {
+		return apperrors.NotFound("user not found")
+	}
+	if _, err := db.Exec(c.Context(), "DELETE FROM auth.mfa_secrets WHERE user_id = $1", id); err != nil {
+		return apperrors.Internal("reset mfa", err)
+	}
+	publishAdminAudit(c, "admin.user_mfa_reset", id, map[string]any{
+		"target_user_id": id,
+		"reason":         "admin_initiated_mfa_reset",
+	})
+	return c.JSON(fiber.Map{"ok": true})
+}
+
 // POST /api/v1/admin/users/:id/verify
 func handleVerifyEmail(c fiber.Ctx) error {
 	id := c.Params("id")
@@ -547,6 +588,111 @@ func handleSetPassword(c fiber.Ctx) error {
 	}
 	publishAdminAudit(c, "admin.user_password_set", id, map[string]any{"target_user_id": id})
 	return c.JSON(fiber.Map{"ok": true})
+}
+
+// ── Per-user quota overrides ──────────────────────────────────────────────────
+
+// GET /api/v1/admin/quotas — returns all per-user quota overrides
+func handleListUserQuotas(c fiber.Ctx) error {
+	type quotaRow struct {
+		UserID     string    `json:"user_id"`
+		QuotaBytes int64     `json:"quota_bytes"`
+		UpdatedAt  time.Time `json:"updated_at"`
+		UpdatedBy  string    `json:"updated_by"`
+	}
+	rows, err := db.Query(c.Context(), `SELECT user_id, quota_bytes, updated_at, updated_by FROM admin_svc.user_quotas ORDER BY updated_at DESC`)
+	if err != nil {
+		return apperrors.Internal("list quotas", err)
+	}
+	defer rows.Close()
+	var overrides []quotaRow
+	for rows.Next() {
+		var r quotaRow
+		if err := rows.Scan(&r.UserID, &r.QuotaBytes, &r.UpdatedAt, &r.UpdatedBy); err != nil {
+			return apperrors.Internal("scan quota row", err)
+		}
+		overrides = append(overrides, r)
+	}
+	if overrides == nil {
+		overrides = []quotaRow{}
+	}
+	return c.JSON(fiber.Map{"overrides": overrides})
+}
+
+// GET /api/v1/admin/users/:id/quota
+func handleGetUserQuota(c fiber.Ctx) error {
+	id := c.Params("id")
+	var quotaBytes int64
+	var updatedAt time.Time
+	var updatedBy string
+	err := db.QueryRow(c.Context(),
+		`SELECT quota_bytes, updated_at, updated_by FROM admin_svc.user_quotas WHERE user_id = $1`, id,
+	).Scan(&quotaBytes, &updatedAt, &updatedBy)
+	if err != nil {
+		// No override row — return has_override: false (not an error)
+		return c.JSON(fiber.Map{"has_override": false})
+	}
+	return c.JSON(fiber.Map{
+		"has_override": true,
+		"quota_bytes":  quotaBytes,
+		"updated_at":   updatedAt,
+		"updated_by":   updatedBy,
+	})
+}
+
+// PUT /api/v1/admin/users/:id/quota
+// Body: {"quota_bytes": <number>} to set a custom quota, or {"quota_bytes": null} to remove the override.
+func handlePutUserQuota(c fiber.Ctx) error {
+	id := c.Params("id")
+
+	var body struct {
+		QuotaBytes *int64 `json:"quota_bytes"`
+	}
+	if err := c.Bind().JSON(&body); err != nil {
+		return apperrors.BadRequest("invalid request body")
+	}
+
+	// Verify the user exists in auth.users first
+	var exists bool
+	if err := db.QueryRow(c.Context(), "SELECT EXISTS(SELECT 1 FROM auth.users WHERE id = $1)", id).Scan(&exists); err != nil {
+		return apperrors.Internal("check user", err)
+	}
+	if !exists {
+		return apperrors.NotFound("user not found")
+	}
+
+	callerEmail := adminCallerEmail(c)
+
+	if body.QuotaBytes == nil {
+		// Remove the override — user falls back to global default
+		_, err := db.Exec(c.Context(), `DELETE FROM admin_svc.user_quotas WHERE user_id = $1`, id)
+		if err != nil {
+			return apperrors.Internal("remove quota override", err)
+		}
+		publishAdminAudit(c, "admin.user_quota_reset", id, map[string]any{"target_user_id": id})
+		return c.JSON(fiber.Map{"ok": true, "has_override": false})
+	}
+
+	if *body.QuotaBytes <= 0 {
+		return apperrors.BadRequest("quota_bytes must be greater than 0")
+	}
+
+	_, err := db.Exec(c.Context(), `
+		INSERT INTO admin_svc.user_quotas (user_id, quota_bytes, updated_at, updated_by)
+		VALUES ($1, $2, now(), $3)
+		ON CONFLICT (user_id) DO UPDATE
+		  SET quota_bytes = EXCLUDED.quota_bytes,
+		      updated_at  = EXCLUDED.updated_at,
+		      updated_by  = EXCLUDED.updated_by`,
+		id, *body.QuotaBytes, callerEmail)
+	if err != nil {
+		return apperrors.Internal("upsert quota override", err)
+	}
+	publishAdminAudit(c, "admin.user_quota_set", id, map[string]any{
+		"target_user_id": id,
+		"quota_bytes":    *body.QuotaBytes,
+	})
+	return c.JSON(fiber.Map{"ok": true, "has_override": true, "quota_bytes": *body.QuotaBytes})
 }
 
 // GET /api/v1/admin/stats
@@ -1746,6 +1892,7 @@ func runAuditPurge(log *zap.Logger) {
 type AuthLockoutConfig struct {
 	MaxFailedAttempts      int    `json:"max_failed_attempts"`
 	LockoutDurationMinutes int    `json:"lockout_duration_minutes"`
+	RequireMFA             bool   `json:"require_mfa"`
 	UpdatedAt              string `json:"updated_at"`
 }
 
@@ -1754,9 +1901,9 @@ func handleGetAuthConfig(c fiber.Ctx) error {
 	var cfg AuthLockoutConfig
 	var updatedAt time.Time
 	err := db.QueryRow(c.Context(), `
-		SELECT max_failed_attempts, lockout_duration_minutes, updated_at
+		SELECT max_failed_attempts, lockout_duration_minutes, require_mfa, updated_at
 		FROM auth.auth_settings WHERE id = 1`,
-	).Scan(&cfg.MaxFailedAttempts, &cfg.LockoutDurationMinutes, &updatedAt)
+	).Scan(&cfg.MaxFailedAttempts, &cfg.LockoutDurationMinutes, &cfg.RequireMFA, &updatedAt)
 	if err != nil {
 		return apperrors.Internal("get auth config", err)
 	}
@@ -1767,8 +1914,9 @@ func handleGetAuthConfig(c fiber.Ctx) error {
 // PUT /api/v1/admin/auth/config
 func handlePutAuthConfig(c fiber.Ctx) error {
 	var body struct {
-		MaxFailedAttempts      *int `json:"max_failed_attempts"`
-		LockoutDurationMinutes *int `json:"lockout_duration_minutes"`
+		MaxFailedAttempts      *int  `json:"max_failed_attempts"`
+		LockoutDurationMinutes *int  `json:"lockout_duration_minutes"`
+		RequireMFA             *bool `json:"require_mfa"`
 	}
 	if err := json.Unmarshal(c.Body(), &body); err != nil {
 		return apperrors.BadRequest("invalid JSON body")
@@ -1784,9 +1932,10 @@ func handlePutAuthConfig(c fiber.Ctx) error {
 		UPDATE auth.auth_settings SET
 		    max_failed_attempts      = COALESCE($1, max_failed_attempts),
 		    lockout_duration_minutes = COALESCE($2, lockout_duration_minutes),
+		    require_mfa              = COALESCE($3, require_mfa),
 		    updated_at               = now()
 		WHERE id = 1`,
-		body.MaxFailedAttempts, body.LockoutDurationMinutes,
+		body.MaxFailedAttempts, body.LockoutDurationMinutes, body.RequireMFA,
 	)
 	if err != nil {
 		return apperrors.Internal("update auth config", err)
@@ -1824,6 +1973,44 @@ type BrandingConfig struct {
 	DmPageBgColor    *string `json:"dm_page_bg_color"`
 	DmSurfaceColor   *string `json:"dm_surface_color"`
 	DmTextColor      *string `json:"dm_text_color"`
+	// Email white-label fields
+	EmailSenderName    string `json:"email_sender_name"`
+	EmailSupportEmail  string `json:"email_support_email"`
+	EmailFooterText    string `json:"email_footer_text"`
+	EmailSubjectPrefix string `json:"email_subject_prefix"`
+	EmailHeaderLink    string `json:"email_header_link"`
+	EmailReplyTo       string `json:"email_reply_to"`
+	// Email custom colors (empty = use built-in defaults)
+	EmailButtonColor     string `json:"email_button_color"`
+	EmailButtonTextColor string `json:"email_button_text_color"`
+	EmailBodyBgColor     string `json:"email_body_bg_color"`
+	EmailCardBgColor     string `json:"email_card_bg_color"`
+	EmailCardBorderColor string `json:"email_card_border_color"`
+	EmailHeadingColor    string `json:"email_heading_color"`
+	EmailTextColor       string `json:"email_text_color"`
+	// Per-type subject templates (empty = use built-in default; supports {{AppName}}, {{Title}}, {{RequestName}})
+	SubjectTransferReceived     string `json:"subject_transfer_received"`
+	SubjectPasswordReset        string `json:"subject_password_reset"`
+	SubjectEmailVerification    string `json:"subject_email_verification"`
+	SubjectDownloadNotification string `json:"subject_download_notification"`
+	SubjectExpiryReminder       string `json:"subject_expiry_reminder"`
+	SubjectTransferRevoked      string `json:"subject_transfer_revoked"`
+	SubjectRequestSubmission    string `json:"subject_request_submission"`
+	// Per-type CTA button text (empty = use template default)
+	CTATransferReceived     string `json:"cta_transfer_received"`
+	CTADownloadNotification string `json:"cta_download_notification"`
+	CTAPasswordReset        string `json:"cta_password_reset"`
+	CTAEmailVerification    string `json:"cta_email_verification"`
+	CTAExpiryReminder       string `json:"cta_expiry_reminder"`
+	CTARequestSubmission    string `json:"cta_request_submission"`
+	// Per-type fully custom HTML templates (empty = use standard branded template)
+	CustomTransferReceived     string `json:"custom_transfer_received"`
+	CustomPasswordReset        string `json:"custom_password_reset"`
+	CustomEmailVerification    string `json:"custom_email_verification"`
+	CustomDownloadNotification string `json:"custom_download_notification"`
+	CustomExpiryReminder       string `json:"custom_expiry_reminder"`
+	CustomTransferRevoked      string `json:"custom_transfer_revoked"`
+	CustomRequestSubmission    string `json:"custom_request_submission"`
 }
 
 func scanBranding(c fiber.Ctx) (BrandingConfig, error) {
@@ -1832,11 +2019,33 @@ func scanBranding(c fiber.Ctx) (BrandingConfig, error) {
 	err := db.QueryRow(c.Context(), `
 		SELECT primary_color, secondary_color, page_bg_color, surface_color,
 		       text_color, border_radius, app_name, custom_css, logo_data_url, updated_at,
-		       dm_primary_color, dm_secondary_color, dm_page_bg_color, dm_surface_color, dm_text_color
+		       dm_primary_color, dm_secondary_color, dm_page_bg_color, dm_surface_color, dm_text_color,
+		       email_sender_name, email_support_email, email_footer_text, email_subject_prefix, email_header_link,
+		       email_reply_to, email_button_color, email_button_text_color, email_body_bg_color,
+		       email_card_bg_color, email_card_border_color, email_heading_color, email_text_color,
+		       email_subject_transfer_received, email_subject_password_reset, email_subject_email_verification,
+		       email_subject_download_notification, email_subject_expiry_reminder, email_subject_transfer_revoked,
+		       email_subject_request_submission,
+		       email_cta_transfer_received, email_cta_download_notification, email_cta_password_reset,
+		       email_cta_email_verification, email_cta_expiry_reminder, email_cta_request_submission,
+		       email_custom_transfer_received, email_custom_password_reset, email_custom_email_verification,
+		       email_custom_download_notification, email_custom_expiry_reminder, email_custom_transfer_revoked,
+		       email_custom_request_submission
 		FROM admin_svc.branding_settings WHERE id = 1`,
 	).Scan(&bc.PrimaryColor, &bc.SecondaryColor, &bc.PageBgColor, &bc.SurfaceColor,
 		&bc.TextColor, &bc.BorderRadius, &bc.AppName, &bc.CustomCSS, &bc.LogoDataURL, &updatedAt,
-		&bc.DmPrimaryColor, &bc.DmSecondaryColor, &bc.DmPageBgColor, &bc.DmSurfaceColor, &bc.DmTextColor)
+		&bc.DmPrimaryColor, &bc.DmSecondaryColor, &bc.DmPageBgColor, &bc.DmSurfaceColor, &bc.DmTextColor,
+		&bc.EmailSenderName, &bc.EmailSupportEmail, &bc.EmailFooterText, &bc.EmailSubjectPrefix, &bc.EmailHeaderLink,
+		&bc.EmailReplyTo, &bc.EmailButtonColor, &bc.EmailButtonTextColor, &bc.EmailBodyBgColor,
+		&bc.EmailCardBgColor, &bc.EmailCardBorderColor, &bc.EmailHeadingColor, &bc.EmailTextColor,
+		&bc.SubjectTransferReceived, &bc.SubjectPasswordReset, &bc.SubjectEmailVerification,
+		&bc.SubjectDownloadNotification, &bc.SubjectExpiryReminder, &bc.SubjectTransferRevoked,
+		&bc.SubjectRequestSubmission,
+		&bc.CTATransferReceived, &bc.CTADownloadNotification, &bc.CTAPasswordReset,
+		&bc.CTAEmailVerification, &bc.CTAExpiryReminder, &bc.CTARequestSubmission,
+		&bc.CustomTransferReceived, &bc.CustomPasswordReset, &bc.CustomEmailVerification,
+		&bc.CustomDownloadNotification, &bc.CustomExpiryReminder, &bc.CustomTransferRevoked,
+		&bc.CustomRequestSubmission)
 	if err != nil {
 		return bc, err
 	}
@@ -1879,14 +2088,55 @@ func handlePutBranding(c fiber.Ctx) error {
 		DmSurfaceColor   *string `json:"dm_surface_color"`
 		DmTextColor      *string `json:"dm_text_color"`
 		ClearDarkMode    *bool   `json:"clear_dark_mode"`
+		// Email white-label
+		EmailSenderName    *string `json:"email_sender_name"`
+		EmailSupportEmail  *string `json:"email_support_email"`
+		EmailFooterText    *string `json:"email_footer_text"`
+		EmailSubjectPrefix *string `json:"email_subject_prefix"`
+		EmailHeaderLink    *string `json:"email_header_link"`
+		EmailReplyTo       *string `json:"email_reply_to"`
+		// Email custom colors
+		EmailButtonColor     *string `json:"email_button_color"`
+		EmailButtonTextColor *string `json:"email_button_text_color"`
+		EmailBodyBgColor     *string `json:"email_body_bg_color"`
+		EmailCardBgColor     *string `json:"email_card_bg_color"`
+		EmailCardBorderColor *string `json:"email_card_border_color"`
+		EmailHeadingColor    *string `json:"email_heading_color"`
+		EmailTextColor       *string `json:"email_text_color"`
+		// Per-type subjects
+		SubjectTransferReceived     *string `json:"subject_transfer_received"`
+		SubjectPasswordReset        *string `json:"subject_password_reset"`
+		SubjectEmailVerification    *string `json:"subject_email_verification"`
+		SubjectDownloadNotification *string `json:"subject_download_notification"`
+		SubjectExpiryReminder       *string `json:"subject_expiry_reminder"`
+		SubjectTransferRevoked      *string `json:"subject_transfer_revoked"`
+		SubjectRequestSubmission    *string `json:"subject_request_submission"`
+		// Per-type CTA button text
+		CTATransferReceived     *string `json:"cta_transfer_received"`
+		CTADownloadNotification *string `json:"cta_download_notification"`
+		CTAPasswordReset        *string `json:"cta_password_reset"`
+		CTAEmailVerification    *string `json:"cta_email_verification"`
+		CTAExpiryReminder       *string `json:"cta_expiry_reminder"`
+		CTARequestSubmission    *string `json:"cta_request_submission"`
+		// Per-type fully custom HTML templates
+		CustomTransferReceived     *string `json:"custom_transfer_received"`
+		CustomPasswordReset        *string `json:"custom_password_reset"`
+		CustomEmailVerification    *string `json:"custom_email_verification"`
+		CustomDownloadNotification *string `json:"custom_download_notification"`
+		CustomExpiryReminder       *string `json:"custom_expiry_reminder"`
+		CustomTransferRevoked      *string `json:"custom_transfer_revoked"`
+		CustomRequestSubmission    *string `json:"custom_request_submission"`
 	}
 	if err := json.Unmarshal(c.Body(), &body); err != nil {
 		return apperrors.BadRequest("invalid JSON body")
 	}
-	// Validate hex colors if provided.
-	for _, col := range []*string{body.PrimaryColor, body.SecondaryColor, body.PageBgColor, body.SurfaceColor, body.TextColor,
-		body.DmPrimaryColor, body.DmSecondaryColor, body.DmPageBgColor, body.DmSurfaceColor, body.DmTextColor} {
-		if col != nil && (len(*col) != 7 || (*col)[0] != '#') {
+	// Validate hex colors if provided (brand colors + email color overrides).
+	hexFields := []*string{body.PrimaryColor, body.SecondaryColor, body.PageBgColor, body.SurfaceColor, body.TextColor,
+		body.DmPrimaryColor, body.DmSecondaryColor, body.DmPageBgColor, body.DmSurfaceColor, body.DmTextColor,
+		body.EmailButtonColor, body.EmailButtonTextColor, body.EmailBodyBgColor,
+		body.EmailCardBgColor, body.EmailCardBorderColor, body.EmailHeadingColor, body.EmailTextColor}
+	for _, col := range hexFields {
+		if col != nil && *col != "" && (len(*col) != 7 || (*col)[0] != '#') {
 			return apperrors.BadRequest("colors must be a 7-character hex value like #1E293B")
 		}
 	}
@@ -1943,6 +2193,39 @@ func handlePutBranding(c fiber.Ctx) error {
 		    dm_page_bg_color   = CASE WHEN $12::bool THEN NULL WHEN $15::text IS NOT NULL THEN $15::text ELSE dm_page_bg_color END,
 		    dm_surface_color   = CASE WHEN $12::bool THEN NULL WHEN $16::text IS NOT NULL THEN $16::text ELSE dm_surface_color END,
 		    dm_text_color      = CASE WHEN $12::bool THEN NULL WHEN $17::text IS NOT NULL THEN $17::text ELSE dm_text_color END,
+		    email_sender_name    = COALESCE($18::text, email_sender_name),
+		    email_support_email  = COALESCE($19::text, email_support_email),
+		    email_footer_text    = COALESCE($20::text, email_footer_text),
+		    email_subject_prefix = COALESCE($21::text, email_subject_prefix),
+		    email_header_link    = COALESCE($22::text, email_header_link),
+		    email_reply_to       = COALESCE($23::text, email_reply_to),
+		    email_button_color      = COALESCE($24::text, email_button_color),
+		    email_button_text_color = COALESCE($25::text, email_button_text_color),
+		    email_body_bg_color     = COALESCE($26::text, email_body_bg_color),
+		    email_card_bg_color     = COALESCE($27::text, email_card_bg_color),
+		    email_card_border_color = COALESCE($28::text, email_card_border_color),
+		    email_heading_color     = COALESCE($29::text, email_heading_color),
+		    email_text_color        = COALESCE($30::text, email_text_color),
+		    email_subject_transfer_received      = COALESCE($31::text, email_subject_transfer_received),
+		    email_subject_password_reset         = COALESCE($32::text, email_subject_password_reset),
+		    email_subject_email_verification     = COALESCE($33::text, email_subject_email_verification),
+		    email_subject_download_notification  = COALESCE($34::text, email_subject_download_notification),
+		    email_subject_expiry_reminder        = COALESCE($35::text, email_subject_expiry_reminder),
+		    email_subject_transfer_revoked       = COALESCE($36::text, email_subject_transfer_revoked),
+		    email_subject_request_submission     = COALESCE($37::text, email_subject_request_submission),
+		    email_cta_transfer_received      = COALESCE($38::text, email_cta_transfer_received),
+		    email_cta_download_notification  = COALESCE($39::text, email_cta_download_notification),
+		    email_cta_password_reset         = COALESCE($40::text, email_cta_password_reset),
+		    email_cta_email_verification     = COALESCE($41::text, email_cta_email_verification),
+		    email_cta_expiry_reminder        = COALESCE($42::text, email_cta_expiry_reminder),
+		    email_cta_request_submission     = COALESCE($43::text, email_cta_request_submission),
+		    email_custom_transfer_received      = COALESCE($44::text, email_custom_transfer_received),
+		    email_custom_password_reset         = COALESCE($45::text, email_custom_password_reset),
+		    email_custom_email_verification     = COALESCE($46::text, email_custom_email_verification),
+		    email_custom_download_notification  = COALESCE($47::text, email_custom_download_notification),
+		    email_custom_expiry_reminder        = COALESCE($48::text, email_custom_expiry_reminder),
+		    email_custom_transfer_revoked       = COALESCE($49::text, email_custom_transfer_revoked),
+		    email_custom_request_submission     = COALESCE($50::text, email_custom_request_submission),
 		    updated_at      = now()
 		WHERE id = 1`,
 		body.PrimaryColor,
@@ -1962,12 +2245,372 @@ func handlePutBranding(c fiber.Ctx) error {
 		body.DmPageBgColor,
 		body.DmSurfaceColor,
 		body.DmTextColor,
+		body.EmailSenderName,
+		body.EmailSupportEmail,
+		body.EmailFooterText,
+		body.EmailSubjectPrefix,
+		body.EmailHeaderLink,
+		body.EmailReplyTo,
+		body.EmailButtonColor,
+		body.EmailButtonTextColor,
+		body.EmailBodyBgColor,
+		body.EmailCardBgColor,
+		body.EmailCardBorderColor,
+		body.EmailHeadingColor,
+		body.EmailTextColor,
+		body.SubjectTransferReceived,
+		body.SubjectPasswordReset,
+		body.SubjectEmailVerification,
+		body.SubjectDownloadNotification,
+		body.SubjectExpiryReminder,
+		body.SubjectTransferRevoked,
+		body.SubjectRequestSubmission,
+		body.CTATransferReceived,
+		body.CTADownloadNotification,
+		body.CTAPasswordReset,
+		body.CTAEmailVerification,
+		body.CTAExpiryReminder,
+		body.CTARequestSubmission,
+		body.CustomTransferReceived,
+		body.CustomPasswordReset,
+		body.CustomEmailVerification,
+		body.CustomDownloadNotification,
+		body.CustomExpiryReminder,
+		body.CustomTransferRevoked,
+		body.CustomRequestSubmission,
 	)
 	if err != nil {
 		return apperrors.Internal("update branding", err)
 	}
 	publishAdminAudit(c, "admin.branding_updated", "branding_settings", nil)
 	return handleGetBrandingPublic(c)
+}
+
+// ── Platform settings ────────────────────────────────────────────────────────
+
+type PlatformConfig struct {
+	DateFormat           string `json:"date_format"`
+	TimeFormat           string `json:"time_format"`
+	Timezone             string `json:"timezone"`
+	PortalURL            string `json:"portal_url"`
+	DownloadURL          string `json:"download_url"`
+	LinkProtectionPolicy string `json:"link_protection_policy"`
+	UpdatedAt            string `json:"updated_at"`
+}
+
+func handleGetPlatformConfig(c fiber.Ctx) error { return handleGetPlatformConfigPublic(c) }
+
+func handleGetPlatformConfigPublic(c fiber.Ctx) error {
+	var p PlatformConfig
+	var updatedAt time.Time
+	err := db.QueryRow(c.Context(), `
+		SELECT date_format, time_format, timezone, portal_url, download_url, link_protection_policy, updated_at
+		FROM admin_svc.platform_settings WHERE id = 1`,
+	).Scan(&p.DateFormat, &p.TimeFormat, &p.Timezone, &p.PortalURL, &p.DownloadURL, &p.LinkProtectionPolicy, &updatedAt)
+	if err != nil {
+		return apperrors.Internal("get platform config", err)
+	}
+	p.UpdatedAt = updatedAt.Format(time.RFC3339)
+	return c.JSON(p)
+}
+
+func handlePutPlatformConfig(c fiber.Ctx) error {
+	var body struct {
+		DateFormat           *string `json:"date_format"`
+		TimeFormat           *string `json:"time_format"`
+		Timezone             *string `json:"timezone"`
+		PortalURL            *string `json:"portal_url"`
+		DownloadURL          *string `json:"download_url"`
+		LinkProtectionPolicy *string `json:"link_protection_policy"`
+	}
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return apperrors.BadRequest("invalid JSON body")
+	}
+	validDateFormats := map[string]bool{"ISO": true, "EU": true, "US": true, "DE": true, "LONG": true}
+	if body.DateFormat != nil && !validDateFormats[*body.DateFormat] {
+		return apperrors.BadRequest("date_format must be one of: ISO, EU, US, DE, LONG")
+	}
+	if body.TimeFormat != nil && *body.TimeFormat != "12h" && *body.TimeFormat != "24h" {
+		return apperrors.BadRequest("time_format must be '12h' or '24h'")
+	}
+	validPolicies := map[string]bool{"none": true, "password": true, "email": true, "either": true}
+	if body.LinkProtectionPolicy != nil && !validPolicies[*body.LinkProtectionPolicy] {
+		return apperrors.BadRequest("link_protection_policy must be one of: none, password, email, either")
+	}
+	_, err := db.Exec(c.Context(), `
+		UPDATE admin_svc.platform_settings SET
+		    date_format             = COALESCE($1, date_format),
+		    time_format             = COALESCE($2, time_format),
+		    timezone                = COALESCE($3, timezone),
+		    portal_url              = COALESCE($4, portal_url),
+		    download_url            = COALESCE($5, download_url),
+		    link_protection_policy  = COALESCE($6, link_protection_policy),
+		    updated_at              = now()
+		WHERE id = 1`,
+		body.DateFormat, body.TimeFormat, body.Timezone, body.PortalURL, body.DownloadURL,
+		body.LinkProtectionPolicy,
+	)
+	if err != nil {
+		return apperrors.Internal("update platform config", err)
+	}
+	publishAdminAudit(c, "admin.platform_config_updated", "platform_settings", nil)
+	return handleGetPlatformConfigPublic(c)
+}
+
+// ── SMTP settings ─────────────────────────────────────────────────────────────
+
+// SmtpSettingsResponse is returned by GET and PUT; the password is never echoed.
+type SmtpSettingsResponse struct {
+	Host        string `json:"host"`
+	Port        string `json:"port"`
+	Username    string `json:"username"`
+	PasswordSet bool   `json:"password_set"` // true when an encrypted password is stored
+	From        string `json:"from"`
+	UseTLS      bool   `json:"use_tls"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
+// smtpEncKey derives a stable 32-byte AES key from the application pepper.
+// The context string binds the key to the smtp_settings table.
+func smtpEncKey() []byte {
+	h := sha256.Sum256([]byte(cfg.App.Pepper + ":admin_smtp_settings_v1"))
+	return h[:]
+}
+
+// loadSMTPSettings reads the smtp_settings row and decrypts the password.
+// Returns the plaintext config; password is "" when not set.
+func loadSMTPSettings(ctx context.Context) (config.SMTPConfig, error) {
+	var host, port, username, from string
+	var passwordEnc *string
+	var useTLS bool
+	err := db.QueryRow(ctx, `
+		SELECT smtp_host, smtp_port, smtp_username, smtp_password_enc, smtp_from, smtp_use_tls
+		FROM admin_svc.smtp_settings WHERE id = 1`,
+	).Scan(&host, &port, &username, &passwordEnc, &from, &useTLS)
+	if err != nil {
+		return config.SMTPConfig{}, fmt.Errorf("load smtp settings: %w", err)
+	}
+
+	password := ""
+	if passwordEnc != nil && *passwordEnc != "" {
+		plain, err := crypto.Decrypt(*passwordEnc, smtpEncKey())
+		if err != nil {
+			return config.SMTPConfig{}, fmt.Errorf("decrypt smtp password: %w", err)
+		}
+		password = string(plain)
+	}
+
+	return config.SMTPConfig{
+		Host:     host,
+		Port:     port,
+		Username: username,
+		Password: password,
+		From:     from,
+		UseTLS:   useTLS,
+	}, nil
+}
+
+// GET /api/v1/admin/settings/smtp
+func handleGetSmtpSettings(c fiber.Ctx) error {
+	var host, port, username, from string
+	var passwordEnc *string
+	var useTLS bool
+	var updatedAt time.Time
+	err := db.QueryRow(c.Context(), `
+		SELECT smtp_host, smtp_port, smtp_username, smtp_password_enc, smtp_from, smtp_use_tls, updated_at
+		FROM admin_svc.smtp_settings WHERE id = 1`,
+	).Scan(&host, &port, &username, &passwordEnc, &from, &useTLS, &updatedAt)
+	if err != nil {
+		return apperrors.Internal("get smtp settings", err)
+	}
+	return c.JSON(SmtpSettingsResponse{
+		Host:        host,
+		Port:        port,
+		Username:    username,
+		PasswordSet: passwordEnc != nil && *passwordEnc != "",
+		From:        from,
+		UseTLS:      useTLS,
+		UpdatedAt:   updatedAt.Format(time.RFC3339),
+	})
+}
+
+// PUT /api/v1/admin/settings/smtp
+func handlePutSmtpSettings(c fiber.Ctx) error {
+	var body struct {
+		Host     *string `json:"host"`
+		Port     *string `json:"port"`
+		Username *string `json:"username"`
+		Password *string `json:"password"` // empty string = clear password
+		From     *string `json:"from"`
+		UseTLS   *bool   `json:"use_tls"`
+	}
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return apperrors.BadRequest("invalid JSON body")
+	}
+
+	// Encrypt new password if provided; empty string = clear stored password.
+	var newPasswordSQL *string // nil = COALESCE keeps current; &"" = clear; &enc = set new
+	if body.Password != nil {
+		if *body.Password == "" {
+			empty := ""
+			newPasswordSQL = &empty // will store NULL via NULLIF
+		} else {
+			enc, err := crypto.Encrypt([]byte(*body.Password), smtpEncKey())
+			if err != nil {
+				return apperrors.Internal("encrypt smtp password", err)
+			}
+			newPasswordSQL = &enc
+		}
+	}
+
+	_, err := db.Exec(c.Context(), `
+		UPDATE admin_svc.smtp_settings SET
+		    smtp_host         = COALESCE($1, smtp_host),
+		    smtp_port         = COALESCE($2, smtp_port),
+		    smtp_username     = COALESCE($3, smtp_username),
+		    smtp_password_enc = CASE
+		                            WHEN $4::text IS NOT NULL THEN NULLIF($4::text, '')
+		                            ELSE smtp_password_enc
+		                        END,
+		    smtp_from         = COALESCE($5, smtp_from),
+		    smtp_use_tls      = COALESCE($6, smtp_use_tls),
+		    updated_at        = now()
+		WHERE id = 1`,
+		body.Host, body.Port, body.Username, newPasswordSQL, body.From, body.UseTLS,
+	)
+	if err != nil {
+		return apperrors.Internal("update smtp settings", err)
+	}
+
+	// Publish CONFIG.smtp so the notification service reloads immediately.
+	smtpCfg, err := loadSMTPSettings(c.Context())
+	if err == nil && js != nil {
+		go func() {
+			_ = js.Publish(c.Context(), "CONFIG.smtp", map[string]any{
+				"host":     smtpCfg.Host,
+				"port":     smtpCfg.Port,
+				"username": smtpCfg.Username,
+				"password": smtpCfg.Password,
+				"from":     smtpCfg.From,
+				"use_tls":  smtpCfg.UseTLS,
+			})
+		}()
+	}
+
+	publishAdminAudit(c, "admin.smtp_settings_updated", "smtp_settings", nil)
+	return handleGetSmtpSettings(c)
+}
+
+// POST /api/v1/admin/settings/smtp/test
+// Body may contain SMTP fields to test without saving; omit all fields to test the stored config.
+func handleTestSmtpSettings(c fiber.Ctx) error {
+	// Resolve caller's email — this is where the test email is sent.
+	callerID, _ := c.Locals("userID").(string)
+	var toAddr string
+	if err := db.QueryRow(c.Context(), "SELECT email FROM auth.users WHERE id = $1", callerID).Scan(&toAddr); err != nil {
+		return apperrors.Internal("get caller email", err)
+	}
+
+	// Parse optional override fields from body.
+	var body struct {
+		Host     *string `json:"host"`
+		Port     *string `json:"port"`
+		Username *string `json:"username"`
+		Password *string `json:"password"`
+		From     *string `json:"from"`
+		UseTLS   *bool   `json:"use_tls"`
+	}
+	_ = json.Unmarshal(c.Body(), &body) // best-effort — all fields optional
+
+	// Load stored config as baseline then apply any body overrides.
+	smtpCfg, err := loadSMTPSettings(c.Context())
+	if err != nil {
+		// Non-fatal — start from a zero config so the caller can test new settings.
+		smtpCfg = config.SMTPConfig{}
+	}
+	if body.Host != nil {
+		smtpCfg.Host = *body.Host
+	}
+	if body.Port != nil {
+		smtpCfg.Port = *body.Port
+	}
+	if body.Username != nil {
+		smtpCfg.Username = *body.Username
+	}
+	if body.Password != nil {
+		smtpCfg.Password = *body.Password
+	}
+	if body.From != nil {
+		smtpCfg.From = *body.From
+	}
+	if body.UseTLS != nil {
+		smtpCfg.UseTLS = *body.UseTLS
+	}
+
+	if smtpCfg.Host == "" || smtpCfg.Port == "" {
+		return c.JSON(fiber.Map{"ok": false, "error": "SMTP host and port are required"})
+	}
+
+	if sendErr := sendTestSMTPEmail(smtpCfg, toAddr); sendErr != nil {
+		return c.JSON(fiber.Map{"ok": false, "error": sendErr.Error()})
+	}
+
+	publishAdminAudit(c, "admin.smtp_test_sent", "smtp_settings", map[string]any{"to": toAddr})
+	return c.JSON(fiber.Map{"ok": true})
+}
+
+// sendTestSMTPEmail opens an SMTP connection with smtpCfg and sends a test email to toAddr.
+func sendTestSMTPEmail(smtpCfg config.SMTPConfig, toAddr string) error {
+	addr := smtpCfg.Host + ":" + smtpCfg.Port
+
+	subject := "TenzoShare SMTP Test"
+	body := []byte("From: " + smtpCfg.From + "\r\n" +
+		"To: " + toAddr + "\r\n" +
+		"Subject: " + subject + "\r\n" +
+		"MIME-Version: 1.0\r\n" +
+		"Content-Type: text/plain; charset=UTF-8\r\n" +
+		"\r\n" +
+		"This is a test email from TenzoShare.\r\n" +
+		"If you received this, your SMTP settings are working correctly.\r\n")
+
+	var auth smtp.Auth
+	if smtpCfg.Username != "" {
+		auth = smtp.PlainAuth("", smtpCfg.Username, smtpCfg.Password, smtpCfg.Host)
+	}
+
+	if smtpCfg.UseTLS {
+		tlsCfg := &tls.Config{ServerName: smtpCfg.Host} //nolint:gosec
+		conn, err := tls.Dial("tcp", addr, tlsCfg)
+		if err != nil {
+			return fmt.Errorf("TLS dial: %w", err)
+		}
+		client, err := smtp.NewClient(conn, smtpCfg.Host)
+		if err != nil {
+			return fmt.Errorf("SMTP client: %w", err)
+		}
+		defer client.Close()
+		if auth != nil {
+			if err := client.Auth(auth); err != nil {
+				return fmt.Errorf("SMTP auth: %w", err)
+			}
+		}
+		if err := client.Mail(smtpCfg.From); err != nil {
+			return fmt.Errorf("SMTP MAIL FROM: %w", err)
+		}
+		if err := client.Rcpt(toAddr); err != nil {
+			return fmt.Errorf("SMTP RCPT TO: %w", err)
+		}
+		w, err := client.Data()
+		if err != nil {
+			return fmt.Errorf("SMTP DATA: %w", err)
+		}
+		if _, err = w.Write(body); err != nil {
+			return fmt.Errorf("SMTP write: %w", err)
+		}
+		return w.Close()
+	}
+
+	return smtp.SendMail(addr, auth, smtpCfg.From, []string{toAddr}, body)
 }
 
 func isUniqueViolation(err error) bool {

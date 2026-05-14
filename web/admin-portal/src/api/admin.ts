@@ -6,6 +6,7 @@ export interface AdminUser {
   role: string;
   is_active: boolean;
   email_verified: boolean;
+  mfa_enabled: boolean;
   failed_login_attempts: number;
   locked_until: string | null;
   last_login_at: string | null;
@@ -227,6 +228,35 @@ export async function updateStorageConfig(body: {
   });
 }
 
+export interface UserQuota {
+  has_override: boolean;
+  quota_bytes?: number;
+  updated_at?: string;
+  updated_by?: string;
+}
+
+export async function getUserQuota(userId: string): Promise<UserQuota> {
+  return request<UserQuota>(`/admin/users/${userId}/quota`);
+}
+
+export async function setUserQuota(userId: string, quotaBytes: number | null): Promise<{ ok: boolean; has_override: boolean; quota_bytes?: number }> {
+  return request<{ ok: boolean; has_override: boolean; quota_bytes?: number }>(`/admin/users/${userId}/quota`, {
+    method: 'PUT',
+    body: JSON.stringify({ quota_bytes: quotaBytes }),
+  });
+}
+
+export interface QuotaOverride {
+  user_id: string;
+  quota_bytes: number;
+  updated_at: string;
+  updated_by: string;
+}
+
+export async function listUserQuotas(): Promise<{ overrides: QuotaOverride[] }> {
+  return request<{ overrides: QuotaOverride[] }>('/admin/quotas');
+}
+
 export interface AdminFileRow {
   id: string;
   owner_id: string;
@@ -388,6 +418,7 @@ export async function triggerAuditPurge(): Promise<AuditPurgeResult> {
 export interface AuthLockoutConfig {
   max_failed_attempts: number;
   lockout_duration_minutes: number;
+  require_mfa: boolean;
   updated_at: string;
 }
 
@@ -398,11 +429,16 @@ export async function getAuthConfig(): Promise<AuthLockoutConfig> {
 export async function updateAuthConfig(body: {
   max_failed_attempts?: number;
   lockout_duration_minutes?: number;
+  require_mfa?: boolean;
 }): Promise<AuthLockoutConfig> {
   return request<AuthLockoutConfig>('/admin/auth/config', {
     method: 'PUT',
     body: JSON.stringify(body),
   });
+}
+
+export async function resetUserMFA(userId: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/admin/users/${userId}/mfa`, { method: 'DELETE' });
 }
 
 // ── Branding ──────────────────────────────────────────────────────────────────
@@ -424,6 +460,44 @@ export interface BrandingConfig {
   dm_page_bg_color: string | null;
   dm_surface_color: string | null;
   dm_text_color: string | null;
+  // Email white-label
+  email_sender_name: string;
+  email_support_email: string;
+  email_footer_text: string;
+  email_subject_prefix: string;
+  email_header_link: string;
+  // Email colors & reply-to (migration 008)
+  email_reply_to: string;
+  email_button_color: string;
+  email_button_text_color: string;
+  email_body_bg_color: string;
+  email_card_bg_color: string;
+  email_card_border_color: string;
+  email_heading_color: string;
+  email_text_color: string;
+  // Per-type subjects
+  subject_transfer_received: string;
+  subject_password_reset: string;
+  subject_email_verification: string;
+  subject_download_notification: string;
+  subject_expiry_reminder: string;
+  subject_transfer_revoked: string;
+  subject_request_submission: string;
+  // Per-type CTA button text
+  cta_transfer_received: string;
+  cta_download_notification: string;
+  cta_password_reset: string;
+  cta_email_verification: string;
+  cta_expiry_reminder: string;
+  cta_request_submission: string;
+  // Per-type fully custom HTML templates (empty = use standard branded template)
+  custom_transfer_received: string;
+  custom_password_reset: string;
+  custom_email_verification: string;
+  custom_download_notification: string;
+  custom_expiry_reminder: string;
+  custom_transfer_revoked: string;
+  custom_request_submission: string;
 }
 
 export async function getBranding(): Promise<BrandingConfig> {
@@ -449,6 +523,44 @@ export async function updateBranding(body: {
   dm_surface_color?: string;
   dm_text_color?: string;
   clear_dark_mode?: boolean;
+  // Email white-label
+  email_sender_name?: string;
+  email_support_email?: string;
+  email_footer_text?: string;
+  email_subject_prefix?: string;
+  email_header_link?: string;
+  // Email colors & reply-to (migration 008)
+  email_reply_to?: string;
+  email_button_color?: string;
+  email_button_text_color?: string;
+  email_body_bg_color?: string;
+  email_card_bg_color?: string;
+  email_card_border_color?: string;
+  email_heading_color?: string;
+  email_text_color?: string;
+  // Per-type subjects
+  subject_transfer_received?: string;
+  subject_password_reset?: string;
+  subject_email_verification?: string;
+  subject_download_notification?: string;
+  subject_expiry_reminder?: string;
+  subject_transfer_revoked?: string;
+  subject_request_submission?: string;
+  // Per-type CTA button text
+  cta_transfer_received?: string;
+  cta_download_notification?: string;
+  cta_password_reset?: string;
+  cta_email_verification?: string;
+  cta_expiry_reminder?: string;
+  cta_request_submission?: string;
+  // Per-type fully custom HTML templates
+  custom_transfer_received?: string;
+  custom_password_reset?: string;
+  custom_email_verification?: string;
+  custom_download_notification?: string;
+  custom_expiry_reminder?: string;
+  custom_transfer_revoked?: string;
+  custom_request_submission?: string;
 }): Promise<BrandingConfig> {
   return request<BrandingConfig>('/admin/branding', {
     method: 'PUT',

@@ -15,6 +15,11 @@ import StorageInsightsPage from './pages/StorageInsightsPage';
 import LogRetentionPage from './pages/LogRetentionPage';
 import SecuritySettingsPage from './pages/SecuritySettingsPage';
 import BrandingPage from './pages/BrandingPage';
+import GeneralSettingsPage from './pages/GeneralSettingsPage';
+import SmtpSettingsPage from './pages/SmtpSettingsPage';
+import EmailContentPage from './pages/EmailContentPage';
+import AccountPage from './pages/AccountPage';
+import MFALoginPage from './pages/MFALoginPage';
 
 export default function App() {
   return (
@@ -22,6 +27,7 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/login/mfa" element={<MFALoginPage />} />
 
           <Route element={<ProtectedRoute />}>
             <Route element={<Layout />}>
@@ -33,9 +39,13 @@ export default function App() {
               <Route path="/audit/settings" element={<LogRetentionPage />} />
               <Route path="/security" element={<SecuritySettingsPage />} />
               <Route path="/branding" element={<BrandingPage />} />
+              <Route path="/general" element={<GeneralSettingsPage />} />
               <Route path="/storage" element={<StorageSettingsPage />} />
               <Route path="/storage/files" element={<StorageFilesPage />} />
               <Route path="/storage/insights" element={<StorageInsightsPage />} />
+              <Route path="/email" element={<SmtpSettingsPage />} />
+              <Route path="/email/content" element={<EmailContentPage />} />
+              <Route path="/account" element={<AccountPage />} />
             </Route>
           </Route>
 

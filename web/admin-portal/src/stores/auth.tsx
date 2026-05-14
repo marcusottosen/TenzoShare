@@ -7,7 +7,9 @@ import React, {
   type ReactNode,
 } from 'react';
 import { getMe, type MeResponse } from '../api/auth';
+import { getPlatformConfig, type PlatformConfig } from '../api/platform';
 import { clearTokens } from '../api/client';
+import { setActivePrefs, DEFAULT_PREFS, type DateFormat, type TimeFormat } from '../utils/dateFormat';
 
 interface AuthState {
   user: MeResponse | null;
@@ -26,13 +28,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const token = localStorage.getItem('admin_access_token');
     if (!token) { setIsLoading(false); return; }
-    getMe()
-      .then((me) => {
+    Promise.all([getMe(), getPlatformConfig().catch((): PlatformConfig => ({
+        date_format: DEFAULT_PREFS.dateFormat,
+        time_format: DEFAULT_PREFS.timeFormat,
+        timezone: DEFAULT_PREFS.timezone,
+        portal_url: '',
+        download_url: '',
+      }))])
+      .then(([me, sys]) => {
         if (me.role !== 'admin') {
           clearTokens();
           setUser(null);
         } else {
           setUser(me);
+          setActivePrefs({
+            dateFormat: ((me.date_format ?? sys.date_format) as DateFormat) || DEFAULT_PREFS.dateFormat,
+            timeFormat: ((me.time_format ?? sys.time_format) as TimeFormat) || DEFAULT_PREFS.timeFormat,
+            timezone: me.timezone ?? sys.timezone ?? DEFAULT_PREFS.timezone,
+          });
         }
       })
       .catch(() => clearTokens())

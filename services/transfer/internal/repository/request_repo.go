@@ -24,14 +24,14 @@ func (r *RequestRepository) Create(ctx context.Context, req *domain.FileRequest)
 	var out domain.FileRequest
 	err := r.db.QueryRow(ctx, `
 		INSERT INTO transfer.file_requests
-			(owner_id, slug, name, description, allowed_types, max_size_mb, max_files, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		RETURNING id, owner_id, slug, name, description, allowed_types, max_size_mb, max_files, expires_at, is_active, created_at
+			(owner_id, slug, name, description, allowed_types, max_size_mb, max_files, notify_emails, notify_on_upload, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		RETURNING id, owner_id, slug, name, description, allowed_types, max_size_mb, max_files, notify_emails, notify_on_upload, expires_at, is_active, created_at
 	`, req.OwnerID, req.Slug, req.Name, req.Description,
-		req.AllowedTypes, req.MaxSizeMB, req.MaxFiles, req.ExpiresAt,
+		req.AllowedTypes, req.MaxSizeMB, req.MaxFiles, req.NotifyEmails, req.NotifyOnUpload, req.ExpiresAt,
 	).Scan(
 		&out.ID, &out.OwnerID, &out.Slug, &out.Name, &out.Description,
-		&out.AllowedTypes, &out.MaxSizeMB, &out.MaxFiles, &out.ExpiresAt, &out.IsActive, &out.CreatedAt,
+		&out.AllowedTypes, &out.MaxSizeMB, &out.MaxFiles, &out.NotifyEmails, &out.NotifyOnUpload, &out.ExpiresAt, &out.IsActive, &out.CreatedAt,
 	)
 	if err != nil {
 		return nil, apperrors.Internal("create file request", err)
@@ -43,11 +43,15 @@ func (r *RequestRepository) Create(ctx context.Context, req *domain.FileRequest)
 func (r *RequestRepository) GetBySlug(ctx context.Context, slug string) (*domain.FileRequest, error) {
 	var out domain.FileRequest
 	err := r.db.QueryRow(ctx, `
-		SELECT id, owner_id, slug, name, description, allowed_types, max_size_mb, max_files, expires_at, is_active, created_at
-		FROM transfer.file_requests WHERE slug = $1
+		SELECT fr.id, fr.owner_id, COALESCE(u.email, '') AS owner_email,
+		       fr.slug, fr.name, fr.description, fr.allowed_types,
+		       fr.max_size_mb, fr.max_files, fr.notify_emails, fr.notify_on_upload, fr.expires_at, fr.is_active, fr.created_at
+		FROM transfer.file_requests fr
+		LEFT JOIN auth.users u ON u.id = fr.owner_id
+		WHERE fr.slug = $1
 	`, slug).Scan(
-		&out.ID, &out.OwnerID, &out.Slug, &out.Name, &out.Description,
-		&out.AllowedTypes, &out.MaxSizeMB, &out.MaxFiles, &out.ExpiresAt, &out.IsActive, &out.CreatedAt,
+		&out.ID, &out.OwnerID, &out.OwnerEmail, &out.Slug, &out.Name, &out.Description,
+		&out.AllowedTypes, &out.MaxSizeMB, &out.MaxFiles, &out.NotifyEmails, &out.NotifyOnUpload, &out.ExpiresAt, &out.IsActive, &out.CreatedAt,
 	)
 	if err != nil {
 		return nil, apperrors.NotFound("file request not found")
@@ -59,11 +63,15 @@ func (r *RequestRepository) GetBySlug(ctx context.Context, slug string) (*domain
 func (r *RequestRepository) GetByID(ctx context.Context, id string) (*domain.FileRequest, error) {
 	var out domain.FileRequest
 	err := r.db.QueryRow(ctx, `
-		SELECT id, owner_id, slug, name, description, allowed_types, max_size_mb, max_files, expires_at, is_active, created_at
-		FROM transfer.file_requests WHERE id = $1
+		SELECT fr.id, fr.owner_id, COALESCE(u.email, '') AS owner_email,
+		       fr.slug, fr.name, fr.description, fr.allowed_types,
+		       fr.max_size_mb, fr.max_files, fr.notify_emails, fr.notify_on_upload, fr.expires_at, fr.is_active, fr.created_at
+		FROM transfer.file_requests fr
+		LEFT JOIN auth.users u ON u.id = fr.owner_id
+		WHERE fr.id = $1
 	`, id).Scan(
-		&out.ID, &out.OwnerID, &out.Slug, &out.Name, &out.Description,
-		&out.AllowedTypes, &out.MaxSizeMB, &out.MaxFiles, &out.ExpiresAt, &out.IsActive, &out.CreatedAt,
+		&out.ID, &out.OwnerID, &out.OwnerEmail, &out.Slug, &out.Name, &out.Description,
+		&out.AllowedTypes, &out.MaxSizeMB, &out.MaxFiles, &out.NotifyEmails, &out.NotifyOnUpload, &out.ExpiresAt, &out.IsActive, &out.CreatedAt,
 	)
 	if err != nil {
 		return nil, apperrors.NotFound("file request not found")
@@ -111,6 +119,21 @@ func (r *RequestRepository) Deactivate(ctx context.Context, id, ownerID string) 
 	`, id, ownerID)
 	if err != nil {
 		return apperrors.Internal("deactivate file request", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperrors.NotFound("file request not found")
+	}
+	return nil
+}
+
+// UpdateNotifyEmails replaces the comma-separated notify_emails for a file request.
+func (r *RequestRepository) UpdateNotifyEmails(ctx context.Context, id, ownerID, emails string) error {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE transfer.file_requests SET notify_emails = $3
+		WHERE id = $1 AND owner_id = $2
+	`, id, ownerID, emails)
+	if err != nil {
+		return apperrors.Internal("update notify emails", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return apperrors.NotFound("file request not found")

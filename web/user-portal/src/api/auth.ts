@@ -14,6 +14,9 @@ export interface LoginResult {
   refresh_token?: string;
   expires_in?: number;
   token_type?: string;
+  // Present when the admin requires MFA but this user hasn't set it up yet.
+  // The access_token in this case is a setup-only token (no refresh_token).
+  mfa_setup_required?: boolean;
 }
 
 export interface MeResponse {
@@ -25,6 +28,10 @@ export interface MeResponse {
   email_verified?: boolean;
   mfa_enabled?: boolean;
   created_at?: string;
+  // per-user format prefs (null = use system default)
+  date_format?: string | null;
+  time_format?: string | null;
+  timezone?: string | null;
 }
 
 export interface APIKey {
@@ -78,8 +85,23 @@ export async function setupMFA() {
   });
 }
 
+export interface VerifyMFAResult {
+  mfa_enabled: boolean;
+  access_token?: string;
+  refresh_token?: string;
+  expires_in?: number;
+  token_type?: string;
+}
+
 export async function verifyMFA(otpCode: string) {
-  return request<{ mfa_enabled: boolean }>('/auth/mfa/verify', {
+  return request<VerifyMFAResult>('/auth/mfa/verify', {
+    method: 'POST',
+    body: JSON.stringify({ otp_code: otpCode }),
+  });
+}
+
+export async function disableMFA(otpCode: string) {
+  return request<{ mfa_enabled: boolean }>('/auth/mfa/disable', {
     method: 'POST',
     body: JSON.stringify({ otp_code: otpCode }),
   });
@@ -96,6 +118,13 @@ export async function confirmPasswordReset(token: string, newPassword: string) {
   return request<{ message: string }>('/auth/password-reset/confirm', {
     method: 'POST',
     body: JSON.stringify({ token, new_password: newPassword }),
+  });
+}
+
+export async function resendVerificationEmail(email: string) {
+  return request<{ message: string }>('/auth/resend-verification', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
   });
 }
 
@@ -116,4 +145,40 @@ export async function deleteAPIKey(id: string): Promise<void> {
 
 export function storeTokens(res: TokenResponse) {
   setTokens(res.access_token, res.refresh_token);
+}
+
+export interface DatePrefsPayload {
+  date_format: string | null;
+  time_format: string | null;
+  timezone: string | null;
+}
+
+export async function updatePreferences(prefs: DatePrefsPayload): Promise<MeResponse> {
+  return request<MeResponse>('/auth/me/preferences', {
+    method: 'PATCH',
+    body: JSON.stringify(prefs),
+  });
+}
+
+// ── Notification preferences (Phase F) ────────────────────────────────────────
+
+export interface NotificationPrefs {
+  notifications_opt_out: boolean;
+  transfer_received: boolean;
+  download_notification: boolean;
+  expiry_reminders: boolean;
+  auto_save_contacts: boolean;
+}
+
+export async function getNotificationPrefs(): Promise<NotificationPrefs> {
+  return request<NotificationPrefs>('/auth/me/notification-prefs');
+}
+
+export async function updateNotificationPrefs(
+  prefs: Partial<NotificationPrefs>,
+): Promise<NotificationPrefs> {
+  return request<NotificationPrefs>('/auth/me/notification-prefs', {
+    method: 'PATCH',
+    body: JSON.stringify(prefs),
+  });
 }

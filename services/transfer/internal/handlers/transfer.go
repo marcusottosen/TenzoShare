@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-playground/validator/v10"
@@ -28,15 +29,57 @@ import (
 // that the requested file no longer exists (soft-deleted by admin or retention worker).
 var errFileDeleted = errors.New("file no longer available")
 
+// policyCache holds the link_protection_policy fetched from the admin service,
+// refreshed at most every 5 minutes.
+type policyCache struct {
+	mu        sync.Mutex
+	value     string
+	fetchedAt time.Time
+	adminURL  string
+}
+
+func (pc *policyCache) get(ctx context.Context) string {
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	if time.Since(pc.fetchedAt) < 5*time.Minute && pc.value != "" {
+		return pc.value
+	}
+	// Fetch from admin public endpoint.
+	reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodGet, pc.adminURL+"/api/v1/platform/config", nil)
+	if err != nil {
+		return "none"
+	}
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return "none" // fail-open: don't block transfers if admin is down
+	}
+	defer resp.Body.Close()
+	var cfg struct {
+		LinkProtectionPolicy string `json:"link_protection_policy"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
+		return "none"
+	}
+	if cfg.LinkProtectionPolicy == "" {
+		cfg.LinkProtectionPolicy = "none"
+	}
+	pc.value = cfg.LinkProtectionPolicy
+	pc.fetchedAt = time.Now()
+	return pc.value
+}
+
 type Handler struct {
 	svc           *service.TransferService
 	requestSvc    *service.RequestService
 	validate      *validator.Validate
 	jwtPrivateKey *rsa.PrivateKey
 	storageURL    string
+	policy        *policyCache
 }
 
-func New(svc *service.TransferService, requestSvc *service.RequestService, jwtPrivateKeyPEM, storageURL string) *Handler {
+func New(svc *service.TransferService, requestSvc *service.RequestService, jwtPrivateKeyPEM, storageURL, adminURL string) *Handler {
 	privKey, err := jwtkeys.ParsePrivateKey(jwtPrivateKeyPEM)
 	if err != nil {
 		// panic at startup — private key is required for service-to-service tokens
@@ -48,18 +91,23 @@ func New(svc *service.TransferService, requestSvc *service.RequestService, jwtPr
 		validate:      validator.New(),
 		jwtPrivateKey: privKey,
 		storageURL:    storageURL,
+		policy:        &policyCache{adminURL: adminURL},
 	}
 }
 
 type createRequest struct {
-	Name           string   `json:"name"            validate:"required,min=1,max=200"`
-	Description    string   `json:"description"     validate:"max=1000"`
-	FileIDs        []string `json:"file_ids"        validate:"required,min=1,dive,uuid4"`
-	RecipientEmail string   `json:"recipient_email" validate:"omitempty,email"`
-	Password       string   `json:"password"`
-	MaxDownloads   int      `json:"max_downloads"   validate:"min=0"`
-	ViewOnly       bool     `json:"view_only"`
-	ExpiresInHours int      `json:"expires_in_hours" validate:"required,min=1,max=2160"`
+	Name        string   `json:"name"             validate:"required,min=1,max=200"`
+	Description string   `json:"description"      validate:"max=1000"`
+	FileIDs     []string `json:"file_ids"         validate:"required,min=1,dive,uuid4"`
+	// RecipientEmails accepts multiple addresses; stored comma-separated.
+	// RecipientEmail is kept for backward-compat single-email clients.
+	RecipientEmails  []string `json:"recipient_emails" validate:"omitempty,max=20,dive,email"`
+	RecipientEmail   string   `json:"recipient_email"  validate:"omitempty,email"`
+	Password         string   `json:"password"`
+	MaxDownloads     int      `json:"max_downloads"    validate:"min=0"`
+	ViewOnly         bool     `json:"view_only"`
+	NotifyOnDownload bool     `json:"notify_on_download"`
+	ExpiresInHours   int      `json:"expires_in_hours" validate:"required,min=1,max=2160"`
 }
 
 // Create POST /api/v1/transfers
@@ -82,18 +130,42 @@ func (h *Handler) Create(c fiber.Ctx) error {
 		return apperrors.Validation(err.Error())
 	}
 
+	// Merge both fields: prefer the array, fall back to the single-address field.
+	allEmails := req.RecipientEmails
+	if len(allEmails) == 0 && req.RecipientEmail != "" {
+		allEmails = []string{req.RecipientEmail}
+	}
+	recipientEmail := strings.Join(allEmails, ",")
+
+	// Enforce admin link-protection policy.
+	switch h.policy.get(c.Context()) {
+	case "password":
+		if req.Password == "" {
+			return apperrors.Validation("this platform requires all transfers to be protected by a password")
+		}
+	case "email":
+		if len(allEmails) == 0 {
+			return apperrors.Validation("this platform requires all transfers to have at least one recipient email")
+		}
+	case "either":
+		if req.Password == "" && len(allEmails) == 0 {
+			return apperrors.Validation("this platform requires all transfers to have a password or at least one recipient email")
+		}
+	}
+
 	result, err := h.svc.Create(c.Context(), service.CreateParams{
-		OwnerID:        ownerID,
-		SenderEmail:    senderEmail,
-		Name:           req.Name,
-		Description:    req.Description,
-		FileIDs:        req.FileIDs,
-		RecipientEmail: req.RecipientEmail,
-		Password:       req.Password,
-		MaxDownloads:   req.MaxDownloads,
-		ViewOnly:       req.ViewOnly,
-		ExpiresIn:      time.Duration(req.ExpiresInHours) * time.Hour,
-		ClientIP:       realClientIP(c),
+		OwnerID:          ownerID,
+		SenderEmail:      senderEmail,
+		Name:             req.Name,
+		Description:      req.Description,
+		FileIDs:          req.FileIDs,
+		RecipientEmail:   recipientEmail,
+		Password:         req.Password,
+		MaxDownloads:     req.MaxDownloads,
+		ViewOnly:         req.ViewOnly,
+		NotifyOnDownload: req.NotifyOnDownload,
+		ExpiresIn:        time.Duration(req.ExpiresInHours) * time.Hour,
+		ClientIP:         realClientIP(c),
 	})
 	if err != nil {
 		return err
@@ -166,18 +238,25 @@ func (h *Handler) Revoke(c fiber.Ctx) error {
 }
 
 // Access is the public (unauthenticated) download-info endpoint.
-// GET /api/v1/t/:slug  — optionally with ?password=
+// GET /api/v1/t/:slug  — optionally with ?password= or ?rt= (recipient token)
 // Does NOT increment any counter — viewing the download page is not a download.
 // Returns per-file download counts (file_download_counts map) when max_downloads > 0
 // so the download UI can show per-file availability without requiring an attempt.
 func (h *Handler) Access(c fiber.Ctx) error {
 	slug := c.Params("slug")
-	password := c.Query("password")
 
-	result, err := h.svc.Validate(c.Context(), service.AccessParams{
-		Slug:     slug,
-		Password: password,
-	})
+	var result *service.AccessResult
+	var err error
+
+	if rt := c.Query("rt"); rt != "" {
+		// Recipient magic-link token path — bypasses password requirement.
+		result, err = h.svc.ValidateRecipientToken(c.Context(), slug, rt)
+	} else {
+		result, err = h.svc.Validate(c.Context(), service.AccessParams{
+			Slug:     slug,
+			Password: c.Query("password"),
+		})
+	}
 	if err != nil {
 		return err
 	}
@@ -206,26 +285,65 @@ func (h *Handler) Access(c fiber.Ctx) error {
 	})
 }
 
+// RequestAccess handles POST /api/v1/t/:slug/request-access.
+// A recipient whose magic-link has expired can submit their email to get a new link.
+// We never reveal whether the email is actually a recipient (prevents enumeration).
+func (h *Handler) RequestAccess(c fiber.Ctx) error {
+	slug := c.Params("slug")
+	var body struct {
+		Email string `json:"email"`
+	}
+	if err := c.Bind().JSON(&body); err != nil || body.Email == "" {
+		return apperrors.BadRequest("email is required")
+	}
+	// Normalise + basic validation.
+	body.Email = strings.ToLower(strings.TrimSpace(body.Email))
+	if !strings.Contains(body.Email, "@") {
+		return apperrors.BadRequest("invalid email address")
+	}
+
+	// Fire-and-forget: always return 200 regardless of outcome (no oracle).
+	go func() {
+		ctx := context.Background()
+		if err := h.svc.RegenerateRecipientToken(ctx, slug, body.Email); err != nil {
+			// Log only — do not surface error to caller.
+			_ = err
+		}
+	}()
+
+	return c.JSON(fiber.Map{"message": "If that email is a recipient of this transfer, a new access link has been sent."})
+}
+
 func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 	m := fiber.Map{
-		"id":               t.ID,
-		"owner_id":         t.OwnerID,
-		"sender_email":     t.SenderEmail,
-		"name":             t.Name,
-		"description":      t.Description,
-		"slug":             t.Slug,
-		"status":           t.Status(),
-		"max_downloads":    t.MaxDownloads,
-		"download_count":   t.DownloadCount,
-		"is_revoked":       t.IsRevoked,
-		"view_only":        t.ViewOnly,
-		"has_password":     t.PasswordHash != "",
-		"created_at":       t.CreatedAt,
-		"file_count":       t.FileCount,
-		"total_size_bytes": t.TotalSizeBytes,
+		"id":                 t.ID,
+		"owner_id":           t.OwnerID,
+		"sender_email":       t.SenderEmail,
+		"name":               t.Name,
+		"description":        t.Description,
+		"slug":               t.Slug,
+		"status":             t.Status(),
+		"max_downloads":      t.MaxDownloads,
+		"download_count":     t.DownloadCount,
+		"is_revoked":         t.IsRevoked,
+		"view_only":          t.ViewOnly,
+		"notify_on_download": t.NotifyOnDownload,
+		"has_password":       t.PasswordHash != "",
+		"created_at":         t.CreatedAt,
+		"file_count":         t.FileCount,
+		"total_size_bytes":   t.TotalSizeBytes,
 	}
 	if t.RecipientEmail != "" {
 		m["recipient_email"] = t.RecipientEmail
+		// Also expose as an array for multi-recipient-aware clients.
+		parts := strings.Split(t.RecipientEmail, ",")
+		emails := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if s := strings.TrimSpace(p); s != "" {
+				emails = append(emails, s)
+			}
+		}
+		m["recipient_emails"] = emails
 	}
 	if t.ExpiresAt != nil {
 		m["expires_at"] = t.ExpiresAt
@@ -238,10 +356,10 @@ func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 
 // DownloadURL returns a presigned download URL for a single file in a public transfer.
 //
-// GET /api/v1/t/:slug/files/:fileId/download[?password=...]
+// GET /api/v1/t/:slug/files/:fileId/download[?password=...][?rt=...]
 //
 // This endpoint:
-//  1. Validates the transfer (slug, optional password, expiry, revocation).
+//  1. Validates the transfer (slug, optional password or recipient token, expiry, revocation).
 //  2. Confirms the requested file belongs to this transfer.
 //  3. Atomically checks and increments the per-file download counter. If the
 //     file's individual limit is reached the request is rejected with 403.
@@ -253,7 +371,19 @@ func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 func (h *Handler) DownloadURL(c fiber.Ctx) error {
 	slug := c.Params("slug")
 	fileID := c.Params("fileId")
-	password := c.Query("password")
+
+	// If a recipient token is provided, validate it first to bypass the password.
+	// We still call AttemptFileDownload for limit enforcement; pass empty password
+	// when the token was valid (transfer has already been verified above).
+	var password string
+	if rt := c.Query("rt"); rt != "" {
+		if _, err := h.svc.ValidateRecipientToken(c.Context(), slug, rt); err != nil {
+			return err
+		}
+		// Token valid — password not needed.
+	} else {
+		password = c.Query("password")
+	}
 
 	// AttemptFileDownload validates the transfer, confirms file ownership, and
 	// atomically enforces the per-file download limit.
@@ -297,6 +427,47 @@ func (h *Handler) DownloadURL(c fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"url": presignURL, "expires_in": 900, "view_only": viewOnly})
+}
+
+// UpdateRecipients PATCH /api/v1/transfers/:id/recipients
+// Replaces the recipient list for a transfer. Owner only.
+func (h *Handler) UpdateRecipients(c fiber.Ctx) error {
+	ownerID, _ := c.Locals("userID").(string)
+	if ownerID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	transferID := c.Params("id")
+
+	var body struct {
+		Emails []string `json:"emails" validate:"omitempty,max=20,dive,email"`
+	}
+	if err := c.Bind().JSON(&body); err != nil {
+		return apperrors.BadRequest("invalid JSON")
+	}
+	if err := h.validate.Struct(body); err != nil {
+		return apperrors.Validation(err.Error())
+	}
+
+	t, err := h.svc.UpdateRecipients(c.Context(), transferID, ownerID, body.Emails)
+	if err != nil {
+		return err
+	}
+	return c.JSON(transferResponse(t, nil))
+}
+
+// ResendNotification POST /api/v1/transfers/:id/resend
+// Re-sends the transfer_received email to all current recipients. Owner only.
+func (h *Handler) ResendNotification(c fiber.Ctx) error {
+	ownerID, _ := c.Locals("userID").(string)
+	if ownerID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	transferID := c.Params("id")
+
+	if err := h.svc.ResendNotification(c.Context(), transferID, ownerID); err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"message": "notification queued"})
 }
 
 // ListRecipients GET /api/v1/transfers/:id/recipients

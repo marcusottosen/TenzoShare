@@ -1,6 +1,6 @@
 module github.com/tenzoshare/tenzoshare/shared
 
-go 1.26
+go 1.26.3
 
 require (
 	github.com/gofiber/fiber/v3 v3.1.0

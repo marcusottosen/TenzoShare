@@ -66,7 +66,7 @@ func (h *Handler) Login(c fiber.Ctx) error {
 		return apperrors.Validation(err.Error())
 	}
 
-	pair, user, err := h.svc.Login(c.Context(), req.Email, req.Password, c.IP())
+	pair, user, mfaSetupRequired, err := h.svc.Login(c.Context(), req.Email, req.Password, c.IP())
 	if err != nil {
 		// surface mfa_required as a specific response, not a generic 401
 		if apperrors.IsUnauthorized(err) && err.Error() == "mfa_required" {
@@ -78,7 +78,14 @@ func (h *Handler) Login(c fiber.Ctx) error {
 		return err
 	}
 
-	return c.JSON(tokenResponse(pair))
+	resp := tokenResponse(pair)
+	if mfaSetupRequired {
+		// The token issued here is setup-only (MFASetupRequired=true claim, no refresh).
+		// Remove the empty refresh_token from the response so clients don't try to store it.
+		delete(resp, "refresh_token")
+		resp["mfa_setup_required"] = true
+	}
+	return c.JSON(resp)
 }
 
 // ── Login with MFA ────────────────────────────────────────────────────────────
@@ -160,6 +167,9 @@ func (h *Handler) MFASetup(c fiber.Ctx) error {
 		return err
 	}
 
+	// Prevent the TOTP secret from being cached by browsers or intermediaries.
+	c.Set("Cache-Control", "no-store")
+	c.Set("Pragma", "no-cache")
 	return c.JSON(fiber.Map{
 		"secret":           result.Secret,
 		"provisioning_uri": result.ProvisioningURI,
@@ -186,11 +196,43 @@ func (h *Handler) MFAVerify(c fiber.Ctx) error {
 		return apperrors.Validation(err.Error())
 	}
 
-	if err := h.svc.VerifyMFA(c.Context(), userID, req.OTPCode); err != nil {
+	pair, err := h.svc.VerifyMFA(c.Context(), userID, req.OTPCode)
+	if err != nil {
 		return err
 	}
 
-	return c.JSON(fiber.Map{"mfa_enabled": true})
+	// Return full tokens so clients coming from the mfa_setup_required flow
+	// can immediately start a real session without re-authenticating.
+	resp := tokenResponse(pair)
+	resp["mfa_enabled"] = true
+	return c.JSON(resp)
+}
+
+// ── MFA disable ───────────────────────────────────────────────────────────────
+
+type mfaDisableRequest struct {
+	OTPCode string `json:"otp_code" validate:"required,len=6"`
+}
+
+func (h *Handler) MFADisable(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+
+	var req mfaDisableRequest
+	if err := c.Bind().JSON(&req); err != nil {
+		return apperrors.BadRequest("invalid request body")
+	}
+	if err := validate.Struct(req); err != nil {
+		return apperrors.Validation(err.Error())
+	}
+
+	if err := h.svc.DisableMFA(c.Context(), userID, req.OTPCode); err != nil {
+		return err
+	}
+
+	return c.JSON(fiber.Map{"mfa_enabled": false})
 }
 
 // ── Password reset ────────────────────────────────────────────────────────────
@@ -212,6 +254,40 @@ func (h *Handler) PasswordResetRequest(c fiber.Ctx) error {
 	_, _, _ = h.svc.RequestPasswordReset(c.Context(), req.Email, c.IP())
 	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
 		"message": "if that email is registered, a reset link has been sent",
+	})
+}
+
+// ── Email verification ────────────────────────────────────────────────────────
+
+// VerifyEmail GET /auth/verify-email?token=... (public)
+func (h *Handler) VerifyEmail(c fiber.Ctx) error {
+	token := c.Query("token")
+	if token == "" {
+		return apperrors.BadRequest("token is required")
+	}
+	if err := h.svc.VerifyEmail(c.Context(), token); err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"message": "email verified successfully"})
+}
+
+type resendVerificationBody struct {
+	Email string `json:"email" validate:"required,email"`
+}
+
+// ResendVerification POST /auth/resend-verification (public — always 202)
+func (h *Handler) ResendVerification(c fiber.Ctx) error {
+	var req resendVerificationBody
+	if err := c.Bind().JSON(&req); err != nil {
+		return apperrors.BadRequest("invalid request body")
+	}
+	if err := validate.Struct(req); err != nil {
+		return apperrors.Validation(err.Error())
+	}
+	// Always 202 regardless of whether the email exists or is already verified.
+	_ = h.svc.ResendVerificationEmail(c.Context(), req.Email)
+	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
+		"message": "if that email is registered and unverified, a verification link has been sent",
 	})
 }
 
@@ -293,11 +369,38 @@ func profileResponse(u *domain.User) fiber.Map {
 		"mfa_enabled":    u.MFAEnabled,
 		"created_at":     u.CreatedAt,
 		"updated_at":     u.UpdatedAt,
+		"date_format":    u.DateFormat,
+		"time_format":    u.TimeFormat,
+		"timezone":       u.Timezone,
 	}
 	if u.LockedUntil != nil && u.LockedUntil.After(time.Now()) {
 		m["locked_until"] = u.LockedUntil
 	}
 	return m
+}
+
+// UpdatePreferences PATCH /me/preferences — stores per-user date/time prefs.
+func (h *Handler) UpdatePreferences(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	var req struct {
+		DateFormat *string `json:"date_format"`
+		TimeFormat *string `json:"time_format"`
+		Timezone   *string `json:"timezone"`
+	}
+	if err := c.Bind().JSON(&req); err != nil {
+		return apperrors.BadRequest("invalid JSON")
+	}
+	if err := h.svc.UpdatePreferences(c.Context(), userID, req.DateFormat, req.TimeFormat, req.Timezone); err != nil {
+		return err
+	}
+	user, err := h.svc.GetMe(c.Context(), userID)
+	if err != nil {
+		return err
+	}
+	return c.JSON(profileResponse(user))
 }
 
 // ── API key management ────────────────────────────────────────────────────────
@@ -397,4 +500,244 @@ func tokenResponse(p *service.TokenPair) fiber.Map {
 		"expires_in":    p.ExpiresIn,
 		"token_type":    "Bearer",
 	}
+}
+
+// ── Notification preferences & unsubscribe ────────────────────────────────────
+
+// Unsubscribe GET /auth/unsubscribe?token=:token (public — no JWT required)
+// Validates the HMAC-signed token, sets notifications_opt_out=true for the user.
+func (h *Handler) Unsubscribe(c fiber.Ctx) error {
+	token := c.Query("token")
+	if token == "" {
+		return apperrors.BadRequest("missing token")
+	}
+	email, ok := h.svc.ValidateUnsubscribeToken(token)
+	if !ok {
+		return apperrors.BadRequest("invalid or tampered unsubscribe token")
+	}
+	if err := h.svc.Unsubscribe(c.Context(), email); err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"message": "You have been unsubscribed from email notifications."})
+}
+
+// GetNotificationPrefs GET /auth/me/notification-prefs (authenticated)
+func (h *Handler) GetNotificationPrefs(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	user, err := h.svc.GetMe(c.Context(), userID)
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{
+		"notifications_opt_out": user.NotificationsOptOut,
+		"transfer_received":     user.NotificationPrefs.TransferReceived,
+		"download_notification": user.NotificationPrefs.DownloadNotification,
+		"expiry_reminders":      user.NotificationPrefs.ExpiryReminders,
+		"auto_save_contacts":    user.AutoSaveContacts,
+	})
+}
+
+// UpdateNotificationPrefs PATCH /auth/me/notification-prefs (authenticated)
+func (h *Handler) UpdateNotificationPrefs(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	var req struct {
+		TransferReceived     *bool `json:"transfer_received"`
+		DownloadNotification *bool `json:"download_notification"`
+		ExpiryReminders      *bool `json:"expiry_reminders"`
+		NotificationsOptOut  *bool `json:"notifications_opt_out"`
+	}
+	if err := c.Bind().JSON(&req); err != nil {
+		return apperrors.BadRequest("invalid JSON")
+	}
+	// Handle the global opt-out toggle first (requires email lookup).
+	if req.NotificationsOptOut != nil {
+		user, err := h.svc.GetMe(c.Context(), userID)
+		if err != nil {
+			return err
+		}
+		if *req.NotificationsOptOut {
+			if err := h.svc.Unsubscribe(c.Context(), user.Email); err != nil {
+				return err
+			}
+		} else {
+			if err := h.svc.Resubscribe(c.Context(), user.Email); err != nil {
+				return err
+			}
+		}
+	}
+	// Build prefs from current state + request overrides.
+	user, err := h.svc.GetMe(c.Context(), userID)
+	if err != nil {
+		return err
+	}
+	prefs := user.NotificationPrefs
+	if req.TransferReceived != nil {
+		prefs.TransferReceived = *req.TransferReceived
+	}
+	if req.DownloadNotification != nil {
+		prefs.DownloadNotification = *req.DownloadNotification
+	}
+	if req.ExpiryReminders != nil {
+		prefs.ExpiryReminders = *req.ExpiryReminders
+	}
+	if err := h.svc.UpdateNotificationPrefs(c.Context(), userID, prefs); err != nil {
+		return err
+	}
+	user2, err := h.svc.GetMe(c.Context(), userID)
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{
+		"notifications_opt_out": user2.NotificationsOptOut,
+		"transfer_received":     user2.NotificationPrefs.TransferReceived,
+		"download_notification": user2.NotificationPrefs.DownloadNotification,
+		"expiry_reminders":      user2.NotificationPrefs.ExpiryReminders,
+		"auto_save_contacts":    user2.AutoSaveContacts,
+	})
+}
+
+// InternalNotificationPrefs GET /api/v1/auth/internal/notification-prefs?email=:email
+// Internal-only endpoint (no JWT) for the notification service to check prefs before sending.
+func (h *Handler) InternalNotificationPrefs(c fiber.Ctx) error {
+	email := c.Query("email")
+	if email == "" {
+		return apperrors.BadRequest("missing email")
+	}
+	optOut, prefs, err := h.svc.GetNotificationStatus(c.Context(), email)
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{
+		"opt_out":               optOut,
+		"transfer_received":     prefs.TransferReceived,
+		"download_notification": prefs.DownloadNotification,
+		"expiry_reminders":      prefs.ExpiryReminders,
+	})
+}
+
+// ── Contacts ──────────────────────────────────────────────────────────────────
+
+// ListContacts GET /api/v1/users/contacts
+func (h *Handler) ListContacts(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	contacts, err := h.svc.ListContacts(c.Context(), userID)
+	if err != nil {
+		return err
+	}
+	out := make([]fiber.Map, 0, len(contacts))
+	for _, ct := range contacts {
+		out = append(out, fiber.Map{
+			"id":         ct.ID,
+			"email":      ct.Email,
+			"name":       ct.Name,
+			"created_at": ct.CreatedAt,
+		})
+	}
+	return c.JSON(fiber.Map{"contacts": out})
+}
+
+type upsertContactRequest struct {
+	Email string `json:"email" validate:"required,email,max=254"`
+	Name  string `json:"name"  validate:"max=200"`
+}
+
+// UpsertContact POST /api/v1/users/contacts
+func (h *Handler) UpsertContact(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	var req upsertContactRequest
+	if err := c.Bind().JSON(&req); err != nil {
+		return apperrors.BadRequest("invalid request body")
+	}
+	if err := validate.Struct(req); err != nil {
+		return apperrors.Validation(err.Error())
+	}
+	ct, err := h.svc.UpsertContact(c.Context(), userID, req.Email, req.Name)
+	if err != nil {
+		return err
+	}
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+		"id":         ct.ID,
+		"email":      ct.Email,
+		"name":       ct.Name,
+		"created_at": ct.CreatedAt,
+	})
+}
+
+type updateContactRequest struct {
+	Name string `json:"name" validate:"max=200"`
+}
+
+// UpdateContact PATCH /api/v1/users/contacts/:id
+func (h *Handler) UpdateContact(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	id := c.Params("id")
+	if id == "" {
+		return apperrors.BadRequest("missing contact id")
+	}
+	var req updateContactRequest
+	if err := c.Bind().JSON(&req); err != nil {
+		return apperrors.BadRequest("invalid request body")
+	}
+	if err := validate.Struct(req); err != nil {
+		return apperrors.Validation(err.Error())
+	}
+	ct, err := h.svc.UpdateContact(c.Context(), id, userID, req.Name)
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{
+		"id":         ct.ID,
+		"email":      ct.Email,
+		"name":       ct.Name,
+		"created_at": ct.CreatedAt,
+	})
+}
+
+// DeleteContact DELETE /api/v1/users/contacts/:id
+func (h *Handler) DeleteContact(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	id := c.Params("id")
+	if id == "" {
+		return apperrors.BadRequest("missing contact id")
+	}
+	if err := h.svc.DeleteContact(c.Context(), id, userID); err != nil {
+		return err
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+// UpdateAutoSaveContacts PATCH /api/v1/users/contacts/settings
+func (h *Handler) UpdateAutoSaveContacts(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	var req struct {
+		AutoSaveContacts bool `json:"auto_save_contacts"`
+	}
+	if err := c.Bind().JSON(&req); err != nil {
+		return apperrors.BadRequest("invalid request body")
+	}
+	if err := h.svc.UpdateAutoSaveContacts(c.Context(), userID, req.AutoSaveContacts); err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"auto_save_contacts": req.AutoSaveContacts})
 }

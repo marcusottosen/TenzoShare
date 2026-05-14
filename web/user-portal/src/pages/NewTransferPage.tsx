@@ -2,6 +2,9 @@ import React, { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router';
 import { listFiles, uploadFile, type FileRecord, type UploadProgress } from '../api/files';
 import { createTransfer } from '../api/transfers';
+import { listContacts, upsertContact, type Contact } from '../api/contacts';
+import { getNotificationPrefs } from '../api/auth';
+import { getPlatformConfig } from '../api/platform';
 import { pendingUploadStore } from '../stores/pendingUpload';
 import { pendingFileStore } from '../stores/pendingFileStore';
 
@@ -36,11 +39,23 @@ export default function NewTransferPage() {
   // Transfer metadata
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [recipientEmail, setRecipientEmail] = useState('');
+  const [recipientEmails, setRecipientEmails] = useState<string[]>([]);
+  const [emailInput, setEmailInput] = useState('');
   const [password, setPassword] = useState('');
   const [maxDownloads, setMaxDownloads] = useState(0);
   const [viewOnly, setViewOnly] = useState(false);
+  const [notifyOnDownload, setNotifyOnDownload] = useState(true);
   const [expiresInHours, setExpiresInHours] = useState(168);
+
+  // Contacts for autocomplete
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [autoSaveContacts, setAutoSaveContacts] = useState(true);
+  const [suggestions, setSuggestions] = useState<Contact[]>([]);
+  const [suggestionIdx, setSuggestionIdx] = useState(-1);
+  const suggestionsRef = useRef<HTMLDivElement>(null);
+
+  // Admin link protection policy
+  const [linkPolicy, setLinkPolicyState] = useState<'none' | 'password' | 'email' | 'either'>('none');
 
   // Files staged for this transfer
   const [staged, setStaged] = useState<StagedFile[]>([]);
@@ -68,6 +83,13 @@ export default function NewTransferPage() {
       .catch(() => {})
       .finally(() => setLoadingLibrary(false));
   }, [showLibrary]);
+
+  // Load contacts for autocomplete
+  useEffect(() => {
+    listContacts().then(setContacts).catch(() => {});
+    getNotificationPrefs().then((p) => setAutoSaveContacts(p.auto_save_contacts ?? true)).catch(() => {});
+    getPlatformConfig().then((c) => setLinkPolicyState(c.link_protection_policy ?? 'none')).catch(() => {});
+  }, []);
 
   // Consume any files forwarded from the dashboard upload zone
   useEffect(() => {
@@ -167,6 +189,66 @@ export default function NewTransferPage() {
     );
   }
 
+  function isValidEmail(email: string) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+  }
+
+  function computeSuggestions(val: string) {
+    if (!val.trim()) { setSuggestions([]); return; }
+    const q = val.trim().toLowerCase();
+    setSuggestions(
+      contacts.filter(
+        (c) =>
+          !recipientEmails.includes(c.email) &&
+          (c.email.toLowerCase().includes(q) || c.name.toLowerCase().includes(q)),
+      ).slice(0, 6),
+    );
+    setSuggestionIdx(-1);
+  }
+
+  function commitEmailInput() {
+    const raw = emailInput.trim().replace(/,+$/, '');
+    if (!raw) return;
+    const parts = raw.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
+    const toAdd = parts.filter(e => isValidEmail(e) && !recipientEmails.includes(e));
+    if (toAdd.length > 0) setRecipientEmails(prev => [...prev, ...toAdd]);
+    setEmailInput('');
+    setSuggestions([]);
+    setSuggestionIdx(-1);
+  }
+
+  function pickSuggestion(email: string) {
+    if (!recipientEmails.includes(email)) {
+      setRecipientEmails(prev => [...prev, email]);
+    }
+    setEmailInput('');
+    setSuggestions([]);
+    setSuggestionIdx(-1);
+  }
+
+  function removeEmail(email: string) {
+    setRecipientEmails(prev => prev.filter(e => e !== email));
+  }
+
+  function handleEmailKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (suggestions.length > 0) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setSuggestionIdx(i => Math.min(i + 1, suggestions.length - 1)); return; }
+      if (e.key === 'ArrowUp')   { e.preventDefault(); setSuggestionIdx(i => Math.max(i - 1, -1)); return; }
+      if ((e.key === 'Enter' || e.key === 'Tab') && suggestionIdx >= 0) {
+        e.preventDefault();
+        pickSuggestion(suggestions[suggestionIdx].email);
+        return;
+      }
+      if (e.key === 'Escape') { setSuggestions([]); setSuggestionIdx(-1); return; }
+    }
+    if (e.key === 'Enter' || e.key === ',' || e.key === 'Tab') {
+      e.preventDefault();
+      commitEmailInput();
+    } else if (e.key === 'Backspace' && emailInput === '' && recipientEmails.length > 0) {
+      setRecipientEmails(prev => prev.slice(0, -1));
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) { setError('Transfer name is required.'); return; }
@@ -178,12 +260,17 @@ export default function NewTransferPage() {
         name: name.trim(),
         description: description.trim() || undefined,
         file_ids: staged.map((f) => f.id),
-        recipient_email: recipientEmail || undefined,
+        recipient_emails: recipientEmails.length > 0 ? recipientEmails : undefined,
         password: password || undefined,
         max_downloads: maxDownloads || undefined,
         view_only: viewOnly || undefined,
+        notify_on_download: notifyOnDownload,
         expires_in_hours: expiresInHours,
       });
+      // Auto-save recipient emails to contacts
+      if (autoSaveContacts && recipientEmails.length > 0) {
+        await Promise.allSettled(recipientEmails.map((email) => upsertContact(email)));
+      }
       navigate(`/transfers/${t.id}`);
     } catch (err: any) {
       setError(err.message);
@@ -208,6 +295,14 @@ export default function NewTransferPage() {
         </div>
       </div>
       {error && <div className="alert alert-error">{error}</div>}
+      {linkPolicy !== 'none' && (
+        <div className="alert" style={{ background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.25)', color: 'var(--color-text-primary)', marginBottom: 12 }}>
+          <strong>Link protection required:</strong>{' '}
+          {linkPolicy === 'password' && 'All transfers on this platform must be protected with a password.'}
+          {linkPolicy === 'email' && 'All transfers on this platform must include at least one recipient email.'}
+          {linkPolicy === 'either' && 'All transfers on this platform must be protected with a password or include at least one recipient email.'}
+        </div>
+      )}
 
       <form onSubmit={handleSubmit}>
 
@@ -399,15 +494,77 @@ export default function NewTransferPage() {
             <div className="col">
               <div className="form-group">
                 <label>
-                  Recipient email{' '}
+                  Recipient email{recipientEmails.length !== 1 ? 's' : ''}{' '}
                   <span className="text-sm" style={{ color: 'var(--color-text-muted)' }}>(optional)</span>
                 </label>
-                <input
-                  type="email"
-                  value={recipientEmail}
-                  onChange={(e) => setRecipientEmail(e.target.value)}
-                  placeholder="recipient@example.com"
-                />
+                <div style={{ position: 'relative' }}>
+                <div
+                  className="email-chips-field"
+                  onClick={() => (document.getElementById('email-chip-input') as HTMLInputElement)?.focus()}
+                >
+                  {recipientEmails.map(email => (
+                    <span key={email} className="email-chip">
+                      {email}
+                      <button
+                        type="button"
+                        className="email-chip-remove"
+                        onClick={(e) => { e.stopPropagation(); removeEmail(email); }}
+                        aria-label={`Remove ${email}`}
+                      >×</button>
+                    </span>
+                  ))}
+                  <input
+                    id="email-chip-input"
+                    type="email"
+                    multiple
+                    className="email-chip-input"
+                    value={emailInput}
+                    onChange={e => { setEmailInput(e.target.value); computeSuggestions(e.target.value); }}
+                    onKeyDown={handleEmailKeyDown}
+                    onBlur={() => { setTimeout(() => { setSuggestions([]); setSuggestionIdx(-1); }, 150); commitEmailInput(); }}
+                    placeholder={recipientEmails.length === 0 ? 'recipient@example.com' : 'Add another…'}
+                    autoComplete="off"
+                  />
+                </div>
+                {suggestions.length > 0 && (
+                  <div
+                    ref={suggestionsRef}
+                    style={{
+                      position: 'absolute',
+                      top: '100%',
+                      left: 0,
+                      right: 0,
+                      background: 'var(--color-card-bg, #fff)',
+                      border: '1px solid var(--color-border)',
+                      borderRadius: 6,
+                      boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+                      zIndex: 100,
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {suggestions.map((ct, i) => (
+                      <div
+                        key={ct.id}
+                        onMouseDown={(e) => { e.preventDefault(); pickSuggestion(ct.email); }}
+                        style={{
+                          padding: '8px 12px',
+                          cursor: 'pointer',
+                          background: i === suggestionIdx ? 'var(--color-primary-light, rgba(99,102,241,0.08))' : 'transparent',
+                          fontSize: 13,
+                          display: 'flex',
+                          flexDirection: 'column',
+                        }}
+                      >
+                        <span>{ct.email}</span>
+                        {ct.name && <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{ct.name}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                </div>
+                <p className="text-sm" style={{ color: 'var(--color-text-muted)', marginTop: 4 }}>
+                  Press Enter, comma, or Tab to add each email. Leave empty for a public link.
+                </p>
               </div>
             </div>
             <div className="col">
@@ -482,6 +639,34 @@ export default function NewTransferPage() {
                 Recipients can open and read files in the browser but will not see a download button.
                 The server enforces this by serving files inline.{' '}
                 <em>Note: determined users may still save via browser tools — this is a workflow and compliance aid, not DRM.</em>
+              </p>
+            </div>
+          </div>
+
+          <div style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 12,
+            padding: '14px 16px',
+            background: 'var(--color-input-bg)',
+            border: `1px solid ${notifyOnDownload ? 'var(--color-primary)' : 'var(--color-border)'}`,
+            borderRadius: 8,
+            marginTop: 4,
+            transition: 'all 0.15s',
+          }}>
+            <input
+              id="notify-on-download"
+              type="checkbox"
+              checked={notifyOnDownload}
+              onChange={(e) => setNotifyOnDownload(e.target.checked)}
+              style={{ marginTop: 2, flexShrink: 0, cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+            />
+            <div style={{ flex: 1 }}>
+              <label htmlFor="notify-on-download" style={{ fontWeight: 600, fontSize: 13, cursor: 'pointer', display: 'block', marginBottom: 2 }}>
+                Notify me when a file is downloaded
+              </label>
+              <p style={{ fontSize: 12, color: 'var(--color-text-muted)', margin: 0, lineHeight: 1.5 }}>
+                You will receive an email each time a recipient downloads a file from this transfer.
               </p>
             </div>
           </div>

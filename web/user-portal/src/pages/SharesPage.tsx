@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
+import { fmt, fmtDate } from '../utils/dateFormat';
 import { listTransfers, revokeTransfer, type Transfer } from '../api/transfers';
 import { presignFile } from '../api/files';
 import {
@@ -37,8 +38,6 @@ function buildTransferUrl(slug: string) {
     ?? `${window.location.protocol}//${window.location.hostname}:3003`;
   return `${base}/t/${slug}`;
 }
-function fmt(d: string) { return new Date(d).toLocaleString(); }
-function fmtDate(d: string) { return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
 function fmtBytes(b: number) {
   if (b === 0) return '0 B';
   const k = 1024; const u = ['B','KB','MB','GB']; const i = Math.floor(Math.log(b)/Math.log(k));
@@ -253,7 +252,12 @@ function MySharesTab() {
                 </td>
                 <td><TransferBadge t={t} /></td>
                 <td style={{ fontSize: 13, color: 'var(--color-text-muted)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {t.recipient_email ?? <em>anyone</em>}
+                  {t.recipient_emails && t.recipient_emails.length > 0
+                    ? t.recipient_emails.length === 1
+                      ? t.recipient_emails[0]
+                      : <span title={t.recipient_emails.join(', ')}>{t.recipient_emails[0]} <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>+{t.recipient_emails.length - 1} more</span></span>
+                    : t.recipient_email ?? <em>anyone</em>
+                  }
                 </td>
                 <td style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>
                   <span title={t.view_only ? 'Views' : 'Downloads'} style={{ color: t.view_only ? 'var(--color-primary)' : undefined }}>
@@ -407,10 +411,13 @@ function FileRequestsTab() {
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                  <button className="btn btn-secondary btn-sm" onClick={() => navigate(`/requests/${r.id}`)}>
+                    View
+                  </button>
                   <button className="btn btn-secondary btn-sm" onClick={() => handleExpand(r.id)}>
                     <IconChevron open={isExpanded} /> {isExpanded ? 'Hide' : 'Submissions'}
                   </button>
-                  {r.is_active && (
+                  {r.is_active && !r.is_expired && new Date(r.expires_at) > new Date() && (
                     <button className="btn btn-danger btn-sm" onClick={() => handleDeactivate(r.id)} disabled={deactivating === r.id}>
                       {deactivating === r.id ? 'Closing…' : 'Close'}
                     </button>

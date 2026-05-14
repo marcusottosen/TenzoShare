@@ -185,6 +185,38 @@ func (r *stubTransferRepo) Revoke(_ context.Context, id, ownerID string) error {
 	return nil
 }
 
+func (r *stubTransferRepo) GetTransfersNeedingReminder(_ context.Context) ([]*domain.Transfer, error) {
+	return nil, r.err
+}
+
+func (r *stubTransferRepo) MarkReminderSent(_ context.Context, _ string) error {
+	return r.err
+}
+
+func (r *stubTransferRepo) UpdateRecipientEmail(_ context.Context, id, ownerID, recipientEmail string) error {
+	if r.err != nil {
+		return r.err
+	}
+	t, ok := r.byID[id]
+	if !ok || t.OwnerID != ownerID {
+		return apperrors.NotFound("transfer not found")
+	}
+	t.RecipientEmail = recipientEmail
+	return nil
+}
+
+func (r *stubTransferRepo) StoreRecipientToken(_ context.Context, tok *domain.RecipientToken) error {
+	return nil
+}
+
+func (r *stubTransferRepo) GetRecipientTokenByHash(_ context.Context, tokenHash string) (*domain.RecipientToken, error) {
+	return nil, apperrors.NotFound("recipient token not found")
+}
+
+func (r *stubTransferRepo) DeleteRecipientToken(_ context.Context, transferID, email string) error {
+	return nil
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func newTestTransferService(repo transferRepository) *TransferService {
@@ -548,5 +580,253 @@ func TestRevoke_WrongOwner_ReturnsNotFound(t *testing.T) {
 	err := svc.Revoke(context.Background(), tr.ID, "not-the-owner")
 	if err == nil {
 		t.Fatal("expected error revoking with wrong owner")
+	}
+}
+
+// ── List ──────────────────────────────────────────────────────────────────────
+
+func TestList_ReturnsOwnerTransfers(t *testing.T) {
+	svc := newTestTransferService(newStubTransferRepo())
+	ctx := context.Background()
+
+	// Create two transfers for owner-1 and one for owner-2.
+	createTransferHelper(t, svc, "", 0, nil)
+	createTransferHelper(t, svc, "", 0, nil)
+	// Create a second-owner transfer by directly manipulating the stub.
+	repo := newStubTransferRepo()
+	svc2 := newTestTransferService(repo)
+	tr3 := createTransferHelper(t, svc2, "", 0, nil)
+	_ = tr3
+
+	// List for owner-1 from the first svc.
+	transfers, err := svc.List(ctx, "owner-1", 100, 0)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(transfers) != 2 {
+		t.Errorf("expected 2 transfers for owner-1, got %d", len(transfers))
+	}
+}
+
+func TestList_EmptyForUnknownOwner(t *testing.T) {
+	svc := newTestTransferService(newStubTransferRepo())
+	createTransferHelper(t, svc, "", 0, nil)
+
+	transfers, err := svc.List(context.Background(), "nobody", 100, 0)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(transfers) != 0 {
+		t.Errorf("expected 0 transfers, got %d", len(transfers))
+	}
+}
+
+func TestList_RepoError_Propagated(t *testing.T) {
+	repo := newStubTransferRepo()
+	repo.err = errors.New("db failure")
+	svc := newTestTransferService(repo)
+
+	_, err := svc.List(context.Background(), "owner-1", 100, 0)
+	if err == nil {
+		t.Fatal("expected error propagated from repo")
+	}
+}
+
+// ── GetByID ───────────────────────────────────────────────────────────────────
+
+func TestGetByID_Success(t *testing.T) {
+	svc := newTestTransferService(newStubTransferRepo())
+	tr := createTransferHelper(t, svc, "", 0, nil)
+
+	got, err := svc.GetByID(context.Background(), tr.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.ID != tr.ID {
+		t.Errorf("expected ID %q, got %q", tr.ID, got.ID)
+	}
+}
+
+func TestGetByID_NotFound_ReturnsError(t *testing.T) {
+	svc := newTestTransferService(newStubTransferRepo())
+
+	_, err := svc.GetByID(context.Background(), "nonexistent-id")
+	if err == nil {
+		t.Fatal("expected error for nonexistent transfer")
+	}
+}
+
+// ── Get (owner-enforced) ──────────────────────────────────────────────────────
+
+func TestGet_CorrectOwnerWithFileIDs(t *testing.T) {
+	svc := newTestTransferService(newStubTransferRepo())
+	fileIDs := []string{"file-uuid-1111", "file-uuid-2222"}
+	tr := createTransferHelper(t, svc, "", 0, fileIDs)
+
+	got, gotFileIDs, err := svc.Get(context.Background(), tr.ID, "owner-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.ID != tr.ID {
+		t.Errorf("expected ID %q, got %q", tr.ID, got.ID)
+	}
+	if len(gotFileIDs) != len(fileIDs) {
+		t.Errorf("expected %d fileIDs, got %d", len(fileIDs), len(gotFileIDs))
+	}
+}
+
+func TestGet_WrongOwner_ReturnsForbidden2(t *testing.T) {
+	svc := newTestTransferService(newStubTransferRepo())
+	tr := createTransferHelper(t, svc, "", 0, nil)
+
+	_, _, err := svc.Get(context.Background(), tr.ID, "intruder")
+	if !apperrors.IsForbidden(err) {
+		t.Fatalf("expected forbidden error, got %v", err)
+	}
+}
+
+// ── Validate ──────────────────────────────────────────────────────────────────
+
+func TestValidate_NoPassword_Success(t *testing.T) {
+	svc := newTestTransferService(newStubTransferRepo())
+	tr := createTransferHelper(t, svc, "", 0, nil)
+
+	result, err := svc.Validate(context.Background(), AccessParams{Slug: tr.Slug})
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if result.Transfer.ID != tr.ID {
+		t.Errorf("expected transfer ID %q, got %q", tr.ID, result.Transfer.ID)
+	}
+}
+
+func TestValidate_CorrectPassword_Success(t *testing.T) {
+	svc := newTestTransferService(newStubTransferRepo())
+	tr := createTransferHelper(t, svc, "secret123", 0, nil)
+
+	result, err := svc.Validate(context.Background(), AccessParams{Slug: tr.Slug, Password: "secret123"})
+	if err != nil {
+		t.Fatalf("Validate with correct password: %v", err)
+	}
+	if result.Transfer.ID != tr.ID {
+		t.Errorf("expected transfer ID %q, got %q", tr.ID, result.Transfer.ID)
+	}
+}
+
+func TestValidate_WrongPassword_ReturnsUnauthorized(t *testing.T) {
+	svc := newTestTransferService(newStubTransferRepo())
+	tr := createTransferHelper(t, svc, "secret123", 0, nil)
+
+	_, err := svc.Validate(context.Background(), AccessParams{Slug: tr.Slug, Password: "wrongpass"})
+	if !apperrors.IsUnauthorized(err) {
+		t.Fatalf("expected unauthorized error, got %v", err)
+	}
+}
+
+func TestValidate_MissingPassword_ReturnsUnauthorized(t *testing.T) {
+	svc := newTestTransferService(newStubTransferRepo())
+	tr := createTransferHelper(t, svc, "secret123", 0, nil)
+
+	_, err := svc.Validate(context.Background(), AccessParams{Slug: tr.Slug})
+	if !apperrors.IsUnauthorized(err) {
+		t.Fatalf("expected unauthorized error, got %v", err)
+	}
+}
+
+func TestValidate_RevokedTransfer_ReturnsForbidden(t *testing.T) {
+	svc := newTestTransferService(newStubTransferRepo())
+	tr := createTransferHelper(t, svc, "", 0, nil)
+	_ = svc.Revoke(context.Background(), tr.ID, "owner-1")
+
+	_, err := svc.Validate(context.Background(), AccessParams{Slug: tr.Slug})
+	if !apperrors.IsForbidden(err) {
+		t.Fatalf("expected forbidden error for revoked transfer, got %v", err)
+	}
+}
+
+func TestValidate_ExpiredTransfer_ReturnsForbidden(t *testing.T) {
+	repo := newStubTransferRepo()
+	svc := newTestTransferService(repo)
+	tr := createTransferHelper(t, svc, "", 1*time.Millisecond, nil)
+	time.Sleep(5 * time.Millisecond)
+
+	_, err := svc.Validate(context.Background(), AccessParams{Slug: tr.Slug})
+	if !apperrors.IsForbidden(err) {
+		t.Fatalf("expected forbidden error for expired transfer, got %v", err)
+	}
+}
+
+func TestValidate_NonExistentSlug_ReturnsError(t *testing.T) {
+	svc := newTestTransferService(newStubTransferRepo())
+
+	_, err := svc.Validate(context.Background(), AccessParams{Slug: "doesnotexist"})
+	if err == nil {
+		t.Fatal("expected error for nonexistent slug")
+	}
+}
+
+// ── AtomicFileDownload additional scenarios ───────────────────────────────────
+
+func TestAttemptFileDownload_TransferIsExhausted_ReturnsForbidden(t *testing.T) {
+	repo := newStubTransferRepo()
+	svc := newTestTransferService(repo)
+	fileIDs := []string{"file-a"}
+	tr := createTransferHelper(t, svc, "", 0, fileIDs)
+	// Set MaxDownloads=1 on stored transfer.
+	repo.transfers[tr.Slug].MaxDownloads = 1
+	repo.byID[tr.ID].MaxDownloads = 1
+	// Mark the file as already fully downloaded.
+	repo.fileDlCounts = map[string]map[string]int{
+		tr.ID: {"file-a": 1},
+	}
+
+	_, err := svc.AttemptFileDownload(context.Background(), AttemptFileDownloadParams{
+		Slug:   tr.Slug,
+		FileID: "file-a",
+	})
+	if !apperrors.IsForbidden(err) {
+		t.Fatalf("expected forbidden when transfer exhausted, got %v", err)
+	}
+}
+
+// ── Create edge cases ──────────────────────────────────────────────────────────
+
+func TestCreate_MaxDownloadsZero_IsUnlimited(t *testing.T) {
+	svc := newTestTransferService(newStubTransferRepo())
+
+	result, err := svc.Create(context.Background(), CreateParams{
+		OwnerID:      "owner-1",
+		Name:         "Unlimited DL",
+		FileIDs:      []string{"file-001"},
+		ExpiresIn:    24 * time.Hour,
+		MaxDownloads: 0,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if result.Transfer.MaxDownloads != 0 {
+		t.Errorf("expected MaxDownloads=0, got %d", result.Transfer.MaxDownloads)
+	}
+}
+
+func TestCreate_WithPassword_HashStored(t *testing.T) {
+	svc := newTestTransferService(newStubTransferRepo())
+
+	result, err := svc.Create(context.Background(), CreateParams{
+		OwnerID:   "owner-1",
+		Name:      "Protected",
+		FileIDs:   []string{"file-001"},
+		ExpiresIn: 24 * time.Hour,
+		Password:  "s3cret!",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if result.Transfer.PasswordHash == "" {
+		t.Error("expected non-empty PasswordHash for password-protected transfer")
+	}
+	// The raw password must not be stored directly.
+	if result.Transfer.PasswordHash == "s3cret!" {
+		t.Error("PasswordHash should be a hash, not the raw password")
 	}
 }

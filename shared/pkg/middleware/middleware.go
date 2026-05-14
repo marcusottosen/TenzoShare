@@ -76,6 +76,12 @@ type Claims struct {
 	Email  string `json:"email"`
 	Role   string `json:"role"`
 	JTI    string `json:"jti,omitempty"`
+	// MFASetupRequired is true for short-lived setup-only tokens issued when an
+	// admin mandates MFA but the user has not yet configured it. Tokens with this
+	// flag must NOT be accepted on general-purpose authenticated routes — only
+	// /mfa/setup and /mfa/verify. Use the BlockIfMFASetupPending middleware to
+	// enforce this constraint.
+	MFASetupRequired bool `json:"mfa_setup_required,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -153,30 +159,82 @@ func OptionalJWTAuth(publicKey *rsa.PublicKey) fiber.Handler {
 	}
 }
 
-// CORS returns a permissive CORS middleware for dev mode or a strict one for production.
-// allowedOrigins is only consulted in production (devMode=false).
+// CORS returns a CORS middleware configured for the given mode and origin list.
+//
+// Behaviour matrix:
+//
+//	devMode=true            — reflect the request Origin (any origin allowed);
+//	                          adds Access-Control-Allow-Credentials: true.
+//	allowedOrigins contains "*" — send Access-Control-Allow-Origin: *
+//	                          (no Credentials header — wildcard + credentials is
+//	                          forbidden by the CORS spec).
+//	allowedOrigins is a list — only matching origins are reflected; non-matching
+//	                          origins receive no CORS headers (browser blocks them).
+//	allowedOrigins empty / unset — in production no origins are allowed.
+//
+// Origins are trimmed of whitespace; empty entries after trimming are ignored.
+// This means CORS_ALLOWED_ORIGINS=https://a.example.com, https://b.example.com
+// (with spaces after commas) works correctly.
 func CORS(devMode bool, allowedOrigins []string) fiber.Handler {
+	const (
+		allowMethods  = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+		allowHeaders  = "Authorization,Content-Type,X-Request-ID"
+		exposeHeaders = "X-Request-ID"
+		maxAge        = "86400"
+	)
+
+	// Build origin set; detect global wildcard.
+	wildcard := false
 	originSet := make(map[string]struct{}, len(allowedOrigins))
 	for _, o := range allowedOrigins {
-		originSet[o] = struct{}{}
+		o = strings.TrimSpace(o)
+		if o == "" {
+			continue
+		}
+		if o == "*" {
+			wildcard = true
+		} else {
+			originSet[o] = struct{}{}
+		}
 	}
 
 	return func(c fiber.Ctx) error {
 		origin := c.Get("Origin")
 
-		var allow string
-		if devMode {
-			allow = origin // reflect in dev
-		} else if _, ok := originSet[origin]; ok {
-			allow = origin
+		var allowOrigin string
+		var credentialed bool
+
+		switch {
+		case devMode && origin != "":
+			// Development: reflect any origin and allow credentials.
+			allowOrigin = origin
+			credentialed = true
+		case wildcard:
+			// Wildcard: allow all origins but do NOT send Credentials header
+			// (Access-Control-Allow-Origin: * + Credentials is spec-invalid).
+			allowOrigin = "*"
+		case origin != "":
+			// Production: only explicitly listed origins are allowed.
+			if _, ok := originSet[origin]; ok {
+				allowOrigin = origin
+				credentialed = true
+			}
 		}
 
-		if allow != "" {
-			c.Set("Access-Control-Allow-Origin", allow)
-			c.Set("Vary", "Origin")
-			c.Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
-			c.Set("Access-Control-Allow-Headers", "Authorization,Content-Type,X-Request-ID")
-			c.Set("Access-Control-Max-Age", "86400")
+		if allowOrigin != "" {
+			c.Set("Access-Control-Allow-Origin", allowOrigin)
+			c.Set("Access-Control-Allow-Methods", allowMethods)
+			c.Set("Access-Control-Allow-Headers", allowHeaders)
+			c.Set("Access-Control-Expose-Headers", exposeHeaders)
+			c.Set("Access-Control-Max-Age", maxAge)
+			if allowOrigin != "*" {
+				// Vary: Origin is required whenever the response depends on
+				// which origin sent the request (i.e. non-wildcard).
+				c.Set("Vary", "Origin")
+			}
+			if credentialed {
+				c.Set("Access-Control-Allow-Credentials", "true")
+			}
 		}
 
 		if c.Method() == fiber.MethodOptions {
@@ -220,6 +278,20 @@ func TokenRevocation(isRevoked func(ctx context.Context, jti string) bool) fiber
 		}
 		if isRevoked(c.Context(), claims.JTI) {
 			return apperrors.Unauthorized("token has been revoked")
+		}
+		return c.Next()
+	}
+}
+
+// BlockIfMFASetupPending rejects requests from tokens that carry
+// MFASetupRequired=true. Apply this middleware on every protected route group
+// except /mfa/setup and /mfa/verify, which are the only endpoints a
+// setup-only token should reach.
+func BlockIfMFASetupPending() fiber.Handler {
+	return func(c fiber.Ctx) error {
+		claims, ok := c.Locals("claims").(*Claims)
+		if ok && claims != nil && claims.MFASetupRequired {
+			return apperrors.Forbidden("MFA setup required before accessing this resource")
 		}
 		return c.Next()
 	}

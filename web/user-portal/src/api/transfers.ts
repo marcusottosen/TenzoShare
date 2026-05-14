@@ -8,11 +8,13 @@ export interface Transfer {
   slug: string;
   status?: 'active' | 'exhausted' | 'expired' | 'revoked';
   recipient_email?: string;
+  recipient_emails?: string[];
   max_downloads: number;
   download_count: number;
   is_revoked: boolean;
   has_password: boolean;
   view_only: boolean;
+  notify_on_download: boolean;
   expires_at?: string;
   created_at: string;
   file_ids?: string[];
@@ -30,10 +32,11 @@ export interface CreateTransferParams {
   name: string;
   description?: string;
   file_ids: string[];
-  recipient_email?: string;
+  recipient_emails?: string[];
   password?: string;
   max_downloads?: number;
   view_only?: boolean;
+  notify_on_download?: boolean;
   /** Required: 1–2160 hours (max 90 days). */
   expires_in_hours: number;
 }
@@ -55,4 +58,15 @@ export async function createTransfer(params: CreateTransferParams): Promise<Tran
 
 export async function revokeTransfer(id: string): Promise<void> {
   return request<void>(`/transfers/${id}`, { method: 'DELETE' });
+}
+
+export async function updateTransferRecipients(id: string, emails: string[]): Promise<Transfer> {
+  return request<Transfer>(`/transfers/${id}/recipients`, {
+    method: 'PATCH',
+    body: JSON.stringify({ emails }),
+  });
+}
+
+export async function resendTransferEmail(id: string): Promise<void> {
+  return request<void>(`/transfers/${id}/resend`, { method: 'POST' });
 }

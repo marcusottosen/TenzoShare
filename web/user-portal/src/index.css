@@ -1183,6 +1183,71 @@ tbody tr:hover td { background: var(--color-page-bg); }
   word-break: break-all;
 }
 
+/* ─── Email chip / tag input ─────────────────────────────────── */
+.email-chips-field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  min-height: 40px;
+  padding: 5px 10px;
+  background: var(--color-input-bg);
+  border: 1px solid var(--color-border-card);
+  border-radius: var(--radius-md);
+  cursor: text;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.email-chips-field:focus-within {
+  border-color: var(--color-secondary);
+  box-shadow: 0 0 0 2px rgba(13,148,136,0.15);
+  background: var(--color-surface);
+}
+.email-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 2px 6px 2px 8px;
+  border-radius: 99px;
+  background: var(--color-secondary);
+  color: #fff;
+  white-space: nowrap;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.email-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255,255,255,0.25);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition: background 0.1s;
+}
+.email-chip-remove:hover { background: rgba(255,255,255,0.45); }
+.email-chip-input {
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 14px;
+  font-family: var(--font-sans);
+  color: var(--color-text-primary);
+  min-width: 180px;
+  flex: 1;
+  padding: 2px 0;
+}
+.email-chip-input::placeholder { color: var(--color-text-placeholder); }
+
 /* ─── Toggle switch ──────────────────────────────────────────── */
 .toggle-switch {
   position: relative;

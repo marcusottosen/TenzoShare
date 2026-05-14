@@ -14,7 +14,9 @@ import TransferDetailPage from './pages/TransferDetailPage';
 import SettingsPage from './pages/SettingsPage';
 import ProfilePage from './pages/ProfilePage';
 import RequestsPage from './pages/RequestsPage';
+import FileRequestDetailPage from './pages/FileRequestDetailPage';
 import SharesPage from './pages/SharesPage';
+import ContactsPage from './pages/ContactsPage';
 
 export default function App() {
   return (
@@ -35,7 +37,9 @@ export default function App() {
               <Route path="/transfers/new" element={<NewTransferPage />} />
               <Route path="/transfers/:id" element={<TransferDetailPage />} />
               <Route path="/requests" element={<RequestsPage />} />
+              <Route path="/requests/:id" element={<FileRequestDetailPage />} />
               <Route path="/shares" element={<SharesPage />} />
+              <Route path="/contacts" element={<ContactsPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/profile" element={<ProfilePage />} />
             </Route>

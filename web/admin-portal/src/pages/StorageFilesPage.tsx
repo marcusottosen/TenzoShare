@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { fmt } from '../utils/dateFormat';
 import {
   adminDeleteFile,
   getPurgeLog,
@@ -10,6 +11,8 @@ import {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+// fmt imported from utils/dateFormat
+
 function fmtBytes(b: number): string {
   if (!b) return '0 B';
   const k = 1024;
@@ -18,9 +21,8 @@ function fmtBytes(b: number): string {
   return `${(b / Math.pow(k, i)).toFixed(i <= 1 ? 0 : 1)} ${sizes[i]}`;
 }
 
-function fmtDate(iso: string): string {
-  return new Date(iso).toLocaleString();
-}
+// fmtDate alias
+const fmtDate = fmt;
 
 type Filter = 'all' | 'orphan' | 'eligible';
 type SortBy = 'created_at' | 'size_bytes' | 'filename' | 'owner' | 'shares';

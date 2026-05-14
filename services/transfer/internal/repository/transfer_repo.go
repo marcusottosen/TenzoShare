@@ -31,12 +31,12 @@ func (r *TransferRepository) Create(ctx context.Context, t *domain.Transfer, fil
 	var out domain.Transfer
 	err = tx.QueryRow(ctx, `
 		INSERT INTO transfer.transfers
-			(owner_id, sender_email, name, description, recipient_email, slug, password_hash, max_downloads, expires_at, view_only)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		RETURNING id, owner_id, sender_email, name, description, recipient_email, slug, password_hash, max_downloads, download_count, expires_at, is_revoked, created_at, view_only
-	`, t.OwnerID, t.SenderEmail, t.Name, t.Description, t.RecipientEmail, t.Slug, t.PasswordHash, t.MaxDownloads, t.ExpiresAt, t.ViewOnly).Scan(
+			(owner_id, sender_email, name, description, recipient_email, slug, password_hash, max_downloads, expires_at, view_only, notify_on_download)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		RETURNING id, owner_id, sender_email, name, description, recipient_email, slug, password_hash, max_downloads, download_count, expires_at, is_revoked, created_at, view_only, notify_on_download
+	`, t.OwnerID, t.SenderEmail, t.Name, t.Description, t.RecipientEmail, t.Slug, t.PasswordHash, t.MaxDownloads, t.ExpiresAt, t.ViewOnly, t.NotifyOnDownload).Scan(
 		&out.ID, &out.OwnerID, &out.SenderEmail, &out.Name, &out.Description, &out.RecipientEmail, &out.Slug, &out.PasswordHash,
-		&out.MaxDownloads, &out.DownloadCount, &out.ExpiresAt, &out.IsRevoked, &out.CreatedAt, &out.ViewOnly,
+		&out.MaxDownloads, &out.DownloadCount, &out.ExpiresAt, &out.IsRevoked, &out.CreatedAt, &out.ViewOnly, &out.NotifyOnDownload,
 	)
 	if err != nil {
 		return nil, apperrors.Internal("insert transfer", err)
@@ -61,7 +61,7 @@ func (r *TransferRepository) GetBySlug(ctx context.Context, slug string) (*domai
 	var t domain.Transfer
 	err := r.db.QueryRow(ctx, `
 		SELECT t.id, t.owner_id, t.sender_email, t.name, t.description, t.recipient_email, t.slug, t.password_hash,
-		       t.max_downloads, t.download_count, t.expires_at, t.is_revoked, t.created_at, t.view_only,
+		       t.max_downloads, t.download_count, t.expires_at, t.is_revoked, t.created_at, t.view_only, t.notify_on_download,
 		       COALESCE((SELECT count(*) FROM transfer.transfer_files tf WHERE tf.transfer_id = t.id), 0) AS file_count,
 		       COALESCE((SELECT sum(f.size_bytes) FROM transfer.transfer_files tf JOIN storage.files f ON f.id = tf.file_id WHERE tf.transfer_id = t.id AND f.deleted_at IS NULL), 0) AS total_size_bytes,
 		       (t.max_downloads > 0 AND NOT EXISTS (
@@ -75,7 +75,7 @@ func (r *TransferRepository) GetBySlug(ctx context.Context, slug string) (*domai
 		WHERE t.slug = $1
 	`, slug).Scan(
 		&t.ID, &t.OwnerID, &t.SenderEmail, &t.Name, &t.Description, &t.RecipientEmail, &t.Slug, &t.PasswordHash,
-		&t.MaxDownloads, &t.DownloadCount, &t.ExpiresAt, &t.IsRevoked, &t.CreatedAt, &t.ViewOnly, &t.FileCount, &t.TotalSizeBytes, &t.IsExhausted,
+		&t.MaxDownloads, &t.DownloadCount, &t.ExpiresAt, &t.IsRevoked, &t.CreatedAt, &t.ViewOnly, &t.NotifyOnDownload, &t.FileCount, &t.TotalSizeBytes, &t.IsExhausted,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -91,7 +91,7 @@ func (r *TransferRepository) GetByID(ctx context.Context, id string) (*domain.Tr
 	var t domain.Transfer
 	err := r.db.QueryRow(ctx, `
 		SELECT t.id, t.owner_id, t.sender_email, t.name, t.description, t.recipient_email, t.slug, t.password_hash,
-		       t.max_downloads, t.download_count, t.expires_at, t.is_revoked, t.created_at, t.view_only,
+		       t.max_downloads, t.download_count, t.expires_at, t.is_revoked, t.created_at, t.view_only, t.notify_on_download,
 		       COALESCE((SELECT count(*) FROM transfer.transfer_files tf WHERE tf.transfer_id = t.id), 0) AS file_count,
 		       COALESCE((SELECT sum(f.size_bytes) FROM transfer.transfer_files tf JOIN storage.files f ON f.id = tf.file_id WHERE tf.transfer_id = t.id AND f.deleted_at IS NULL), 0) AS total_size_bytes,
 		       (t.max_downloads > 0 AND NOT EXISTS (
@@ -105,7 +105,7 @@ func (r *TransferRepository) GetByID(ctx context.Context, id string) (*domain.Tr
 		WHERE t.id = $1
 	`, id).Scan(
 		&t.ID, &t.OwnerID, &t.SenderEmail, &t.Name, &t.Description, &t.RecipientEmail, &t.Slug, &t.PasswordHash,
-		&t.MaxDownloads, &t.DownloadCount, &t.ExpiresAt, &t.IsRevoked, &t.CreatedAt, &t.ViewOnly, &t.FileCount, &t.TotalSizeBytes, &t.IsExhausted,
+		&t.MaxDownloads, &t.DownloadCount, &t.ExpiresAt, &t.IsRevoked, &t.CreatedAt, &t.ViewOnly, &t.NotifyOnDownload, &t.FileCount, &t.TotalSizeBytes, &t.IsExhausted,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -120,7 +120,7 @@ func (r *TransferRepository) GetByID(ctx context.Context, id string) (*domain.Tr
 func (r *TransferRepository) ListByOwner(ctx context.Context, ownerID string, limit, offset int) ([]*domain.Transfer, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT t.id, t.owner_id, t.sender_email, t.name, t.description, t.recipient_email, t.slug, t.password_hash,
-		       t.max_downloads, t.download_count, t.expires_at, t.is_revoked, t.created_at, t.view_only,
+		       t.max_downloads, t.download_count, t.expires_at, t.is_revoked, t.created_at, t.view_only, t.notify_on_download,
 		       COALESCE((SELECT count(*) FROM transfer.transfer_files tf WHERE tf.transfer_id = t.id), 0) AS file_count,
 		       COALESCE((SELECT sum(f.size_bytes) FROM transfer.transfer_files tf JOIN storage.files f ON f.id = tf.file_id WHERE tf.transfer_id = t.id AND f.deleted_at IS NULL), 0) AS total_size_bytes,
 		       (t.max_downloads > 0 AND NOT EXISTS (
@@ -145,7 +145,7 @@ func (r *TransferRepository) ListByOwner(ctx context.Context, ownerID string, li
 		var t domain.Transfer
 		if err := rows.Scan(
 			&t.ID, &t.OwnerID, &t.SenderEmail, &t.Name, &t.Description, &t.RecipientEmail, &t.Slug, &t.PasswordHash,
-			&t.MaxDownloads, &t.DownloadCount, &t.ExpiresAt, &t.IsRevoked, &t.CreatedAt, &t.ViewOnly, &t.FileCount, &t.TotalSizeBytes, &t.IsExhausted,
+			&t.MaxDownloads, &t.DownloadCount, &t.ExpiresAt, &t.IsRevoked, &t.CreatedAt, &t.ViewOnly, &t.NotifyOnDownload, &t.FileCount, &t.TotalSizeBytes, &t.IsExhausted,
 		); err != nil {
 			return nil, apperrors.Internal("scan transfer", err)
 		}
@@ -313,4 +313,104 @@ func (r *TransferRepository) ExpireStale(ctx context.Context) (int64, error) {
 		return 0, apperrors.Internal("expire stale transfers", err)
 	}
 	return tag.RowsAffected(), nil
+}
+
+// GetTransfersNeedingReminder returns active transfers that expire within the next 24 hours
+// and have not yet had a reminder email sent (reminder_sent_at IS NULL).
+func (r *TransferRepository) GetTransfersNeedingReminder(ctx context.Context) ([]*domain.Transfer, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, owner_id, sender_email, recipient_email, slug, name, expires_at
+		FROM transfer.transfers
+		WHERE is_revoked = FALSE
+		  AND reminder_sent_at IS NULL
+		  AND expires_at IS NOT NULL
+		  AND expires_at > NOW()
+		  AND expires_at <= NOW() + INTERVAL '24 hours'
+	`)
+	if err != nil {
+		return nil, apperrors.Internal("get transfers needing reminder", err)
+	}
+	defer rows.Close()
+
+	var transfers []*domain.Transfer
+	for rows.Next() {
+		var t domain.Transfer
+		if err := rows.Scan(&t.ID, &t.OwnerID, &t.SenderEmail, &t.RecipientEmail, &t.Slug, &t.Name, &t.ExpiresAt); err != nil {
+			return nil, apperrors.Internal("scan transfer for reminder", err)
+		}
+		transfers = append(transfers, &t)
+	}
+	return transfers, rows.Err()
+}
+
+// MarkReminderSent sets reminder_sent_at = NOW() for the given transfer.
+func (r *TransferRepository) MarkReminderSent(ctx context.Context, id string) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE transfer.transfers SET reminder_sent_at = NOW() WHERE id = $1
+	`, id)
+	if err != nil {
+		return apperrors.Internal("mark reminder sent", err)
+	}
+	return nil
+}
+
+// UpdateRecipientEmail replaces the recipient_email field (comma-separated) for a transfer.
+// Only the owner may do this.
+func (r *TransferRepository) UpdateRecipientEmail(ctx context.Context, id, ownerID, recipientEmail string) error {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE transfer.transfers SET recipient_email = $1 WHERE id = $2 AND owner_id = $3
+	`, recipientEmail, id, ownerID)
+	if err != nil {
+		return apperrors.Internal("update recipient_email", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperrors.NotFound("transfer not found")
+	}
+	return nil
+}
+
+// StoreRecipientToken upserts a recipient magic-link token for a (transfer, email) pair.
+// If a token already exists for this pair it is replaced (one active token per recipient).
+func (r *TransferRepository) StoreRecipientToken(ctx context.Context, tok *domain.RecipientToken) error {
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO transfer.recipient_tokens (transfer_id, email, token_hash, expires_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (transfer_id, email) DO UPDATE
+			SET token_hash = EXCLUDED.token_hash,
+			    expires_at = EXCLUDED.expires_at,
+			    created_at = now()
+	`, tok.TransferID, tok.Email, tok.TokenHash, tok.ExpiresAt)
+	if err != nil {
+		return apperrors.Internal("store recipient token", err)
+	}
+	return nil
+}
+
+// GetRecipientTokenByHash looks up a recipient token by its SHA-256 hash.
+// Returns NotFound if the hash does not match any stored token.
+func (r *TransferRepository) GetRecipientTokenByHash(ctx context.Context, tokenHash string) (*domain.RecipientToken, error) {
+	tok := &domain.RecipientToken{}
+	err := r.db.QueryRow(ctx, `
+		SELECT id, transfer_id, email, token_hash, expires_at, created_at
+		FROM transfer.recipient_tokens
+		WHERE token_hash = $1
+	`, tokenHash).Scan(&tok.ID, &tok.TransferID, &tok.Email, &tok.TokenHash, &tok.ExpiresAt, &tok.CreatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apperrors.NotFound("recipient token not found")
+		}
+		return nil, apperrors.Internal("get recipient token", err)
+	}
+	return tok, nil
+}
+
+// DeleteRecipientToken removes all tokens for a (transfer, email) pair.
+func (r *TransferRepository) DeleteRecipientToken(ctx context.Context, transferID, email string) error {
+	_, err := r.db.Exec(ctx, `
+		DELETE FROM transfer.recipient_tokens WHERE transfer_id = $1 AND email = $2
+	`, transferID, email)
+	if err != nil {
+		return apperrors.Internal("delete recipient token", err)
+	}
+	return nil
 }

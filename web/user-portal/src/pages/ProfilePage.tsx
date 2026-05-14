@@ -1,27 +1,36 @@
 import React, { useEffect, useState } from 'react';
+import { useLocation } from 'react-router';
+import QRCode from 'qrcode';
+import { fmt } from '../utils/dateFormat';
 import {
   getMe,
   setupMFA,
   verifyMFA,
+  disableMFA,
   changePassword,
+  storeTokens,
   type MeResponse,
 } from '../api/auth';
-
-function fmt(date: string) {
-  return new Date(date).toLocaleString();
-}
+import { useAuth } from '../stores/auth';
 
 export default function ProfilePage() {
+  const location = useLocation();
+  const { setUser } = useAuth();
   const [profile, setProfile] = useState<MeResponse | null>(null);
   const [profileLoading, setProfileLoading] = useState(true);
 
   // MFA state
   const [mfaSetupData, setMfaSetupData] = useState<{ secret: string; provisioning_uri: string } | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState('');
   const [otpCode, setOtpCode] = useState('');
   const [setupLoading, setSetupLoading] = useState(false);
   const [verifyLoading, setVerifyLoading] = useState(false);
   const [mfaError, setMfaError] = useState('');
   const [mfaSuccess, setMfaSuccess] = useState('');
+  // Disable MFA state
+  const [showDisablePanel, setShowDisablePanel] = useState(false);
+  const [disableOtp, setDisableOtp] = useState('');
+  const [disableLoading, setDisableLoading] = useState(false);
 
   // Password change state
   const [currentPassword, setCurrentPassword] = useState('');
@@ -34,6 +43,25 @@ export default function ProfilePage() {
   useEffect(() => {
     getMe().then(setProfile).catch(() => null).finally(() => setProfileLoading(false));
   }, []);
+
+  // If navigated here with mfaSetupRequired=true (from login), auto-start setup.
+  useEffect(() => {
+    if ((location.state as any)?.mfaSetupRequired && profile && !profile.mfa_enabled) {
+      handleSetupMFA();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile]);
+
+  // Generate QR code locally whenever setup data changes
+  useEffect(() => {
+    if (mfaSetupData?.provisioning_uri) {
+      QRCode.toDataURL(mfaSetupData.provisioning_uri, { width: 200, margin: 2 })
+        .then(setQrDataUrl)
+        .catch(() => setQrDataUrl(''));
+    } else {
+      setQrDataUrl('');
+    }
+  }, [mfaSetupData]);
 
   // --- MFA ---
   async function handleSetupMFA() {
@@ -55,15 +83,41 @@ export default function ProfilePage() {
     setMfaError('');
     setVerifyLoading(true);
     try {
-      await verifyMFA(otpCode);
+      const result = await verifyMFA(otpCode);
+      // verifyMFA now returns full tokens — store them so the session becomes
+      // fully authenticated (replacing the setup-only token if present).
+      if (result.access_token && result.refresh_token) {
+        storeTokens(result as any);
+        const me = await getMe();
+        setUser(me);
+        setProfile(me);
+      } else {
+        setProfile((p) => p ? { ...p, mfa_enabled: true } : p);
+      }
       setMfaSuccess('MFA enabled successfully!');
       setMfaSetupData(null);
       setOtpCode('');
-      setProfile((p) => p ? { ...p, mfa_enabled: true } : p);
     } catch (err: unknown) {
       setMfaError((err as Error).message);
     } finally {
       setVerifyLoading(false);
+    }
+  }
+
+  async function handleDisableMFA(e: React.FormEvent) {
+    e.preventDefault();
+    setMfaError('');
+    setDisableLoading(true);
+    try {
+      await disableMFA(disableOtp);
+      setMfaSuccess('MFA has been disabled.');
+      setShowDisablePanel(false);
+      setDisableOtp('');
+      setProfile((p) => p ? { ...p, mfa_enabled: false } : p);
+    } catch (err: unknown) {
+      setMfaError((err as Error).message);
+    } finally {
+      setDisableLoading(false);
     }
   }
 
@@ -214,7 +268,60 @@ export default function ProfilePage() {
         <div className="card-header"><h2 className="card-title">Two-Factor Authentication</h2></div>
         {mfaError && <div className="alert alert-error">{mfaError}</div>}
         {mfaSuccess && <div className="alert alert-success">{mfaSuccess}</div>}
-        {!mfaSetupData ? (
+
+        {/* MFA already enabled — show disable option */}
+        {!mfaSetupData && profile?.mfa_enabled && (
+          <div>
+            <p className="text-sm mb-16">
+              MFA is currently <strong>enabled</strong> on your account. You will need your authenticator app at every login.
+            </p>
+            {!showDisablePanel ? (
+              <button
+                className="btn btn-secondary"
+                onClick={() => { setShowDisablePanel(true); setMfaError(''); setMfaSuccess(''); }}
+              >
+                Disable MFA
+              </button>
+            ) : (
+              <form onSubmit={handleDisableMFA} style={{ maxWidth: 320 }}>
+                <p className="text-sm mb-16" style={{ color: 'var(--color-text-muted)' }}>
+                  Enter a code from your authenticator app to confirm you want to disable MFA.
+                </p>
+                <div className="form-group">
+                  <label>Authenticator code</label>
+                  <input
+                    type="text"
+                    value={disableOtp}
+                    onChange={(e) => setDisableOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    maxLength={6}
+                    placeholder="000000"
+                    autoFocus
+                    style={{ width: 160 }}
+                  />
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    className="btn btn-danger"
+                    type="submit"
+                    disabled={disableLoading || disableOtp.length !== 6}
+                  >
+                    {disableLoading ? 'Disabling…' : 'Confirm disable'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => { setShowDisablePanel(false); setDisableOtp(''); setMfaError(''); }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        )}
+
+        {/* MFA not enabled — show setup flow */}
+        {!mfaSetupData && !profile?.mfa_enabled && (
           <div>
             <p className="text-sm mb-16">
               Enable TOTP MFA to require an authenticator app code at login.
@@ -227,19 +334,20 @@ export default function ProfilePage() {
               {setupLoading ? 'Loading…' : 'Set up MFA'}
             </button>
           </div>
-        ) : (
+        )}
+
+        {/* QR setup flow */}
+        {mfaSetupData && (
           <div>
             <p className="text-sm mb-16">
               Scan this QR code with your authenticator app (Google Authenticator, Authy, etc.),
               then enter the 6-digit code to confirm.
             </p>
             <div className="card" style={{ display: 'inline-block', marginBottom: 16 }}>
-              <img
-                src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(mfaSetupData.provisioning_uri)}`}
-                alt="MFA QR code"
-                width={180}
-                height={180}
-              />
+              {qrDataUrl
+                ? <img src={qrDataUrl} alt="MFA QR code" width={200} height={200} />
+                : <div style={{ width: 200, height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--color-text-muted)', fontSize: 13 }}>Generating…</div>
+              }
             </div>
             <div className="form-group">
               <label>Secret key (manual entry)</label>

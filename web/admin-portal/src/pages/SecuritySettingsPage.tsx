@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { fmt } from '../utils/dateFormat';
 import {
   getAuthConfig,
   updateAuthConfig,
@@ -17,6 +18,7 @@ export default function SecuritySettingsPage() {
   // form state
   const [maxAttempts, setMaxAttempts] = useState(10);
   const [lockoutMins, setLockoutMins] = useState(15);
+  const [requireMFA, setRequireMFA] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -25,6 +27,7 @@ export default function SecuritySettingsPage() {
         setConfig(c);
         setMaxAttempts(c.max_failed_attempts);
         setLockoutMins(c.lockout_duration_minutes);
+        setRequireMFA(c.require_mfa);
       })
       .catch(() => setError('Failed to load lockout config.'))
       .finally(() => setLoading(false));
@@ -39,11 +42,13 @@ export default function SecuritySettingsPage() {
       const updated = await updateAuthConfig({
         max_failed_attempts: maxAttempts,
         lockout_duration_minutes: lockoutMins,
+        require_mfa: requireMFA,
       });
       setConfig(updated);
       setMaxAttempts(updated.max_failed_attempts);
       setLockoutMins(updated.lockout_duration_minutes);
-      setSuccess('Lockout policy saved.');
+      setRequireMFA(updated.require_mfa);
+      setSuccess('Security settings saved.');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to save.');
     } finally {
@@ -172,6 +177,29 @@ export default function SecuritySettingsPage() {
               <div className="alert alert-success" style={{ marginBottom: 16 }}>{success}</div>
             )}
 
+            {/* Require MFA */}
+            <div className="form-group" style={{ marginBottom: 28 }}>
+              <label style={{ display: 'block', marginBottom: 6, fontWeight: 500 }}>
+                Require MFA for all users
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={requireMFA}
+                  onChange={(e) => setRequireMFA(e.target.checked)}
+                  disabled={saving}
+                />
+                <span className="text-sm">
+                  {requireMFA ? 'Enabled — users without MFA set up will be prompted to configure it after login' : 'Disabled — MFA is optional for users'}
+                </span>
+              </label>
+              <p className="text-sm" style={{ marginTop: 6, color: 'var(--color-text-muted)' }}>
+                When enabled, users who have not set up MFA will receive a prompt to configure it
+                immediately after logging in. They will receive tokens but should be directed to set
+                up MFA before accessing any other features.
+              </p>
+            </div>
+
             <button type="submit" className="btn btn-primary" disabled={saving}>
               {saving ? 'Saving…' : 'Save Changes'}
             </button>
@@ -179,7 +207,7 @@ export default function SecuritySettingsPage() {
 
           {config && (
             <p className="text-sm" style={{ marginTop: 16, color: 'var(--color-text-muted)' }}>
-              Last updated: {config.updated_at ? new Date(config.updated_at).toLocaleString() : '—'}
+              Last updated: {config.updated_at ? fmt(config.updated_at) : '—'}
             </p>
           )}
         </div>

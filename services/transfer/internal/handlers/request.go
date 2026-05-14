@@ -31,12 +31,14 @@ func realClientIP(c fiber.Ctx) string {
 // --- Auth-required endpoints ---
 
 type createRequestBody struct {
-	Name         string `json:"name"             validate:"required,min=1,max=200"`
-	Description  string `json:"description"      validate:"max=1000"`
-	AllowedTypes string `json:"allowed_types"    validate:"max=500"`
-	MaxSizeMB    int    `json:"max_size_mb"`
-	MaxFiles     int    `json:"max_files"`
-	ExpiresInHrs int    `json:"expires_in_hours" validate:"required,min=1,max=8760"`
+	Name            string   `json:"name"             validate:"required,min=1,max=200"`
+	Description     string   `json:"description"      validate:"max=1000"`
+	AllowedTypes    string   `json:"allowed_types"    validate:"max=500"`
+	MaxSizeMB       int      `json:"max_size_mb"`
+	MaxFiles        int      `json:"max_files"`
+	ExpiresInHrs    int      `json:"expires_in_hours" validate:"required,min=1,max=8760"`
+	RecipientEmails []string `json:"recipient_emails" validate:"omitempty,max=20,dive,email"`
+	NotifyOnUpload  bool     `json:"notify_on_upload"`
 }
 
 // CreateFileRequest POST /api/v1/requests
@@ -55,13 +57,15 @@ func (h *Handler) CreateFileRequest(c fiber.Ctx) error {
 	}
 
 	fr, err := h.requestSvc.Create(c.Context(), service.CreateRequestParams{
-		OwnerID:      claims.UserID,
-		Name:         req.Name,
-		Description:  req.Description,
-		AllowedTypes: req.AllowedTypes,
-		MaxSizeMB:    req.MaxSizeMB,
-		MaxFiles:     req.MaxFiles,
-		ExpiresInHrs: req.ExpiresInHrs,
+		OwnerID:        claims.UserID,
+		Name:           req.Name,
+		Description:    req.Description,
+		AllowedTypes:   req.AllowedTypes,
+		MaxSizeMB:      req.MaxSizeMB,
+		MaxFiles:       req.MaxFiles,
+		ExpiresInHrs:   req.ExpiresInHrs,
+		NotifyEmails:   strings.Join(req.RecipientEmails, ","),
+		NotifyOnUpload: req.NotifyOnUpload,
 	})
 	if err != nil {
 		return err
@@ -125,6 +129,45 @@ func (h *Handler) DeactivateFileRequest(c fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// UpdateRequestRecipients PATCH /api/v1/requests/:id/recipients
+// Replaces the invite-email list for a file request. Owner only.
+func (h *Handler) UpdateRequestRecipients(c fiber.Ctx) error {
+	claims, ok := c.Locals("claims").(*middleware.Claims)
+	if !ok || claims == nil {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+
+	var body struct {
+		Emails []string `json:"emails" validate:"omitempty,max=20,dive,email"`
+	}
+	if err := c.Bind().JSON(&body); err != nil {
+		return apperrors.BadRequest("invalid JSON")
+	}
+	if err := h.validate.Struct(body); err != nil {
+		return apperrors.Validation(err.Error())
+	}
+
+	fr, err := h.requestSvc.UpdateNotifyEmails(c.Context(), c.Params("id"), claims.UserID, body.Emails)
+	if err != nil {
+		return err
+	}
+	return c.JSON(fileRequestResponse(fr))
+}
+
+// ResendRequestInvite POST /api/v1/requests/:id/resend
+// Re-sends the request_invite email to all current recipients. Owner only.
+func (h *Handler) ResendRequestInvite(c fiber.Ctx) error {
+	claims, ok := c.Locals("claims").(*middleware.Claims)
+	if !ok || claims == nil {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+
+	if err := h.requestSvc.ResendInvite(c.Context(), c.Params("id"), claims.UserID); err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"message": "notification queued"})
+}
+
 // --- Public endpoints (no auth required) ---
 
 // GetPublicFileRequest GET /api/v1/r/:slug
@@ -186,6 +229,14 @@ func (h *Handler) UploadToRequest(c fiber.Ctx) error {
 // --- Response helpers ---
 
 func fileRequestResponse(r *domain.FileRequest) fiber.Map {
+	recipientEmails := []string{}
+	if r.NotifyEmails != "" {
+		for _, e := range strings.Split(r.NotifyEmails, ",") {
+			if t := strings.TrimSpace(e); t != "" {
+				recipientEmails = append(recipientEmails, t)
+			}
+		}
+	}
 	return fiber.Map{
 		"id":               r.ID,
 		"slug":             r.Slug,
@@ -194,6 +245,8 @@ func fileRequestResponse(r *domain.FileRequest) fiber.Map {
 		"allowed_types":    r.AllowedTypes,
 		"max_size_mb":      r.MaxSizeMB,
 		"max_files":        r.MaxFiles,
+		"recipient_emails": recipientEmails,
+		"notify_on_upload": r.NotifyOnUpload,
 		"expires_at":       r.ExpiresAt.Format(time.RFC3339),
 		"is_active":        r.IsActive,
 		"is_expired":       r.IsExpired(),
