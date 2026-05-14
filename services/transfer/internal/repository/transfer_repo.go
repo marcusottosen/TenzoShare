@@ -7,17 +7,19 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/zap"
 
 	"github.com/tenzoshare/tenzoshare/services/transfer/internal/domain"
 	apperrors "github.com/tenzoshare/tenzoshare/shared/pkg/errors"
 )
 
 type TransferRepository struct {
-	db *pgxpool.Pool
+	db  *pgxpool.Pool
+	log *zap.Logger
 }
 
-func NewTransferRepository(db *pgxpool.Pool) *TransferRepository {
-	return &TransferRepository{db: db}
+func NewTransferRepository(db *pgxpool.Pool, log *zap.Logger) *TransferRepository {
+	return &TransferRepository{db: db, log: log}
 }
 
 // Create inserts a transfer record and associates fileIDs in a transaction.
@@ -26,7 +28,12 @@ func (r *TransferRepository) Create(ctx context.Context, t *domain.Transfer, fil
 	if err != nil {
 		return nil, apperrors.Internal("begin transaction", err)
 	}
-	defer tx.Rollback(ctx) //nolint:errcheck
+	defer func() {
+		if rbErr := tx.Rollback(ctx); rbErr != nil && !errors.Is(rbErr, pgx.ErrTxClosed) {
+			// ErrTxClosed is expected after a successful Commit; only log unexpected failures.
+			r.log.Warn("transfer create: rollback failed", zap.Error(rbErr))
+		}
+	}()
 
 	var out domain.Transfer
 	err = tx.QueryRow(ctx, `

@@ -26,7 +26,7 @@ func New(svc *service.AuthService) *Handler {
 
 type registerRequest struct {
 	Email    string `json:"email"    validate:"required,email,max=254"`
-	Password string `json:"password" validate:"required,min=8,max=128"`
+	Password string `json:"password" validate:"required,min=12,max=128"`
 }
 
 func (h *Handler) Register(c fiber.Ctx) error {
@@ -217,7 +217,7 @@ func (h *Handler) PasswordResetRequest(c fiber.Ctx) error {
 
 type passwordResetConfirmBody struct {
 	Token       string `json:"token"        validate:"required"`
-	NewPassword string `json:"new_password" validate:"required,min=8,max=128"`
+	NewPassword string `json:"new_password" validate:"required,min=12,max=128"`
 }
 
 func (h *Handler) PasswordResetConfirm(c fiber.Ctx) error {
@@ -266,6 +266,9 @@ func (h *Handler) UpdateMe(c fiber.Ctx) error {
 	}
 	if req.CurrentPassword == "" || req.NewPassword == "" {
 		return apperrors.Validation("current_password and new_password are required")
+	}
+	if len(req.NewPassword) < 12 || len(req.NewPassword) > 128 {
+		return apperrors.Validation("new password must be between 12 and 128 characters")
 	}
 
 	if err := h.svc.ChangePassword(c.Context(), service.ChangePasswordParams{
@@ -397,4 +400,90 @@ func tokenResponse(p *service.TokenPair) fiber.Map {
 		"expires_in":    p.ExpiresIn,
 		"token_type":    "Bearer",
 	}
+}
+
+// ── Contacts ──────────────────────────────────────────────────────────────────
+
+func (h *Handler) ListContacts(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	contacts, err := h.svc.ListContacts(c.Context(), userID)
+	if err != nil {
+		return err
+	}
+	if contacts == nil {
+		contacts = []*domain.Contact{}
+	}
+	return c.JSON(fiber.Map{"contacts": contacts})
+}
+
+type createContactRequest struct {
+	Email string `json:"email" validate:"required,email,max=254"`
+	Name  string `json:"name"  validate:"max=200"`
+}
+
+func (h *Handler) CreateContact(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	var req createContactRequest
+	if err := c.Bind().JSON(&req); err != nil {
+		return apperrors.Validation("invalid request body")
+	}
+	if err := validate.Struct(req); err != nil {
+		return apperrors.Validation(err.Error())
+	}
+	contact, err := h.svc.CreateContact(c.Context(), userID, req.Email, req.Name)
+	if err != nil {
+		return err
+	}
+	return c.Status(201).JSON(contact)
+}
+
+type updateContactRequest struct {
+	Name string `json:"name" validate:"required,max=200"`
+}
+
+func (h *Handler) UpdateContact(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	id := c.Params("id")
+	if id == "" {
+		return apperrors.Validation("contact id required")
+	}
+	var req updateContactRequest
+	if err := c.Bind().JSON(&req); err != nil {
+		return apperrors.Validation("invalid request body")
+	}
+	if err := validate.Struct(req); err != nil {
+		return apperrors.Validation(err.Error())
+	}
+	if err := h.svc.UpdateContactName(c.Context(), id, userID, req.Name); err != nil {
+		return err
+	}
+	return c.SendStatus(204)
+}
+
+func (h *Handler) DeleteContact(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	id := c.Params("id")
+	if id == "" {
+		return apperrors.Validation("contact id required")
+	}
+	if err := h.svc.DeleteContact(c.Context(), id, userID); err != nil {
+		return err
+	}
+	return c.SendStatus(204)
+}
+
+type updateContactSettingsRequest struct {
+	AutoSaveContacts bool `json:"auto_save_contacts"`
+}
+
+func (h *Handler) UpdateContactSettings(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	var req updateContactSettingsRequest
+	if err := c.Bind().JSON(&req); err != nil {
+		return apperrors.Validation("invalid request body")
+	}
+	if err := h.svc.UpdateAutoSaveContacts(c.Context(), userID, req.AutoSaveContacts); err != nil {
+		return err
+	}
+	return c.SendStatus(204)
 }

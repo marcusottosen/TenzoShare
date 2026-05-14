@@ -63,6 +63,11 @@ func main() {
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		ErrorHandler: middleware.ErrorHandler,
+		// ProxyHeader + TrustProxy tell Fiber to read c.IP() from X-Real-IP when
+		// the connection arrives from a trusted private-network proxy (Traefik).
+		ProxyHeader:      "X-Real-IP",
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Private: true},
 	})
 
 	telemetry.Register(app, "notification")

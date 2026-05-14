@@ -52,6 +52,14 @@ type PasswordResetToken struct {
 	CreatedAt time.Time
 }
 
+type Contact struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	Email     string    `json:"email"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type APIKey struct {
 	ID        string
 	UserID    string

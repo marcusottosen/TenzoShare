@@ -4,7 +4,11 @@
 
 api:
   dashboard: true
-  insecure: true   # dashboard reachable at :8080 — disable in production
+  # WARNING: insecure: true is for LOCAL DEVELOPMENT ONLY.
+  # Production MUST use insecure: false with authentication middleware.
+  # With insecure: false, expose the dashboard via a labelled router in
+  # docker-compose with the internal-only middleware (see dynamic/middlewares.yml).
+  insecure: false  # dashboard requires an explicit authenticated router
 
 entryPoints:
   web:
@@ -15,9 +19,15 @@ entryPoints:
         # Default (60s) kills connections at ~60 s regardless of body size.
         readTimeout: 0
         writeTimeout: 0
-    # Forward X-Forwarded headers from Traefik itself
+    # Only trust X-Forwarded-* headers from known internal sources (Docker network).
+    # Clients cannot spoof these headers to bypass rate limiting.
+    # WARNING: insecure: true is for LOCAL DEVELOPMENT ONLY.
+    # Production MUST use insecure: false with the appropriate trustedIPs.
     forwardedHeaders:
-      insecure: true
+      insecure: false
+      trustedIPs:
+        - "127.0.0.1/32"
+        - "172.16.0.0/12"   # Docker internal network range (172.16.x.x – 172.31.x.x)
 
 providers:
   docker:

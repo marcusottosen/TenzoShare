@@ -14,6 +14,7 @@ import (
 	"github.com/tenzoshare/tenzoshare/services/audit/internal/consumer"
 	"github.com/tenzoshare/tenzoshare/services/audit/internal/handlers"
 	"github.com/tenzoshare/tenzoshare/services/audit/internal/repository"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/cache"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/config"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/database"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
@@ -62,6 +63,13 @@ func main() {
 	cons := consumer.New(jsClient, repo, log)
 	h := handlers.New(repo)
 
+	// Redis — used for JWT revocation checks; non-fatal if unavailable
+	cacheClient, err := cache.New(cfg.Redis)
+	if err != nil {
+		log.Warn("redis unavailable — token revocation disabled", zap.Error(err))
+		cacheClient = nil
+	}
+
 	// NATS consumer in background
 	go func() {
 		if err := cons.Start(ctx); err != nil {
@@ -75,6 +83,11 @@ func main() {
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		ErrorHandler: middleware.ErrorHandler,
+		// ProxyHeader + TrustProxy tell Fiber to read c.IP() from X-Real-IP when
+		// the connection arrives from a trusted private-network proxy (Traefik).
+		ProxyHeader:      "X-Real-IP",
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Private: true},
 	})
 
 	pubKey, err := jwtkeys.ParsePublicKey(cfg.JWT.PublicKeyPEM)
@@ -83,7 +96,7 @@ func main() {
 	}
 
 	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
-	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.SecurityHeaders(cfg.App.DevMode))
 	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
 	app.Use(middleware.RequestLogger(log))
 
@@ -95,8 +108,17 @@ func main() {
 		return c.JSON(fiber.Map{"status": "ok", "service": "audit"})
 	})
 
+	// Revocation check — rejects tokens whose JTI is in the Redis blacklist.
+	// If Redis is unavailable, cacheClient is nil and TokenRevocation passes all requests.
+	var revocationCheck fiber.Handler
+	if cacheClient != nil {
+		revocationCheck = middleware.TokenRevocation(cacheClient.IsTokenRevoked)
+	} else {
+		revocationCheck = middleware.TokenRevocation(nil)
+	}
+
 	// Authenticated routes
-	protected := audit.Group("", middleware.JWTAuth(pubKey))
+	protected := audit.Group("", middleware.JWTAuth(pubKey), revocationCheck)
 	protected.Get("/events", h.ListEvents)
 
 	go func() {

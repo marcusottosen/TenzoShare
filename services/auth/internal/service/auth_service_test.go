@@ -152,6 +152,22 @@ func (r *stubUserRepo) ListAPIKeys(_ context.Context, _ string) ([]*domain.APIKe
 
 func (r *stubUserRepo) DeleteAPIKey(_ context.Context, _, _ string) error { return r.err }
 
+func (r *stubUserRepo) GetAPIKeyByHash(_ context.Context, _ string) (*domain.APIKey, error) {
+	return nil, r.err
+}
+
+func (r *stubUserRepo) ListContacts(_ context.Context, _ string) ([]*domain.Contact, error) {
+	return nil, r.err
+}
+func (r *stubUserRepo) CreateContact(_ context.Context, _, _, _ string) (*domain.Contact, error) {
+	return nil, r.err
+}
+func (r *stubUserRepo) UpdateContactName(_ context.Context, _, _, _ string) error { return r.err }
+func (r *stubUserRepo) DeleteContact(_ context.Context, _, _ string) error        { return r.err }
+func (r *stubUserRepo) UpdateAutoSaveContacts(_ context.Context, _ string, _ bool) error {
+	return r.err
+}
+
 func (r *stubUserRepo) GetLockoutConfig(_ context.Context) (int, time.Duration, error) {
 	return 10, 15 * time.Minute, nil
 }

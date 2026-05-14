@@ -100,7 +100,7 @@ func JWTAuth(publicKey *rsa.PublicKey) fiber.Handler {
 				return nil, apperrors.Unauthorized("unexpected token signing method")
 			}
 			return publicKey, nil
-		})
+		}, jwt.WithIssuer("tenzoshare-auth"), jwt.WithAudience("tenzoshare-api"))
 		if err != nil || !token.Valid {
 			return apperrors.Unauthorized("invalid or expired token")
 		}
@@ -114,7 +114,8 @@ func JWTAuth(publicKey *rsa.PublicKey) fiber.Handler {
 
 // SecurityHeaders adds security-related HTTP response headers to every response.
 // These headers defend against XSS, clickjacking, MIME-sniffing, and information leakage.
-func SecurityHeaders() fiber.Handler {
+// Pass devMode=true to suppress HSTS (allows plain HTTP in local development).
+func SecurityHeaders(devMode bool) fiber.Handler {
 	return func(c fiber.Ctx) error {
 		c.Set("X-Frame-Options", "DENY")
 		c.Set("X-Content-Type-Options", "nosniff")
@@ -123,6 +124,11 @@ func SecurityHeaders() fiber.Handler {
 		c.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		c.Set("Content-Security-Policy",
 			"default-src 'none'; frame-ancestors 'none'")
+		if !devMode {
+			// HSTS: instruct browsers to only connect over HTTPS for 1 year.
+			// Omitted in dev mode so plain-HTTP local testing still works.
+			c.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
 		return c.Next()
 	}
 }
@@ -142,7 +148,7 @@ func OptionalJWTAuth(publicKey *rsa.PublicKey) fiber.Handler {
 				return nil, apperrors.Unauthorized("unexpected token signing method")
 			}
 			return publicKey, nil
-		})
+		}, jwt.WithIssuer("tenzoshare-auth"), jwt.WithAudience("tenzoshare-api"))
 		if err != nil || !token.Valid {
 			return c.Next() // invalid token → proceed as unauthenticated
 		}

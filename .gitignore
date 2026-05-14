@@ -57,3 +57,4 @@ acme.json
 trivy-results.json
 gosec-results.json
 .snyk
+.claude

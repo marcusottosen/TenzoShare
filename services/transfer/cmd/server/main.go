@@ -46,7 +46,7 @@ func main() {
 	}
 	defer pool.Close()
 
-	repo := repository.NewTransferRepository(pool)
+	repo := repository.NewTransferRepository(pool, log)
 	requestRepo := repository.NewRequestRepository(pool)
 
 	// NATS JetStream — non-fatal if unavailable
@@ -64,7 +64,10 @@ func main() {
 	svc := service.New(repo, cfg, jsClient, log)
 	storageURL := getEnvOr("STORAGE_SERVICE_URL", "http://tenzoshare-storage:8083")
 	requestSvc := service.NewRequestService(requestRepo, cfg, jsClient, log, storageURL)
-	h := handlers.New(svc, requestSvc, cfg.JWT.PrivateKeyPEM, storageURL)
+	h, err := handlers.New(svc, requestSvc, cfg.JWT.PrivateKeyPEM, storageURL)
+	if err != nil {
+		log.Fatal("failed to initialise transfer handler", zap.Error(err))
+	}
 
 	pubKey, err := jwtkeys.ParsePublicKey(cfg.JWT.PublicKeyPEM)
 	if err != nil {
@@ -76,18 +79,25 @@ func main() {
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		ErrorHandler: middleware.ErrorHandler,
+		// ProxyHeader + TrustProxy tell Fiber to read c.IP() from X-Real-IP when
+		// the connection arrives from a trusted private-network proxy (Traefik).
+		ProxyHeader:      "X-Real-IP",
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Private: true},
 	})
 
 	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
-	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.SecurityHeaders(cfg.App.DevMode))
 	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
 	app.Use(middleware.RequestLogger(log))
 
 	telemetry.Register(app, "transfer")
 
-	// Public: access a transfer by slug (downloaders, no auth required)
-	app.Get("/api/v1/t/:slug", h.Access)
-	app.Get("/api/v1/t/:slug/files/:fileId/download", h.DownloadURL)
+	// Public: access a transfer by slug (downloaders, no auth required).
+	// POST is used so the optional password is sent in the JSON body rather than
+	// a URL query parameter (which would appear in logs, history, and Referer headers).
+	app.Post("/api/v1/t/:slug", h.Access)
+	app.Post("/api/v1/t/:slug/files/:fileId/download", h.DownloadURL)
 	app.Get("/api/v1/transfers/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "service": "transfer"})
 	})

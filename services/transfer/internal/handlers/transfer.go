@@ -36,11 +36,10 @@ type Handler struct {
 	storageURL    string
 }
 
-func New(svc *service.TransferService, requestSvc *service.RequestService, jwtPrivateKeyPEM, storageURL string) *Handler {
+func New(svc *service.TransferService, requestSvc *service.RequestService, jwtPrivateKeyPEM, storageURL string) (*Handler, error) {
 	privKey, err := jwtkeys.ParsePrivateKey(jwtPrivateKeyPEM)
 	if err != nil {
-		// panic at startup — private key is required for service-to-service tokens
-		panic("transfer handler: " + err.Error())
+		return nil, fmt.Errorf("transfer handler: parse JWT private key: %w", err)
 	}
 	return &Handler{
 		svc:           svc,
@@ -48,7 +47,7 @@ func New(svc *service.TransferService, requestSvc *service.RequestService, jwtPr
 		validate:      validator.New(),
 		jwtPrivateKey: privKey,
 		storageURL:    storageURL,
-	}
+	}, nil
 }
 
 type createRequest struct {
@@ -165,14 +164,24 @@ func (h *Handler) Revoke(c fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// accessRequest is the optional request body for Access and DownloadURL.
+// Password is sent in the JSON body rather than a query parameter to prevent
+// it appearing in server logs, browser history, and Referrer headers.
+type accessRequest struct {
+	Password string `json:"password"`
+}
+
 // Access is the public (unauthenticated) download-info endpoint.
-// GET /api/v1/t/:slug  — optionally with ?password=
+// POST /api/v1/t/:slug  — optionally with JSON body {"password": "..."}
 // Does NOT increment any counter — viewing the download page is not a download.
 // Returns per-file download counts (file_download_counts map) when max_downloads > 0
 // so the download UI can show per-file availability without requiring an attempt.
 func (h *Handler) Access(c fiber.Ctx) error {
 	slug := c.Params("slug")
-	password := c.Query("password")
+	var req accessRequest
+	// Ignore parse error — body is optional (no password on first call)
+	_ = c.Bind().JSON(&req)
+	password := req.Password
 
 	result, err := h.svc.Validate(c.Context(), service.AccessParams{
 		Slug:     slug,
@@ -238,7 +247,8 @@ func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 
 // DownloadURL returns a presigned download URL for a single file in a public transfer.
 //
-// GET /api/v1/t/:slug/files/:fileId/download[?password=...]
+// POST /api/v1/t/:slug/files/:fileId/download
+// Accepts optional JSON body {"password": "..."} for password-protected transfers.
 //
 // This endpoint:
 //  1. Validates the transfer (slug, optional password, expiry, revocation).
@@ -253,7 +263,10 @@ func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 func (h *Handler) DownloadURL(c fiber.Ctx) error {
 	slug := c.Params("slug")
 	fileID := c.Params("fileId")
-	password := c.Query("password")
+	var req accessRequest
+	// Ignore parse error — body is optional (passwordless transfers)
+	_ = c.Bind().JSON(&req)
+	password := req.Password
 
 	// AttemptFileDownload validates the transfer, confirms file ownership, and
 	// atomically enforces the per-file download limit.
@@ -350,6 +363,8 @@ func (h *Handler) issueServiceToken(subject string) (string, error) {
 		"jti":  uuid.New().String(),
 		"iat":  now.Unix(),
 		"exp":  now.Add(30 * time.Second).Unix(),
+		"iss":  "tenzoshare-auth",
+		"aud":  jwt.ClaimStrings{"tenzoshare-api"},
 	}
 	t := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	return t.SignedString(h.jwtPrivateKey)

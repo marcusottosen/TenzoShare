@@ -93,10 +93,17 @@ func main() {
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		ErrorHandler: middleware.ErrorHandler,
+		// ProxyHeader + TrustProxy tell Fiber to read c.IP() from X-Real-IP when
+		// the connection arrives from a trusted private-network proxy (Traefik).
+		// Clients on the public internet cannot spoof X-Real-IP because Traefik
+		// overwrites it before forwarding to service containers.
+		ProxyHeader:      "X-Real-IP",
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Private: true},
 	})
 
 	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
-	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.SecurityHeaders(cfg.App.DevMode))
 	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
 	app.Use(middleware.RequestLogger(log))
 
@@ -134,6 +141,13 @@ func main() {
 	userRoutes.Get("/apikeys", h.ListAPIKeys)
 	userRoutes.Post("/apikeys", h.CreateAPIKey)
 	userRoutes.Delete("/apikeys/:id", h.DeleteAPIKey)
+
+	// Contacts — /api/v1/users/contacts
+	userRoutes.Get("/contacts", h.ListContacts)
+	userRoutes.Post("/contacts", h.CreateContact)
+	userRoutes.Patch("/contacts/settings", h.UpdateContactSettings)
+	userRoutes.Patch("/contacts/:id", h.UpdateContact)
+	userRoutes.Delete("/contacts/:id", h.DeleteContact)
 
 	go func() {
 		log.Info("auth service starting", zap.String("port", cfg.Server.Port))

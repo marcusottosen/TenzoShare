@@ -6,6 +6,7 @@ import (
 	"fmt"
 	stdlog "log"
 	"net/http"
+	"net/smtp"
 	"os"
 	"os/signal"
 	"strconv"
@@ -160,6 +161,11 @@ func main() {
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		ErrorHandler: middleware.ErrorHandler,
+		// ProxyHeader + TrustProxy tell Fiber to read c.IP() from X-Real-IP when
+		// the connection arrives from a trusted private-network proxy (Traefik).
+		ProxyHeader:      "X-Real-IP",
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Private: true},
 	})
 
 	pubKey, err := jwtkeys.ParsePublicKey(cfg.JWT.PublicKeyPEM)
@@ -168,7 +174,7 @@ func main() {
 	}
 
 	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
-	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.SecurityHeaders(cfg.App.DevMode))
 	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
 	app.Use(middleware.RequestLogger(log))
 
@@ -207,6 +213,24 @@ func main() {
 	v1.Put("/auth/config", handlePutAuthConfig)
 	v1.Get("/branding", handleGetBranding)
 	v1.Put("/branding", handlePutBranding)
+
+	// Platform settings
+	v1.Get("/platform/config", handleGetPlatformConfig)
+	v1.Put("/platform/config", handlePutPlatformConfig)
+
+	// SMTP settings
+	v1.Get("/settings/smtp", handleGetSMTPSettings)
+	v1.Put("/settings/smtp", handlePutSMTPSettings)
+	v1.Post("/settings/smtp/test", handleTestSMTPSettings)
+
+	// Per-user quota overrides
+	v1.Get("/quotas", handleListQuotas)
+	v1.Get("/users/:id/quota", handleGetUserQuota)
+	v1.Put("/users/:id/quota", handlePutUserQuota)
+	v1.Delete("/users/:id/quota", handleDeleteUserQuota)
+
+	// MFA admin actions
+	v1.Delete("/users/:id/mfa", handleAdminDeleteMFA)
 
 	// Public branding endpoint — no auth required so user-facing sites can fetch it.
 	app.Get("/api/v1/branding", handleGetBrandingPublic)
@@ -1989,4 +2013,409 @@ func containsStr(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// ── Platform config ──────────────────────────────────────────────────────────
+
+type PlatformConfig struct {
+	DateFormat           string `json:"date_format"`
+	TimeFormat           string `json:"time_format"`
+	Timezone             string `json:"timezone"`
+	PortalURL            string `json:"portal_url"`
+	DownloadURL          string `json:"download_url"`
+	LinkProtectionPolicy string `json:"link_protection_policy"`
+	UpdatedAt            string `json:"updated_at"`
+}
+
+// GET /api/v1/admin/platform/config
+func handleGetPlatformConfig(c fiber.Ctx) error {
+	var p PlatformConfig
+	var updatedAt time.Time
+	err := db.QueryRow(c.Context(), `
+		SELECT date_format, time_format, timezone, portal_url, download_url,
+		       link_protection_policy, updated_at
+		FROM admin_svc.platform_settings WHERE id = 1`,
+	).Scan(&p.DateFormat, &p.TimeFormat, &p.Timezone, &p.PortalURL, &p.DownloadURL,
+		&p.LinkProtectionPolicy, &updatedAt)
+	if err != nil {
+		return apperrors.Internal("get platform config", err)
+	}
+	p.UpdatedAt = updatedAt.Format(time.RFC3339)
+	return c.JSON(p)
+}
+
+// PUT /api/v1/admin/platform/config
+func handlePutPlatformConfig(c fiber.Ctx) error {
+	var body struct {
+		DateFormat           *string `json:"date_format"`
+		TimeFormat           *string `json:"time_format"`
+		Timezone             *string `json:"timezone"`
+		PortalURL            *string `json:"portal_url"`
+		DownloadURL          *string `json:"download_url"`
+		LinkProtectionPolicy *string `json:"link_protection_policy"`
+	}
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return apperrors.BadRequest("invalid JSON body")
+	}
+	if body.DateFormat != nil {
+		switch *body.DateFormat {
+		case "ISO", "EU", "US", "DE", "LONG":
+		default:
+			return apperrors.BadRequest("invalid date_format")
+		}
+	}
+	if body.TimeFormat != nil && *body.TimeFormat != "12h" && *body.TimeFormat != "24h" {
+		return apperrors.BadRequest("time_format must be '12h' or '24h'")
+	}
+	if body.LinkProtectionPolicy != nil {
+		switch *body.LinkProtectionPolicy {
+		case "none", "password", "email", "either":
+		default:
+			return apperrors.BadRequest("invalid link_protection_policy")
+		}
+	}
+	_, err := db.Exec(c.Context(), `
+		UPDATE admin_svc.platform_settings SET
+			date_format            = COALESCE($1, date_format),
+			time_format            = COALESCE($2, time_format),
+			timezone               = COALESCE($3, timezone),
+			portal_url             = COALESCE($4, portal_url),
+			download_url           = COALESCE($5, download_url),
+			link_protection_policy = COALESCE($6, link_protection_policy),
+			updated_at             = now()
+		WHERE id = 1`,
+		body.DateFormat, body.TimeFormat, body.Timezone, body.PortalURL,
+		body.DownloadURL, body.LinkProtectionPolicy,
+	)
+	if err != nil {
+		return apperrors.Internal("update platform config", err)
+	}
+
+	var p PlatformConfig
+	var updatedAt time.Time
+	_ = db.QueryRow(c.Context(), `
+		SELECT date_format, time_format, timezone, portal_url, download_url,
+		       link_protection_policy, updated_at
+		FROM admin_svc.platform_settings WHERE id = 1`,
+	).Scan(&p.DateFormat, &p.TimeFormat, &p.Timezone, &p.PortalURL, &p.DownloadURL,
+		&p.LinkProtectionPolicy, &updatedAt)
+	p.UpdatedAt = updatedAt.Format(time.RFC3339)
+
+	publishAdminAudit(c, "admin.platform_config_updated", "platform_settings", nil)
+	return c.JSON(p)
+}
+
+// ── SMTP settings ──────────────────────────────────────────────────────────────
+
+// smtpEncKey derives a 32-byte AES key from the app Pepper for SMTP password
+// encryption. This avoids storing SMTP passwords in plaintext.
+func smtpEncKey() []byte {
+	key := []byte(cfg.App.Pepper + "smtp-password-enc-v1")
+	if len(key) >= 32 {
+		return key[:32]
+	}
+	// Pad to 32 bytes if pepper is short (dev env / tests).
+	padded := make([]byte, 32)
+	copy(padded, key)
+	return padded
+}
+
+type SMTPSettings struct {
+	Host        string `json:"host"`
+	Port        string `json:"port"`
+	Username    string `json:"username"`
+	From        string `json:"from"`
+	UseTLS      bool   `json:"use_tls"`
+	HasPassword bool   `json:"has_password"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
+// GET /api/v1/admin/settings/smtp
+func handleGetSMTPSettings(c fiber.Ctx) error {
+	var s SMTPSettings
+	var passwordEnc *string
+	var updatedAt time.Time
+	err := db.QueryRow(c.Context(), `
+		SELECT smtp_host, smtp_port, smtp_username, smtp_password_enc,
+		       smtp_from, smtp_use_tls, updated_at
+		FROM admin_svc.smtp_settings WHERE id = 1`,
+	).Scan(&s.Host, &s.Port, &s.Username, &passwordEnc, &s.From, &s.UseTLS, &updatedAt)
+	if err != nil {
+		return apperrors.Internal("get smtp settings", err)
+	}
+	s.HasPassword = passwordEnc != nil && *passwordEnc != ""
+	s.UpdatedAt = updatedAt.Format(time.RFC3339)
+	return c.JSON(s)
+}
+
+// PUT /api/v1/admin/settings/smtp
+func handlePutSMTPSettings(c fiber.Ctx) error {
+	var body struct {
+		Host     *string `json:"host"`
+		Port     *string `json:"port"`
+		Username *string `json:"username"`
+		Password *string `json:"password"` // set only when changing
+		From     *string `json:"from"`
+		UseTLS   *bool   `json:"use_tls"`
+	}
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return apperrors.BadRequest("invalid JSON body")
+	}
+
+	// Encrypt new password if provided.
+	var passwordEncSQL *string
+	if body.Password != nil {
+		if *body.Password == "" {
+			// Explicit clear
+			empty := ""
+			passwordEncSQL = &empty
+		} else {
+			enc, err := crypto.Encrypt([]byte(*body.Password), smtpEncKey())
+			if err != nil {
+				return apperrors.Internal("encrypt smtp password", err)
+			}
+			passwordEncSQL = &enc
+		}
+	}
+
+	_, err := db.Exec(c.Context(), `
+		UPDATE admin_svc.smtp_settings SET
+			smtp_host         = COALESCE($1, smtp_host),
+			smtp_port         = COALESCE($2, smtp_port),
+			smtp_username     = COALESCE($3, smtp_username),
+			smtp_password_enc = COALESCE($4, smtp_password_enc),
+			smtp_from         = COALESCE($5, smtp_from),
+			smtp_use_tls      = COALESCE($6, smtp_use_tls),
+			updated_at        = now()
+		WHERE id = 1`,
+		body.Host, body.Port, body.Username, passwordEncSQL, body.From, body.UseTLS,
+	)
+	if err != nil {
+		return apperrors.Internal("update smtp settings", err)
+	}
+
+	var s SMTPSettings
+	var passwordEnc *string
+	var updatedAt time.Time
+	_ = db.QueryRow(c.Context(), `
+		SELECT smtp_host, smtp_port, smtp_username, smtp_password_enc,
+		       smtp_from, smtp_use_tls, updated_at
+		FROM admin_svc.smtp_settings WHERE id = 1`,
+	).Scan(&s.Host, &s.Port, &s.Username, &passwordEnc, &s.From, &s.UseTLS, &updatedAt)
+	s.HasPassword = passwordEnc != nil && *passwordEnc != ""
+	s.UpdatedAt = updatedAt.Format(time.RFC3339)
+
+	publishAdminAudit(c, "admin.smtp_settings_updated", "smtp_settings", nil)
+	return c.JSON(s)
+}
+
+// POST /api/v1/admin/settings/smtp/test
+func handleTestSMTPSettings(c fiber.Ctx) error {
+	// Accept an optional override body (same shape as PUT) for testing before saving.
+	var body struct {
+		Host     *string `json:"host"`
+		Port     *string `json:"port"`
+		Username *string `json:"username"`
+		Password *string `json:"password"`
+		From     *string `json:"from"`
+		UseTLS   *bool   `json:"use_tls"`
+	}
+	// Body is optional — ignore parse errors.
+	_ = json.Unmarshal(c.Body(), &body)
+
+	// Fetch stored settings as the baseline.
+	var host, port, username, from string
+	var passwordEnc *string
+	var useTLS bool
+	err := db.QueryRow(c.Context(), `
+		SELECT smtp_host, smtp_port, smtp_username, smtp_password_enc,
+		       smtp_from, smtp_use_tls
+		FROM admin_svc.smtp_settings WHERE id = 1`,
+	).Scan(&host, &port, &username, &passwordEnc, &from, &useTLS)
+	if err != nil {
+		return apperrors.Internal("get smtp settings", err)
+	}
+
+	// Apply overrides from body.
+	if body.Host != nil {
+		host = *body.Host
+	}
+	if body.Port != nil {
+		port = *body.Port
+	}
+	if body.Username != nil {
+		username = *body.Username
+	}
+	if body.From != nil {
+		from = *body.From
+	}
+	if body.UseTLS != nil {
+		useTLS = *body.UseTLS
+	}
+
+	// Resolve password: body override takes precedence; otherwise decrypt stored.
+	password := ""
+	if body.Password != nil {
+		password = *body.Password
+	} else if passwordEnc != nil && *passwordEnc != "" {
+		if dec, decErr := crypto.Decrypt(*passwordEnc, smtpEncKey()); decErr == nil {
+			password = string(dec)
+		}
+	}
+
+	if host == "" {
+		return c.JSON(fiber.Map{"ok": false, "error": "SMTP host is not configured"})
+	}
+
+	addr := host + ":" + port
+	var auth smtp.Auth
+	if username != "" {
+		auth = smtp.PlainAuth("", username, password, host)
+	}
+
+	var dialErr error
+	if useTLS {
+		// For TLS we attempt a plain TCP connect + EHLO via net/smtp
+		// (full TLS would need crypto/tls; STARTTLS is covered by the else branch).
+		dialErr = smtp.SendMail(addr, auth, from, []string{from},
+			[]byte("Subject: TenzoShare SMTP Test\r\n\r\nThis is a connectivity test."))
+	} else {
+		c2, err2 := smtp.Dial(addr)
+		if err2 != nil {
+			dialErr = err2
+		} else {
+			defer c2.Quit() //nolint:errcheck
+			if auth != nil {
+				if err2 = c2.Auth(auth); err2 != nil {
+					dialErr = err2
+				}
+			}
+		}
+	}
+
+	if dialErr != nil {
+		return c.JSON(fiber.Map{"ok": false, "error": dialErr.Error()})
+	}
+	return c.JSON(fiber.Map{"ok": true})
+}
+
+// ── User quotas ───────────────────────────────────────────────────────────────
+
+type UserQuotaOverride struct {
+	UserID     string `json:"user_id"`
+	QuotaBytes int64  `json:"quota_bytes"`
+	UpdatedAt  string `json:"updated_at"`
+	UpdatedBy  string `json:"updated_by"`
+}
+
+// GET /api/v1/admin/quotas — list all per-user quota overrides
+func handleListQuotas(c fiber.Ctx) error {
+	rows, err := db.Query(c.Context(), `
+		SELECT user_id, quota_bytes, updated_at, updated_by
+		FROM admin_svc.user_quotas
+		ORDER BY updated_at DESC`)
+	if err != nil {
+		return apperrors.Internal("list quotas", err)
+	}
+	defer rows.Close()
+
+	overrides := make([]UserQuotaOverride, 0)
+	for rows.Next() {
+		var q UserQuotaOverride
+		var updatedAt time.Time
+		if err := rows.Scan(&q.UserID, &q.QuotaBytes, &updatedAt, &q.UpdatedBy); err != nil {
+			continue
+		}
+		q.UpdatedAt = updatedAt.Format(time.RFC3339)
+		overrides = append(overrides, q)
+	}
+	if err := rows.Err(); err != nil {
+		return apperrors.Internal("iterate quotas", err)
+	}
+	return c.JSON(fiber.Map{"overrides": overrides})
+}
+
+// GET /api/v1/admin/users/:id/quota
+func handleGetUserQuota(c fiber.Ctx) error {
+	id := c.Params("id")
+	var q UserQuotaOverride
+	var updatedAt time.Time
+	err := db.QueryRow(c.Context(), `
+		SELECT user_id, quota_bytes, updated_at, updated_by
+		FROM admin_svc.user_quotas WHERE user_id = $1`, id,
+	).Scan(&q.UserID, &q.QuotaBytes, &updatedAt, &q.UpdatedBy)
+	if err != nil {
+		return apperrors.NotFound("no quota override for this user")
+	}
+	q.UpdatedAt = updatedAt.Format(time.RFC3339)
+	return c.JSON(q)
+}
+
+// PUT /api/v1/admin/users/:id/quota  body: {quota_bytes}
+func handlePutUserQuota(c fiber.Ctx) error {
+	id := c.Params("id")
+	var body struct {
+		QuotaBytes int64 `json:"quota_bytes"`
+	}
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return apperrors.BadRequest("invalid JSON body")
+	}
+	if body.QuotaBytes <= 0 {
+		return apperrors.BadRequest("quota_bytes must be > 0")
+	}
+
+	callerEmail := ""
+	if claims, ok := c.Locals("claims").(*middleware.Claims); ok {
+		callerEmail = claims.Email
+	}
+	_, err := db.Exec(c.Context(), `
+		INSERT INTO admin_svc.user_quotas (user_id, quota_bytes, updated_by)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (user_id) DO UPDATE
+		SET quota_bytes = EXCLUDED.quota_bytes,
+		    updated_by  = EXCLUDED.updated_by,
+		    updated_at  = now()`,
+		id, body.QuotaBytes, callerEmail,
+	)
+	if err != nil {
+		return apperrors.Internal("upsert user quota", err)
+	}
+
+	publishAdminAudit(c, "admin.user_quota_set", id,
+		map[string]any{"target_user_id": id, "quota_bytes": body.QuotaBytes})
+	return c.JSON(fiber.Map{"ok": true, "user_id": id, "quota_bytes": body.QuotaBytes})
+}
+
+// DELETE /api/v1/admin/users/:id/quota — remove override, user falls back to global quota
+func handleDeleteUserQuota(c fiber.Ctx) error {
+	id := c.Params("id")
+	tag, err := db.Exec(c.Context(),
+		"DELETE FROM admin_svc.user_quotas WHERE user_id = $1", id)
+	if err != nil {
+		return apperrors.Internal("delete user quota", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperrors.NotFound("no quota override for this user")
+	}
+	publishAdminAudit(c, "admin.user_quota_deleted", id, map[string]any{"target_user_id": id})
+	return c.JSON(fiber.Map{"ok": true})
+}
+
+// ── MFA admin actions ─────────────────────────────────────────────────────────
+
+// DELETE /api/v1/admin/users/:id/mfa — revoke a user's MFA enrollment
+func handleAdminDeleteMFA(c fiber.Ctx) error {
+	id := c.Params("id")
+	// Delete from auth.mfa_secrets via cross-schema operation.
+	// The admin service shares the same DB so can access auth schema.
+	tag, err := db.Exec(c.Context(),
+		"DELETE FROM auth.mfa_secrets WHERE user_id = $1", id)
+	if err != nil {
+		return apperrors.Internal("delete mfa secret", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperrors.NotFound("no MFA enrollment found for this user")
+	}
+	publishAdminAudit(c, "admin.user_mfa_revoked", id, map[string]any{"target_user_id": id})
+	return c.JSON(fiber.Map{"ok": true})
 }

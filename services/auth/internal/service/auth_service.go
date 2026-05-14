@@ -2,17 +2,19 @@ package service
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 	"go.uber.org/zap"
 
@@ -82,6 +84,12 @@ type userRepository interface {
 	CreateAPIKey(ctx context.Context, userID, name, keyHash, keyPrefix string, expiresAt *time.Time) (*domain.APIKey, error)
 	ListAPIKeys(ctx context.Context, userID string) ([]*domain.APIKey, error)
 	DeleteAPIKey(ctx context.Context, id, userID string) error
+	GetAPIKeyByHash(ctx context.Context, keyHash string) (*domain.APIKey, error)
+	ListContacts(ctx context.Context, userID string) ([]*domain.Contact, error)
+	CreateContact(ctx context.Context, userID, email, name string) (*domain.Contact, error)
+	UpdateContactName(ctx context.Context, id, userID, name string) error
+	DeleteContact(ctx context.Context, id, userID string) error
+	UpdateAutoSaveContacts(ctx context.Context, userID string, autoSave bool) error
 }
 
 type AuthService struct {
@@ -150,21 +158,39 @@ func parseRSAPrivateKey(pemStr string) (*rsa.PrivateKey, error) {
 	return x509.ParsePKCS1PrivateKey(block.Bytes)
 }
 
-// deriveMFAKey derives a 32-byte AES key from the password pepper.
-// If pepper is a 64-hex string (32 bytes), decode it; otherwise pad/truncate to 32 bytes.
+// deriveMFAKey derives a 32-byte AES key from the password pepper using
+// HKDF-SHA256 (RFC 5869). This is safe regardless of pepper length and avoids
+// the zero-padding issue of a direct copy when pepper is shorter than 32 bytes.
 func deriveMFAKey(pepper string) ([]byte, error) {
 	if pepper == "" {
 		return nil, fmt.Errorf("PASSWORD_PEPPER is not set")
 	}
-	if len(pepper) == 64 {
-		b, err := hex.DecodeString(pepper)
-		if err == nil && len(b) == 32 {
-			return b, nil
-		}
+	return hkdfSHA256([]byte(pepper), []byte("tenzoshare_mfa_key_v1"), 32), nil
+}
+
+// hkdfSHA256 implements HKDF-SHA256 (RFC 5869) using only the standard library.
+// ikm is the input key material, info is the context/label, length is output size.
+func hkdfSHA256(ikm, info []byte, length int) []byte {
+	// Extract: PRK = HMAC-SHA256(salt=zeros[32], IKM)
+	salt := make([]byte, sha256.Size)
+	mac := hmac.New(sha256.New, salt)
+	mac.Write(ikm)
+	prk := mac.Sum(nil)
+
+	// Expand: OKM = T(1) || T(2) || ... where T(i) = HMAC-SHA256(PRK, T(i-1) || info || i)
+	result := make([]byte, 0, length)
+	t := []byte{}
+	counter := byte(1)
+	for len(result) < length {
+		mac := hmac.New(sha256.New, prk)
+		mac.Write(t)
+		mac.Write(info)
+		mac.Write([]byte{counter})
+		t = mac.Sum(nil)
+		result = append(result, t...)
+		counter++
 	}
-	key := make([]byte, 32)
-	copy(key, []byte(pepper))
-	return key, nil
+	return result[:length]
 }
 
 // lockoutConfig returns the current lockout policy, reading from DB if the
@@ -209,7 +235,8 @@ func (s *AuthService) Register(ctx context.Context, email, password, clientIP st
 		limited, err := s.checkRateLimitGeneric(ctx, "ratelimit:register:"+clientIP, registerRateLimit, registerRateLimitWindow)
 		if err != nil {
 			s.log.Warn("register rate-limit check failed", zap.Error(err))
-		} else if limited {
+		}
+		if limited {
 			return nil, apperrors.RateLimit("too many registrations from this IP; try again later")
 		}
 	}
@@ -234,7 +261,20 @@ func (s *AuthService) Login(ctx context.Context, email, password, clientIP strin
 		limited, err := s.checkRateLimit(ctx, clientIP)
 		if err != nil {
 			s.log.Warn("rate limit check failed", zap.Error(err))
-		} else if limited {
+		}
+		if limited {
+			return nil, nil, apperrors.RateLimit("too many login attempts; try again in 15 minutes")
+		}
+	}
+
+	// Per-email rate limit — prevents distributed credential-stuffing where the
+	// attacker rotates source IPs but targets the same account.
+	if email != "" && s.cache != nil {
+		limited, err := s.checkRateLimitGeneric(ctx, "ratelimit:login:email:"+email, loginRateLimit, loginRateLimitWindow)
+		if err != nil {
+			s.log.Warn("email rate limit check failed", zap.Error(err))
+		}
+		if limited {
 			return nil, nil, apperrors.RateLimit("too many login attempts; try again in 15 minutes")
 		}
 	}
@@ -289,7 +329,8 @@ func (s *AuthService) LoginWithMFA(ctx context.Context, userID, otpCode string) 
 
 	mfaSecret, err := s.repo.GetMFASecret(ctx, userID)
 	if err != nil {
-		return nil, apperrors.Unauthorized("mfa not configured")
+		s.log.Warn("mfa secret not found during mfa login", zap.String("user_id", userID))
+		return nil, apperrors.Unauthorized("invalid OTP code")
 	}
 
 	encKey := s.mfaEncryptionKey()
@@ -298,7 +339,13 @@ func (s *AuthService) LoginWithMFA(ctx context.Context, userID, otpCode string) 
 		return nil, apperrors.Internal("decrypt mfa secret", err)
 	}
 
-	if !totp.Validate(otpCode, string(rawSecret)) {
+	valid, err := totp.ValidateCustom(otpCode, string(rawSecret), time.Now().UTC(), totp.ValidateOpts{
+		Period:    30,
+		Skew:      1, // allow 1 step tolerance for clock skew
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	if err != nil || !valid {
 		s.publishAudit(ctx, AuditEvent{
 			Action: "login_mfa", UserID: userID, Success: false,
 			Reason: "invalid OTP", Timestamp: time.Now(),
@@ -384,7 +431,13 @@ func (s *AuthService) VerifyMFA(ctx context.Context, userID, otpCode string) err
 		return apperrors.Internal("decrypt mfa secret", err)
 	}
 
-	if !totp.Validate(otpCode, string(rawSecret)) {
+	valid, err := totp.ValidateCustom(otpCode, string(rawSecret), time.Now().UTC(), totp.ValidateOpts{
+		Period:    30,
+		Skew:      1, // allow 1 step tolerance for clock skew
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	if err != nil || !valid {
 		return apperrors.Unauthorized("invalid OTP code")
 	}
 
@@ -403,8 +456,9 @@ func (s *AuthService) RequestPasswordReset(ctx context.Context, email, clientIP 
 		limited, err = s.checkRateLimitGeneric(ctx, "ratelimit:pwreset:"+clientIP, passwordResetRateLimit, passwordResetRateLimitWindow)
 		if err != nil {
 			s.log.Warn("password-reset rate-limit check failed", zap.Error(err))
-			err = nil // non-fatal
-		} else if limited {
+			err = nil
+		}
+		if limited {
 			return "", "", apperrors.RateLimit("too many password-reset requests from this IP; try again later")
 		}
 	}
@@ -460,7 +514,7 @@ func (s *AuthService) ValidateAccessToken(tokenString string) (*middleware.Claim
 			return nil, apperrors.Unauthorized("unexpected signing method")
 		}
 		return s.publicKey, nil
-	})
+	}, jwt.WithIssuer("tenzoshare-auth"), jwt.WithAudience("tenzoshare-api"))
 	if err != nil || !token.Valid {
 		return nil, apperrors.Unauthorized("invalid or expired token")
 	}
@@ -501,6 +555,8 @@ func (s *AuthService) signAccessToken(user *domain.User) (string, error) {
 			Subject:   user.ID,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(s.cfg.JWT.AccessTTL)),
+			Issuer:    "tenzoshare-auth",
+			Audience:  jwt.ClaimStrings{"tenzoshare-api"},
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
@@ -517,7 +573,8 @@ func (s *AuthService) mfaEncryptionKey() []byte {
 
 func (s *AuthService) checkRateLimit(ctx context.Context, clientIP string) (bool, error) {
 	if s.cache == nil {
-		return false, nil
+		s.log.Warn("rate limiter unavailable (cache is nil); denying request as fail-safe", zap.String("key", clientIP))
+		return true, fmt.Errorf("rate limiter unavailable")
 	}
 	key := fmt.Sprintf("ratelimit:login:%s", clientIP)
 	count, err := s.cache.Incr(ctx, key)
@@ -532,7 +589,8 @@ func (s *AuthService) checkRateLimit(ctx context.Context, clientIP string) (bool
 
 func (s *AuthService) checkRateLimitGeneric(ctx context.Context, key string, limit int64, window time.Duration) (bool, error) {
 	if s.cache == nil {
-		return false, nil
+		s.log.Warn("rate limiter unavailable (cache is nil); denying request as fail-safe", zap.String("key", key))
+		return true, fmt.Errorf("rate limiter unavailable")
 	}
 	count, err := s.cache.Incr(ctx, key)
 	if err != nil {
@@ -645,6 +703,26 @@ func hashAPIKey(rawKey string) string {
 	return fmt.Sprintf("%x", h)
 }
 
+// ValidateAPIKey authenticates a raw API key by hashing it and looking it up.
+// Expiry is enforced at the database level via GetAPIKeyByHash.
+// Returns the matching APIKey record, or Unauthorized if invalid/expired.
+func (s *AuthService) ValidateAPIKey(ctx context.Context, rawKey string) (*domain.APIKey, error) {
+	if rawKey == "" {
+		return nil, apperrors.Unauthorized("api key required")
+	}
+	keyHash := hashAPIKey(rawKey)
+	k, err := s.repo.GetAPIKeyByHash(ctx, keyHash)
+	if err != nil {
+		// Map not-found/expired to Unauthorized so callers don't leak key existence.
+		var appErr *apperrors.AppError
+		if errors.As(err, &appErr) && appErr.Code == apperrors.CodeNotFound {
+			return nil, apperrors.Unauthorized("invalid or expired api key")
+		}
+		return nil, err
+	}
+	return k, nil
+}
+
 // ChangePasswordParams holds inputs for a self-service password change.
 type ChangePasswordParams struct {
 	UserID          string
@@ -685,4 +763,26 @@ func (s *AuthService) ChangePassword(ctx context.Context, p ChangePasswordParams
 		Success: true,
 	})
 	return nil
+}
+
+// ── Contacts ─────────────────────────────────────────────────────────────────
+
+func (s *AuthService) ListContacts(ctx context.Context, userID string) ([]*domain.Contact, error) {
+	return s.repo.ListContacts(ctx, userID)
+}
+
+func (s *AuthService) CreateContact(ctx context.Context, userID, email, name string) (*domain.Contact, error) {
+	return s.repo.CreateContact(ctx, userID, email, name)
+}
+
+func (s *AuthService) UpdateContactName(ctx context.Context, id, userID, name string) error {
+	return s.repo.UpdateContactName(ctx, id, userID, name)
+}
+
+func (s *AuthService) DeleteContact(ctx context.Context, id, userID string) error {
+	return s.repo.DeleteContact(ctx, id, userID)
+}
+
+func (s *AuthService) UpdateAutoSaveContacts(ctx context.Context, userID string, autoSave bool) error {
+	return s.repo.UpdateAutoSaveContacts(ctx, userID, autoSave)
 }

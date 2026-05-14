@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -242,7 +243,9 @@ func (b *MinIOBackend) Delete(ctx context.Context, key string) error {
 }
 
 func (b *MinIOBackend) GetPresignedURL(ctx context.Context, key, filename string, expiry time.Duration) (string, error) {
-	disposition := fmt.Sprintf(`attachment; filename="%s"`, filename)
+	safeFilename := strings.ReplaceAll(filename, `\`, `\\`)
+	safeFilename = strings.ReplaceAll(safeFilename, `"`, `\"`)
+	disposition := fmt.Sprintf(`attachment; filename="%s"`, safeFilename)
 	req, err := b.presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket:                     aws.String(b.bucket),
 		Key:                        aws.String(key),

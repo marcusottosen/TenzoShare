@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	stdlog "log"
-	"math"
 	"os"
 	"os/signal"
 	"strings"
@@ -84,9 +83,14 @@ func main() {
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		ErrorHandler: middleware.ErrorHandler,
-		// BodyLimit: no HTTP-level body size cap — quota is enforced in the Upload handler.
-		// Set to math.MaxInt so fasthttp never rejects on size alone.
-		BodyLimit: math.MaxInt,
+		// ProxyHeader + TrustProxy tell Fiber to read c.IP() from X-Real-IP when
+		// the connection arrives from a trusted private-network proxy (Traefik).
+		ProxyHeader:      "X-Real-IP",
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Private: true},
+		// BodyLimit is a DoS guard only — the Upload handler enforces per-user quota.
+		// 10 GiB allows legitimate large uploads while preventing unbounded body reads.
+		BodyLimit: 10 * 1024 * 1024 * 1024, // 10 GiB — TODO: make configurable
 		// StreamRequestBody: true tells fasthttp to call the handler as soon as the
 		// request headers are read, exposing the body as a lazy network stream via
 		// c.Request().BodyStream(). Without this the entire body is buffered in RAM.
@@ -103,7 +107,7 @@ func main() {
 	})
 
 	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
-	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.SecurityHeaders(cfg.App.DevMode))
 	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
 	app.Use(middleware.RequestLogger(log))
 

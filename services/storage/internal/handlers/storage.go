@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -33,11 +35,12 @@ import (
 )
 
 type Handler struct {
-	repo          *repository.FileRepository
-	backend       sharedStorage.Backend
-	js            *jetstream.Client
-	log           *zap.Logger
-	encryptionKey []byte // 32-byte AES-256 master key; nil = encryption disabled
+	repo             *repository.FileRepository
+	backend          sharedStorage.Backend
+	js               *jetstream.Client
+	log              *zap.Logger
+	encryptionKey    []byte // 32-byte AES-256 master key; nil = encryption disabled
+	downloadTokenKey []byte // 32-byte HMAC key for download tokens; derived from encryptionKey
 }
 
 func New(repo *repository.FileRepository, backend sharedStorage.Backend, js *jetstream.Client, log *zap.Logger, encryptionKeyHex string) *Handler {
@@ -51,7 +54,33 @@ func New(repo *repository.FileRepository, backend sharedStorage.Backend, js *jet
 	} else {
 		log.Warn("STORAGE_ENCRYPTION_KEY not set — files will be stored unencrypted")
 	}
-	return &Handler{repo: repo, backend: backend, js: js, log: log, encryptionKey: encKey}
+
+	// Derive a separate HMAC key for download token signing so the AES-GCM
+	// encryption key and the HMAC-SHA256 signing key are never the same material.
+	var dlTokenKey []byte
+	if encKey != nil {
+		dlTokenKey = deriveDownloadTokenKey(encKey)
+	}
+
+	return &Handler{repo: repo, backend: backend, js: js, log: log, encryptionKey: encKey, downloadTokenKey: dlTokenKey}
+}
+
+// deriveDownloadTokenKey derives a separate 32-byte HMAC-SHA256 key for signing
+// download tokens from the AES-GCM file encryption key using HKDF-SHA256.
+// This ensures key separation: the same bytes are never used for both AES-GCM and HMAC.
+func deriveDownloadTokenKey(encryptionKey []byte) []byte {
+	// HKDF-SHA256 Extract: PRK = HMAC-SHA256(salt=zeros, IKM=encryptionKey)
+	salt := make([]byte, sha256.Size)
+	mac := hmac.New(sha256.New, salt)
+	mac.Write(encryptionKey)
+	prk := mac.Sum(nil)
+
+	// HKDF-SHA256 Expand: T(1) = HMAC-SHA256(PRK, info || 0x01)
+	info := []byte("tenzoshare_download_token_v1")
+	mac2 := hmac.New(sha256.New, prk)
+	mac2.Write(info)
+	mac2.Write([]byte{0x01})
+	return mac2.Sum(nil) // exactly 32 bytes
 }
 
 func (h *Handler) Upload(c fiber.Ctx) error {
@@ -65,11 +94,11 @@ func (h *Handler) Upload(c fiber.Ctx) error {
 	cfg, cfgErr := h.repo.GetStorageConfig(c.Context())
 	if cfgErr == nil {
 		// In production mode (test_mode disabled), reject uploads that arrive
-		// over plain HTTP. TLS may be terminated at the reverse proxy, so we
-		// check X-Forwarded-Proto in addition to the raw connection state.
+		// over plain HTTP. Fiber's c.Secure() is reliable here because the app
+		// is configured with TrustProxy: true (private networks only), so Traefik's
+		// X-Forwarded-Proto is trusted automatically via the ProxyHeader config.
 		if !cfg.TestMode {
-			isHTTPS := c.Secure() || strings.EqualFold(c.Get("X-Forwarded-Proto"), "https")
-			if !isHTTPS {
+			if !c.Secure() {
 				h.log.Warn("upload rejected: plain HTTP connection in production mode",
 					zap.String("owner_id", ownerID),
 				)
@@ -383,7 +412,11 @@ func (h *Handler) DeleteFile(c fiber.Ctx) error {
 	if err := h.repo.SoftDelete(c.Context(), id, file.OwnerID); err != nil {
 		return err
 	}
-	go func() { _ = h.backend.Delete(context.Background(), file.ObjectKey) }() //nolint:errcheck
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		_ = h.backend.Delete(ctx, file.ObjectKey) //nolint:errcheck
+	}()
 
 	h.publishAudit(c.Context(), "storage.delete", ownerID, id, nil)
 	return c.SendStatus(fiber.StatusNoContent)
@@ -396,7 +429,8 @@ type downloadClaims struct {
 }
 
 // issueDownloadToken mints a 15-minute HS256 JWT authorising download of fileID.
-// The encryptionKey (32 bytes) is reused as the HMAC secret.
+// Uses a dedicated downloadTokenKey derived from the encryption key via HKDF-SHA256,
+// ensuring the AES-GCM key and HMAC signing key are always distinct.
 func (h *Handler) issueDownloadToken(fileID string) (string, error) {
 	claims := downloadClaims{
 		FileID: fileID,
@@ -407,7 +441,7 @@ func (h *Handler) issueDownloadToken(fileID string) (string, error) {
 		},
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return tok.SignedString(h.encryptionKey)
+	return tok.SignedString(h.downloadTokenKey)
 }
 
 // PresignURL returns a short-lived download URL.
@@ -431,7 +465,7 @@ func (h *Handler) PresignURL(c fiber.Ctx) error {
 	// Encrypted files: embed a short-lived download token in the URL so the
 	// browser can navigate without needing a separate Authorization header.
 	if file.IsEncrypted {
-		if h.encryptionKey != nil {
+		if h.downloadTokenKey != nil {
 			dlToken, err := h.issueDownloadToken(id)
 			if err != nil {
 				return apperrors.Internal("issue download token", err)
@@ -475,7 +509,7 @@ func (h *Handler) Download(c fiber.Ctx) error {
 		if dlToken == "" {
 			return apperrors.Unauthorized("authentication required")
 		}
-		if h.encryptionKey == nil {
+		if h.downloadTokenKey == nil {
 			return apperrors.Unauthorized("download tokens not configured")
 		}
 		claims := &downloadClaims{}
@@ -483,7 +517,7 @@ func (h *Handler) Download(c fiber.Ctx) error {
 			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("unexpected signing method")
 			}
-			return h.encryptionKey, nil
+			return h.downloadTokenKey, nil
 		})
 		if err != nil || !tok.Valid || claims.FileID != id {
 			return apperrors.Unauthorized("invalid or expired download token")

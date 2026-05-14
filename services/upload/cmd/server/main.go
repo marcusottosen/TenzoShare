@@ -97,7 +97,12 @@ func main() {
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		ErrorHandler: middleware.ErrorHandler,
-		BodyLimit:    -1, // tusd controls its own limits
+		// ProxyHeader + TrustProxy tell Fiber to read c.IP() from X-Real-IP when
+		// the connection arrives from a trusted private-network proxy (Traefik).
+		ProxyHeader:      "X-Real-IP",
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Private: true},
+		BodyLimit:        -1, // tusd controls its own limits
 	})
 
 	pubKey, err := jwtkeys.ParsePublicKey(cfg.JWT.PublicKeyPEM)
@@ -106,7 +111,7 @@ func main() {
 	}
 
 	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
-	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.SecurityHeaders(cfg.App.DevMode))
 	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
 	app.Use(middleware.RequestLogger(log))
 
@@ -273,7 +278,11 @@ func uploadAuditLogger(log *zap.Logger, js *jetstream.Client) fiber.Handler {
 						"client_ip": c.IP(),
 					},
 				}
-				go func() { _ = js.Publish(context.Background(), "AUDIT.upload", ev) }()
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+					_ = js.Publish(ctx, "AUDIT.upload", ev)
+				}()
 			}
 		}
 		return err

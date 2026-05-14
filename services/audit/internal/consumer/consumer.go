@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -70,7 +71,9 @@ func (c *Consumer) handle(subject string, data []byte) error {
 		Severity: deriveSeverity(action, success),
 	}
 
-	if err := c.repo.Insert(context.Background(), entry); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := c.repo.Insert(ctx, entry); err != nil {
 		c.log.Error("failed to persist audit event",
 			zap.String("subject", subject),
 			zap.Error(err),

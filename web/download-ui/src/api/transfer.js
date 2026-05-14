@@ -11,12 +11,13 @@
  *
  * ─── Endpoints ────────────────────────────────────────────────────────────────
  *
- *  GET /api/v1/t/:slug[?password=<value>]
- *    Returns transfer metadata.  Pass `password` only when `has_password` is
- *    true; the first call (without a password) tells you whether one is needed.
+ *  POST /api/v1/t/:slug
+ *    Returns transfer metadata.  Pass `password` in the JSON body only when
+ *    `has_password` is true; the first call (without a body) tells you whether
+ *    one is needed.
  *    ← { transfer: TransferPublic }
  *
- *  GET /api/v1/t/:slug/files/:fileId/download[?password=<value>]
+ *  POST /api/v1/t/:slug/files/:fileId/download
  *    Returns a short-lived presigned URL for the requested file.
  *    The transfer validation (slug, password, expiry) is repeated server-side.
  *    ← { url: string, expires_in: number }
@@ -90,9 +91,11 @@ function buildURL(path, params) {
  *   provided, 403 if expired/revoked/download-limit-reached, 404 if not found.
  */
 export async function fetchTransfer(slug, password) {
-    const params = password ? { password } : undefined;
-    const url = buildURL(`${API_BASE}/t/${encodeURIComponent(slug)}`, params);
-    const res = await fetch(url);
+    const res = await fetch(`${API_BASE}/t/${encodeURIComponent(slug)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(password ? { password } : {}),
+    });
     const body = await handleResponse(res);
     return body.transfer;
 }
@@ -110,8 +113,13 @@ export async function fetchTransfer(slug, password) {
  *   the file does not belong to this transfer.
  */
 export async function fetchDownloadUrl(slug, fileId, password) {
-    const params = password ? { password } : undefined;
-    const url = buildURL(`${API_BASE}/t/${encodeURIComponent(slug)}/files/${encodeURIComponent(fileId)}/download`, params);
-    const res = await fetch(url);
+    const res = await fetch(
+        `${API_BASE}/t/${encodeURIComponent(slug)}/files/${encodeURIComponent(fileId)}/download`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(password ? { password } : {}),
+        },
+    );
     return handleResponse(res);
 }

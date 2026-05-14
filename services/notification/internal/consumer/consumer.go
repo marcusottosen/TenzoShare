@@ -4,6 +4,8 @@ package consumer
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"time"
 
@@ -12,6 +14,22 @@ import (
 	"github.com/tenzoshare/tenzoshare/services/notification/internal/email"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
 )
+
+// logEmail returns a short SHA-256 prefix of the email address for log
+// correlation without storing PII in log aggregators (GDPR-safe).
+func logEmail(addr string) string {
+	h := sha256.Sum256([]byte(addr))
+	return hex.EncodeToString(h[:8])
+}
+
+// logEmails applies logEmail to each address in a slice.
+func logEmails(addrs []string) []string {
+	out := make([]string, len(addrs))
+	for i, a := range addrs {
+		out[i] = logEmail(a)
+	}
+	return out
+}
 
 // EmailEvent is the canonical payload published to NOTIFICATIONS.email by any
 // TenzoShare service. The Type field selects which email template to render.
@@ -106,7 +124,7 @@ func (c *Consumer) handle(subject string, data []byte) error {
 	if sendErr != nil {
 		c.log.Error("failed to send email",
 			zap.String("type", ev.Type),
-			zap.Strings("to", ev.To),
+			zap.Strings("to_hash", logEmails(ev.To)),
 			zap.Error(sendErr))
 		// return error so the message gets NAKed and retried
 		return sendErr
@@ -114,7 +132,7 @@ func (c *Consumer) handle(subject string, data []byte) error {
 
 	c.log.Info("email delivered",
 		zap.String("type", ev.Type),
-		zap.Strings("to", ev.To),
+		zap.Strings("to_hash", logEmails(ev.To)),
 		zap.Time("at", time.Now()),
 	)
 	return nil

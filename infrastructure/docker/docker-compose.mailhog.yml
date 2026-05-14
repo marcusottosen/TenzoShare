@@ -1,0 +1,35 @@
+# MailHog — local dev SMTP capture
+#
+# Run alongside the main stack to intercept all outbound email:
+#
+#   docker compose -f docker-compose.mailhog.yml up -d
+#
+# Web UI:  http://localhost:8025
+# SMTP:    localhost:1025  (internal: mailhog:1025 on tenzoshare-net)
+#
+# Then set in your .env:
+#   SMTP_HOST=mailhog
+#   SMTP_PORT=1025
+#   SMTP_USE_TLS=false
+#
+# This file is gitignored — never commit it.
+
+services:
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    container_name: tenzoshare-mailhog
+    restart: unless-stopped
+    ports:
+      - "1025:1025"   # SMTP — notification service connects here
+      - "8025:8025"   # Web UI — view captured emails
+    networks:
+      - tenzoshare-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  tenzoshare-net:
+    external: true   # must already exist (created by docker-compose.yml)

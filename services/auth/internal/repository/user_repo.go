@@ -329,6 +329,32 @@ func (r *UserRepository) DeleteAPIKey(ctx context.Context, id, userID string) er
 	return nil
 }
 
+// GetAPIKeyByHash looks up an API key by its SHA-256 hash and enforces expiry.
+// It returns NotFound if the key does not exist OR has expired — callers must
+// not distinguish between the two cases (avoids timing oracle on expiry).
+// It also updates the last_used timestamp on a successful lookup.
+func (r *UserRepository) GetAPIKeyByHash(ctx context.Context, keyHash string) (*domain.APIKey, error) {
+	var k domain.APIKey
+	err := r.db.QueryRow(ctx, `
+		UPDATE auth.api_keys
+		SET last_used = NOW()
+		WHERE key_hash = $1
+		  AND (expires_at IS NULL OR expires_at > NOW())
+		RETURNING id, user_id, name, key_prefix, key_hash, last_used, expires_at, created_at
+	`, keyHash).Scan(
+		&k.ID, &k.UserID, &k.Name, &k.KeyPrefix, &k.KeyHash,
+		&k.LastUsed, &k.ExpiresAt, &k.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Return generic not-found — same message for missing or expired key.
+			return nil, apperrors.NotFound("api key not found or expired")
+		}
+		return nil, apperrors.Internal("get api key", err)
+	}
+	return &k, nil
+}
+
 // GetLockoutConfig returns the current max_failed_attempts and lockout_duration
 // from the auth.auth_settings singleton row.
 func (r *UserRepository) GetLockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration, err error) {
@@ -350,4 +376,76 @@ func hashToken(raw string) string {
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// ── Contacts ─────────────────────────────────────────────────────────────────
+
+func (r *UserRepository) ListContacts(ctx context.Context, userID string) ([]*domain.Contact, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, user_id, email, name, created_at
+		FROM auth.contacts
+		WHERE user_id = $1
+		ORDER BY name, email`, userID)
+	if err != nil {
+		return nil, apperrors.Internal("failed to list contacts", err)
+	}
+	defer rows.Close()
+	var contacts []*domain.Contact
+	for rows.Next() {
+		c := &domain.Contact{}
+		if err := rows.Scan(&c.ID, &c.UserID, &c.Email, &c.Name, &c.CreatedAt); err != nil {
+			return nil, apperrors.Internal("failed to scan contact", err)
+		}
+		contacts = append(contacts, c)
+	}
+	return contacts, nil
+}
+
+func (r *UserRepository) CreateContact(ctx context.Context, userID, email, name string) (*domain.Contact, error) {
+	c := &domain.Contact{}
+	err := r.db.QueryRow(ctx, `
+		INSERT INTO auth.contacts (user_id, email, name)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (user_id, email) DO UPDATE SET name = EXCLUDED.name
+		RETURNING id, user_id, email, name, created_at`,
+		userID, email, name,
+	).Scan(&c.ID, &c.UserID, &c.Email, &c.Name, &c.CreatedAt)
+	if err != nil {
+		return nil, apperrors.Internal("failed to create contact", err)
+	}
+	return c, nil
+}
+
+func (r *UserRepository) UpdateContactName(ctx context.Context, id, userID, name string) error {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE auth.contacts SET name = $1
+		WHERE id = $2 AND user_id = $3`, name, id, userID)
+	if err != nil {
+		return apperrors.Internal("failed to update contact", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperrors.NotFound("contact")
+	}
+	return nil
+}
+
+func (r *UserRepository) DeleteContact(ctx context.Context, id, userID string) error {
+	tag, err := r.db.Exec(ctx, `
+		DELETE FROM auth.contacts WHERE id = $1 AND user_id = $2`, id, userID)
+	if err != nil {
+		return apperrors.Internal("failed to delete contact", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperrors.NotFound("contact")
+	}
+	return nil
+}
+
+func (r *UserRepository) UpdateAutoSaveContacts(ctx context.Context, userID string, autoSave bool) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE auth.users SET auto_save_contacts = $1 WHERE id = $2`, autoSave, userID)
+	if err != nil {
+		return apperrors.Internal("failed to update auto_save_contacts", err)
+	}
+	return nil
 }

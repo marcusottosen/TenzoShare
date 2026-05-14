@@ -11,12 +11,13 @@
  *
  * ─── Endpoints ────────────────────────────────────────────────────────────────
  *
- *  GET /api/v1/t/:slug[?password=<value>]
- *    Returns transfer metadata.  Pass `password` only when `has_password` is
- *    true; the first call (without a password) tells you whether one is needed.
+ *  POST /api/v1/t/:slug
+ *    Returns transfer metadata.  Pass `password` in the JSON body only when
+ *    `has_password` is true; the first call (without a body) tells you whether
+ *    one is needed.
  *    ← { transfer: TransferPublic }
  *
- *  GET /api/v1/t/:slug/files/:fileId/download[?password=<value>]
+ *  POST /api/v1/t/:slug/files/:fileId/download
  *    Returns a short-lived presigned URL for the requested file.
  *    The transfer validation (slug, password, expiry) is repeated server-side.
  *    ← { url: string, expires_in: number }
@@ -69,16 +70,6 @@ async function handleResponse<T>(res: Response): Promise<T> {
   throw new TransferApiError({ message, status });
 }
 
-function buildURL(path: string, params?: Record<string, string>): string {
-  const url = new URL(path, window.location.origin);
-  if (params) {
-    for (const [k, v] of Object.entries(params)) {
-      if (v) url.searchParams.set(k, v);
-    }
-  }
-  return url.toString();
-}
-
 // ---------------------------------------------------------------------------
 // Public API functions
 // ---------------------------------------------------------------------------
@@ -97,9 +88,11 @@ export async function fetchTransfer(
   slug: string,
   password?: string,
 ): Promise<TransferPublic> {
-  const params = password ? { password } : undefined;
-  const url = buildURL(`${API_BASE}/t/${encodeURIComponent(slug)}`, params);
-  const res = await fetch(url);
+  const res = await fetch(`${API_BASE}/t/${encodeURIComponent(slug)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(password ? { password } : {}),
+  });
   const body = await handleResponse<{ transfer: TransferPublic }>(res);
   return body.transfer;
 }
@@ -122,11 +115,13 @@ export async function fetchDownloadUrl(
   fileId: string,
   password?: string,
 ): Promise<FileDownloadUrl> {
-  const params = password ? { password } : undefined;
-  const url = buildURL(
+  const res = await fetch(
     `${API_BASE}/t/${encodeURIComponent(slug)}/files/${encodeURIComponent(fileId)}/download`,
-    params,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(password ? { password } : {}),
+    },
   );
-  const res = await fetch(url);
   return handleResponse<FileDownloadUrl>(res);
 }

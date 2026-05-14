@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -12,19 +11,12 @@ import (
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 )
 
-// realClientIP returns the real client IP from X-Real-IP or X-Forwarded-For,
-// falling back to the raw connection address. This is needed because requests
-// arrive via Traefik or an nginx proxy which masks the original IP.
+// realClientIP returns the client IP address as resolved by Fiber.
+// With ProxyHeader: "X-Real-IP" configured on the Fiber app, c.IP() already
+// returns the value from the X-Real-IP header set by Traefik. Traefik only
+// forwards this header from its own trusted connections (configured via
+// forwardedHeaders.trustedIPs), so clients cannot spoof it.
 func realClientIP(c fiber.Ctx) string {
-	if ip := c.Get("X-Real-IP"); ip != "" {
-		return strings.TrimSpace(ip)
-	}
-	if xff := c.Get("X-Forwarded-For"); xff != "" {
-		if idx := strings.IndexByte(xff, ','); idx != -1 {
-			return strings.TrimSpace(xff[:idx])
-		}
-		return strings.TrimSpace(xff)
-	}
 	return c.IP()
 }
 
