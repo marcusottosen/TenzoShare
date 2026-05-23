@@ -12,19 +12,12 @@ import (
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 )
 
-// realClientIP returns the real client IP from X-Real-IP or X-Forwarded-For,
-// falling back to the raw connection address. This is needed because requests
-// arrive via Traefik or an nginx proxy which masks the original IP.
+// realClientIP returns the client IP resolved by Fiber from the ProxyHeader.
+// The Fiber app is configured with ProxyHeader: "X-Real-IP" and TrustProxy: true,
+// so c.IP() reads the X-Real-IP header set by Traefik. Traefik is configured
+// with forwardedHeaders.insecure: false, ensuring only its own sanitized value
+// is used — clients cannot spoof this header.
 func realClientIP(c fiber.Ctx) string {
-	if ip := c.Get("X-Real-IP"); ip != "" {
-		return strings.TrimSpace(ip)
-	}
-	if xff := c.Get("X-Forwarded-For"); xff != "" {
-		if idx := strings.IndexByte(xff, ','); idx != -1 {
-			return strings.TrimSpace(xff[:idx])
-		}
-		return strings.TrimSpace(xff)
-	}
 	return c.IP()
 }
 

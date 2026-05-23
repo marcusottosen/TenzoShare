@@ -239,7 +239,8 @@ func (s *AuthService) Register(ctx context.Context, email, password, clientIP st
 		limited, err := s.checkRateLimitGeneric(ctx, "ratelimit:register:"+clientIP, registerRateLimit, registerRateLimitWindow)
 		if err != nil {
 			s.log.Warn("register rate-limit check failed", zap.Error(err))
-		} else if limited {
+		}
+		if limited {
 			return nil, apperrors.RateLimit("too many registrations from this IP; try again later")
 		}
 	}
@@ -265,7 +266,8 @@ func (s *AuthService) Login(ctx context.Context, email, password, clientIP strin
 		limited, err := s.checkRateLimit(ctx, clientIP)
 		if err != nil {
 			s.log.Warn("rate limit check failed", zap.Error(err))
-		} else if limited {
+		}
+		if limited {
 			return nil, nil, false, apperrors.RateLimit("too many login attempts; try again in 15 minutes")
 		}
 	}
@@ -534,7 +536,8 @@ func (s *AuthService) RequestPasswordReset(ctx context.Context, email, clientIP 
 		if err != nil {
 			s.log.Warn("password-reset rate-limit check failed", zap.Error(err))
 			err = nil // non-fatal
-		} else if limited {
+		}
+		if limited {
 			return "", "", apperrors.RateLimit("too many password-reset requests from this IP; try again later")
 		}
 	}
@@ -675,7 +678,8 @@ func (s *AuthService) signSetupOnlyToken(user *domain.User) (string, error) {
 
 func (s *AuthService) checkRateLimit(ctx context.Context, clientIP string) (bool, error) {
 	if s.cache == nil {
-		return false, nil
+		s.log.Warn("rate limiter unavailable (cache is nil); denying request as fail-safe", zap.String("key", "ratelimit:login:"+clientIP))
+		return true, fmt.Errorf("rate limiter unavailable")
 	}
 	key := fmt.Sprintf("ratelimit:login:%s", clientIP)
 	count, err := s.cache.Incr(ctx, key)
@@ -690,7 +694,8 @@ func (s *AuthService) checkRateLimit(ctx context.Context, clientIP string) (bool
 
 func (s *AuthService) checkRateLimitGeneric(ctx context.Context, key string, limit int64, window time.Duration) (bool, error) {
 	if s.cache == nil {
-		return false, nil
+		s.log.Warn("rate limiter unavailable (cache is nil); denying request as fail-safe", zap.String("key", key))
+		return true, fmt.Errorf("rate limiter unavailable")
 	}
 	count, err := s.cache.Incr(ctx, key)
 	if err != nil {

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	stdlog "log"
-	"math"
 	"os"
 	"os/signal"
 	"strings"
@@ -26,7 +25,6 @@ import (
 
 	svcmigrations "github.com/tenzoshare/tenzoshare/services/storage/migrations"
 )
-
 
 func main() {
 	cfg, err := config.Load()
@@ -91,9 +89,10 @@ func main() {
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		ErrorHandler: middleware.ErrorHandler,
-		// BodyLimit: no HTTP-level body size cap — quota is enforced in the Upload handler.
-		// Set to math.MaxInt so fasthttp never rejects on size alone.
-		BodyLimit: math.MaxInt,
+		// BodyLimit: cap individual HTTP requests at 1 GB to prevent unbounded
+		// memory/disk usage from a single malicious request. Per-user storage
+		// quota is enforced separately in the Upload handler.
+		BodyLimit: 1024 * 1024 * 1024, // 1 GB
 		// StreamRequestBody: true tells fasthttp to call the handler as soon as the
 		// request headers are read, exposing the body as a lazy network stream via
 		// c.Request().BodyStream(). Without this the entire body is buffered in RAM.
@@ -107,6 +106,11 @@ func main() {
 		// raw network stream. Our Upload handler already reads it correctly via
 		// multipart.NewReader(c.Request().BodyStream(), boundary).
 		DisablePreParseMultipartForm: true,
+		// Trust Traefik's sanitized X-Real-IP header so c.IP() returns the
+		// actual client IP. Private + loopback covers all Docker bridge ranges.
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Private: true, Loopback: true},
+		ProxyHeader:      "X-Real-IP",
 	})
 
 	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")

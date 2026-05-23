@@ -237,24 +237,37 @@ func (h *Handler) Revoke(c fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// accessTransferRequest is the body for POST /api/v1/t/:slug and
+// POST /api/v1/t/:slug/files/:fileId/download.
+// Both fields are optional — a first call with an empty body probes
+// whether a password is needed (has_password in the response).
+type accessTransferRequest struct {
+	Password       string `json:"password"`
+	RecipientToken string `json:"rt"`
+}
+
 // Access is the public (unauthenticated) download-info endpoint.
-// GET /api/v1/t/:slug  — optionally with ?password= or ?rt= (recipient token)
+// POST /api/v1/t/:slug  — optionally with password or rt in JSON body.
 // Does NOT increment any counter — viewing the download page is not a download.
 // Returns per-file download counts (file_download_counts map) when max_downloads > 0
 // so the download UI can show per-file availability without requiring an attempt.
 func (h *Handler) Access(c fiber.Ctx) error {
 	slug := c.Params("slug")
 
+	var req accessTransferRequest
+	// Both fields are optional; ignore bind errors (e.g. empty body on first probe).
+	_ = c.Bind().JSON(&req)
+
 	var result *service.AccessResult
 	var err error
 
-	if rt := c.Query("rt"); rt != "" {
+	if req.RecipientToken != "" {
 		// Recipient magic-link token path — bypasses password requirement.
-		result, err = h.svc.ValidateRecipientToken(c.Context(), slug, rt)
+		result, err = h.svc.ValidateRecipientToken(c.Context(), slug, req.RecipientToken)
 	} else {
 		result, err = h.svc.Validate(c.Context(), service.AccessParams{
 			Slug:     slug,
-			Password: c.Query("password"),
+			Password: req.Password,
 		})
 	}
 	if err != nil {
@@ -375,14 +388,18 @@ func (h *Handler) DownloadURL(c fiber.Ctx) error {
 	// If a recipient token is provided, validate it first to bypass the password.
 	// We still call AttemptFileDownload for limit enforcement; pass empty password
 	// when the token was valid (transfer has already been verified above).
+	var req accessTransferRequest
+	// Both fields are optional; ignore bind errors.
+	_ = c.Bind().JSON(&req)
+
 	var password string
-	if rt := c.Query("rt"); rt != "" {
-		if _, err := h.svc.ValidateRecipientToken(c.Context(), slug, rt); err != nil {
+	if req.RecipientToken != "" {
+		if _, err := h.svc.ValidateRecipientToken(c.Context(), slug, req.RecipientToken); err != nil {
 			return err
 		}
 		// Token valid — password not needed.
 	} else {
-		password = c.Query("password")
+		password = req.Password
 	}
 
 	// AttemptFileDownload validates the transfer, confirms file ownership, and

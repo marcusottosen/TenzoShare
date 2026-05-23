@@ -25,7 +25,6 @@ import (
 	svcmigrations "github.com/tenzoshare/tenzoshare/services/audit/migrations"
 )
 
-
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -82,6 +81,11 @@ func main() {
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		ErrorHandler: middleware.ErrorHandler,
+		// Trust Traefik's sanitized X-Real-IP header so c.IP() returns the
+		// actual client IP. Private + loopback covers all Docker bridge ranges.
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Private: true, Loopback: true},
+		ProxyHeader:      "X-Real-IP",
 	})
 
 	pubKey, err := jwtkeys.ParsePublicKey(cfg.JWT.PublicKeyPEM)

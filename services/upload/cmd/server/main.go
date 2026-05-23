@@ -98,6 +98,11 @@ func main() {
 		WriteTimeout: cfg.Server.WriteTimeout,
 		ErrorHandler: middleware.ErrorHandler,
 		BodyLimit:    -1, // tusd controls its own limits
+		// Trust Traefik's sanitized X-Real-IP header so c.IP() returns the
+		// actual client IP. Private + loopback covers all Docker bridge ranges.
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Private: true, Loopback: true},
+		ProxyHeader:      "X-Real-IP",
 	})
 
 	pubKey, err := jwtkeys.ParsePublicKey(cfg.JWT.PublicKeyPEM)

@@ -83,6 +83,11 @@ func main() {
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		ErrorHandler: middleware.ErrorHandler,
+		// Trust Traefik's sanitized X-Real-IP header so c.IP() returns the
+		// actual client IP. Private + loopback covers all Docker bridge ranges.
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Private: true, Loopback: true},
+		ProxyHeader:      "X-Real-IP",
 	})
 
 	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
@@ -92,10 +97,12 @@ func main() {
 
 	telemetry.Register(app, "transfer")
 
-	// Public: access a transfer by slug (downloaders, no auth required)
-	app.Get("/api/v1/t/:slug", h.Access)
+	// Public: access a transfer by slug (downloaders, no auth required).
+	// POST is used so password and recipient token stay in the request body,
+	// not in the URL where they would appear in server logs and browser history.
+	app.Post("/api/v1/t/:slug", h.Access)
 	app.Post("/api/v1/t/:slug/request-access", h.RequestAccess)
-	app.Get("/api/v1/t/:slug/files/:fileId/download", h.DownloadURL)
+	app.Post("/api/v1/t/:slug/files/:fileId/download", h.DownloadURL)
 	app.Get("/api/v1/transfers/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "service": "transfer"})
 	})

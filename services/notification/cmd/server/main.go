@@ -99,6 +99,11 @@ func main() {
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		ErrorHandler: middleware.ErrorHandler,
+		// Trust Traefik's sanitized X-Real-IP header so c.IP() returns the
+		// actual client IP. Private + loopback covers all Docker bridge ranges.
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Private: true, Loopback: true},
+		ProxyHeader:      "X-Real-IP",
 	})
 
 	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")

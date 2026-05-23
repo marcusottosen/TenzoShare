@@ -170,6 +170,11 @@ func main() {
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		ErrorHandler: middleware.ErrorHandler,
+		// Trust Traefik's sanitized X-Real-IP header so c.IP() returns the
+		// actual client IP. Private + loopback covers all Docker bridge ranges.
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Private: true, Loopback: true},
+		ProxyHeader:      "X-Real-IP",
 	})
 
 	pubKey, err := jwtkeys.ParsePublicKey(cfg.JWT.PublicKeyPEM)
@@ -1675,17 +1680,10 @@ func handleListPurgeLog(c fiber.Ctx) error {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// adminClientIP extracts the real client IP from proxy headers, falling back to the raw connection IP.
+// adminClientIP returns the client IP resolved by Fiber from the ProxyHeader.
+// The Fiber app is configured with ProxyHeader: "X-Real-IP" and TrustProxy: true,
+// so c.IP() reads the X-Real-IP header set by Traefik, which sanitizes it.
 func adminClientIP(c fiber.Ctx) string {
-	if ip := c.Get("X-Real-IP"); ip != "" {
-		return strings.TrimSpace(ip)
-	}
-	if xff := c.Get("X-Forwarded-For"); xff != "" {
-		if idx := strings.IndexByte(xff, ','); idx != -1 {
-			return strings.TrimSpace(xff[:idx])
-		}
-		return strings.TrimSpace(xff)
-	}
 	return c.IP()
 }
 

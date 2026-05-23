@@ -15,9 +15,14 @@ entryPoints:
         # Default (60s) kills connections at ~60 s regardless of body size.
         readTimeout: 0
         writeTimeout: 0
-    # Forward X-Forwarded headers from Traefik itself
+    # Only trust X-Forwarded-* headers from Docker-internal IPs (Traefik itself).
+    # This prevents clients from spoofing X-Forwarded-For / X-Real-IP to bypass
+    # rate limiting or appear as a different IP address.
     forwardedHeaders:
-      insecure: true
+      insecure: false
+      trustedIPs:
+        - "127.0.0.1/32"
+        - "172.16.0.0/12"   # Docker bridge networks (172.16–172.31)
 
 providers:
   docker:
