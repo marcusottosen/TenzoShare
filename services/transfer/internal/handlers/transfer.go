@@ -368,7 +368,7 @@ func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 
 // DownloadURL returns a presigned download URL for a single file in a public transfer.
 //
-// GET /api/v1/t/:slug/files/:fileId/download[?password=...][?rt=...]
+// POST /api/v1/t/:slug/files/:fileId/download  { password?, rt? }
 //
 // This endpoint:
 //  1. Validates the transfer (slug, optional password or recipient token, expiry, revocation).
