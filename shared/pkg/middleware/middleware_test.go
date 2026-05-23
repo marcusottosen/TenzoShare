@@ -354,7 +354,7 @@ func TestOptionalJWTAuth_WrongKey_StillPasses(t *testing.T) {
 
 func TestSecurityHeaders_Present(t *testing.T) {
 	app := fiber.New()
-	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.SecurityHeaders(false)) // production mode
 	app.Get("/test", func(c fiber.Ctx) error {
 		return c.SendStatus(200)
 	})
@@ -368,15 +368,36 @@ func TestSecurityHeaders_Present(t *testing.T) {
 	io.ReadAll(resp.Body) //nolint:errcheck
 
 	headers := map[string]string{
-		"X-Frame-Options":        "DENY",
-		"X-Content-Type-Options": "nosniff",
-		"X-Xss-Protection":       "1; mode=block",
+		"X-Frame-Options":           "DENY",
+		"X-Content-Type-Options":    "nosniff",
+		"X-Xss-Protection":          "1; mode=block",
+		"Strict-Transport-Security": "max-age=31536000; includeSubDomains",
 	}
 	for h, want := range headers {
 		got := resp.Header.Get(h)
 		if got != want {
 			t.Errorf("header %s = %q, want %q", h, got, want)
 		}
+	}
+}
+
+func TestSecurityHeaders_DevMode_NoHSTS(t *testing.T) {
+	app := fiber.New()
+	app.Use(middleware.SecurityHeaders(true)) // dev mode — no HSTS
+	app.Get("/test", func(c fiber.Ctx) error {
+		return c.SendStatus(200)
+	})
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	io.ReadAll(resp.Body) //nolint:errcheck
+
+	if got := resp.Header.Get("Strict-Transport-Security"); got != "" {
+		t.Errorf("HSTS should not be set in dev mode, got %q", got)
 	}
 }
 

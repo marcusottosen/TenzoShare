@@ -79,11 +79,10 @@ type Handler struct {
 	policy        *policyCache
 }
 
-func New(svc *service.TransferService, requestSvc *service.RequestService, jwtPrivateKeyPEM, storageURL, adminURL string) *Handler {
+func New(svc *service.TransferService, requestSvc *service.RequestService, jwtPrivateKeyPEM, storageURL, adminURL string) (*Handler, error) {
 	privKey, err := jwtkeys.ParsePrivateKey(jwtPrivateKeyPEM)
 	if err != nil {
-		// panic at startup — private key is required for service-to-service tokens
-		panic("transfer handler: " + err.Error())
+		return nil, fmt.Errorf("transfer handler: parse JWT private key: %w", err)
 	}
 	return &Handler{
 		svc:           svc,
@@ -92,7 +91,7 @@ func New(svc *service.TransferService, requestSvc *service.RequestService, jwtPr
 		jwtPrivateKey: privKey,
 		storageURL:    storageURL,
 		policy:        &policyCache{adminURL: adminURL},
-	}
+	}, nil
 }
 
 type createRequest struct {

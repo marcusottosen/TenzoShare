@@ -15,6 +15,7 @@ import (
 	"github.com/tenzoshare/tenzoshare/services/storage/internal/cleanup"
 	"github.com/tenzoshare/tenzoshare/services/storage/internal/handlers"
 	"github.com/tenzoshare/tenzoshare/services/storage/internal/repository"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/cache"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/config"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/database"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
@@ -84,6 +85,12 @@ func main() {
 		log.Fatal("failed to parse JWT public key", zap.Error(err))
 	}
 
+	var cacheClient *cache.Client
+	if cacheClient, err = cache.New(cfg.Redis); err != nil {
+		log.Warn("Redis unavailable — token revocation checks disabled", zap.Error(err))
+		cacheClient = nil
+	}
+
 	app := fiber.New(fiber.Config{
 		AppName:      "tenzoshare-storage",
 		ReadTimeout:  cfg.Server.ReadTimeout,
@@ -114,7 +121,7 @@ func main() {
 	})
 
 	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
-	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.SecurityHeaders(cfg.App.DevMode))
 	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
 	app.Use(middleware.RequestLogger(log))
 
@@ -124,13 +131,19 @@ func main() {
 	})
 
 	auth := middleware.JWTAuth(pubKey)
+	revocationCheck := middleware.TokenRevocation(func(ctx context.Context, jti string) bool {
+		if cacheClient == nil {
+			return false
+		}
+		return cacheClient.IsTokenRevoked(ctx, jti)
+	})
 	v1 := app.Group("/api/v1/files") // no group-level middleware — Fiber's Group.Use applies prefix-wide
-	v1.Post("/", auth, h.Upload)
-	v1.Get("/usage", auth, h.GetMyUsage)
-	v1.Get("/", auth, h.ListFiles)
-	v1.Get("/:id", auth, h.GetFile)
-	v1.Delete("/:id", auth, h.DeleteFile)
-	v1.Get("/:id/presign", auth, h.PresignURL)
+	v1.Post("/", auth, revocationCheck, h.Upload)
+	v1.Get("/usage", auth, revocationCheck, h.GetMyUsage)
+	v1.Get("/", auth, revocationCheck, h.ListFiles)
+	v1.Get("/:id", auth, revocationCheck, h.GetFile)
+	v1.Delete("/:id", auth, revocationCheck, h.DeleteFile)
+	v1.Get("/:id/presign", auth, revocationCheck, h.PresignURL)
 	// Download accepts either a Bearer RS256 JWT (authenticated users/services)
 	// or a ?token= HS256 download token issued by PresignURL (browser-navigable).
 	v1.Get("/:id/download", middleware.OptionalJWTAuth(pubKey), h.Download)

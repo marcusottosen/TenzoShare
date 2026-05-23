@@ -2,10 +2,10 @@ package service
 
 import (
 	"context"
+	"crypto/hkdf"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -178,21 +178,14 @@ func parseRSAPrivateKey(pemStr string) (*rsa.PrivateKey, error) {
 	return x509.ParsePKCS1PrivateKey(block.Bytes)
 }
 
-// deriveMFAKey derives a 32-byte AES key from the password pepper.
-// If pepper is a 64-hex string (32 bytes), decode it; otherwise pad/truncate to 32 bytes.
+// deriveMFAKey derives a 32-byte AES key from the password pepper using HKDF-SHA256.
+// Using HKDF ensures the full 32-byte key space is used regardless of pepper length —
+// the old copy/pad approach left zero bytes when the pepper was shorter than 32 bytes.
 func deriveMFAKey(pepper string) ([]byte, error) {
 	if pepper == "" {
 		return nil, fmt.Errorf("PASSWORD_PEPPER is not set")
 	}
-	if len(pepper) == 64 {
-		b, err := hex.DecodeString(pepper)
-		if err == nil && len(b) == 32 {
-			return b, nil
-		}
-	}
-	key := make([]byte, 32)
-	copy(key, []byte(pepper))
-	return key, nil
+	return hkdf.Key(sha256.New, []byte(pepper), nil, "tenzoshare_mfa_key_v1", 32)
 }
 
 // lockoutConfig returns the current lockout policy, reading from DB if the
@@ -270,6 +263,15 @@ func (s *AuthService) Login(ctx context.Context, email, password, clientIP strin
 		if limited {
 			return nil, nil, false, apperrors.RateLimit("too many login attempts; try again in 15 minutes")
 		}
+	}
+
+	// Rate limit by target email to prevent distributed brute-force regardless of source IP.
+	limited, err := s.checkRateLimitGeneric(ctx, "ratelimit:login:email:"+email, loginRateLimit, loginRateLimitWindow)
+	if err != nil {
+		s.log.Warn("login email rate limit check failed", zap.Error(err))
+	}
+	if limited {
+		return nil, nil, false, apperrors.RateLimit("too many login attempts for this account")
 	}
 
 	user, err := s.repo.GetByEmail(ctx, email)
@@ -635,6 +637,8 @@ func (s *AuthService) signAccessToken(user *domain.User) (string, error) {
 			Subject:   user.ID,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(s.cfg.JWT.AccessTTL)),
+			Issuer:    "tenzoshare-auth",
+			Audience:  jwt.ClaimStrings{"tenzoshare-api"},
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
@@ -666,6 +670,8 @@ func (s *AuthService) signSetupOnlyToken(user *domain.User) (string, error) {
 			Subject:   user.ID,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(setupTTL)),
+			Issuer:    "tenzoshare-auth",
+			Audience:  jwt.ClaimStrings{"tenzoshare-api"},
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
@@ -735,6 +741,8 @@ func (s *AuthService) publishPasswordResetEmail(ctx context.Context, toEmail, to
 		"data": json.RawMessage(data),
 	}
 	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 		if err := s.js.Publish(ctx, "NOTIFICATIONS.email", ev); err != nil {
 			s.log.Warn("failed to publish password_reset email", zap.Error(err))
 		}
@@ -746,6 +754,8 @@ func (s *AuthService) publishAudit(ctx context.Context, ev AuditEvent) {
 		return
 	}
 	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 		if err := s.js.Publish(ctx, "AUDIT.auth", ev); err != nil {
 			s.log.Warn("failed to publish audit event", zap.Error(err), zap.String("action", ev.Action))
 		}

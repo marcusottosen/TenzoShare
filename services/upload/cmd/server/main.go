@@ -19,6 +19,7 @@ import (
 	"github.com/valyala/fasthttp/fasthttpadaptor"
 	"go.uber.org/zap"
 
+	"github.com/tenzoshare/tenzoshare/shared/pkg/cache"
 	appconfig "github.com/tenzoshare/tenzoshare/shared/pkg/config"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jwtkeys"
@@ -110,8 +111,20 @@ func main() {
 		log.Fatal("failed to parse JWT public key", zap.Error(err))
 	}
 
+	var cacheClient *cache.Client
+	if cacheClient, err = cache.New(cfg.Redis); err != nil {
+		log.Warn("Redis unavailable — token revocation checks disabled", zap.Error(err))
+		cacheClient = nil
+	}
+	revocationCheck := middleware.TokenRevocation(func(ctx context.Context, jti string) bool {
+		if cacheClient == nil {
+			return false
+		}
+		return cacheClient.IsTokenRevoked(ctx, jti)
+	})
+
 	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
-	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.SecurityHeaders(cfg.App.DevMode))
 	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
 	app.Use(middleware.RequestLogger(log))
 
@@ -124,7 +137,7 @@ func main() {
 	app.Use("/api/v1/uploads", uploadAuditLogger(log, js))
 
 	// All tusd methods (POST, PATCH, HEAD, OPTIONS, DELETE) under /api/v1/uploads
-	tusRoutes := app.Group("/api/v1/uploads", middleware.JWTAuth(pubKey))
+	tusRoutes := app.Group("/api/v1/uploads", middleware.JWTAuth(pubKey), revocationCheck)
 	tusRoutes.All("/", tusHandlerFiber)
 	tusRoutes.All("/:id", tusHandlerFiber)
 
@@ -278,7 +291,11 @@ func uploadAuditLogger(log *zap.Logger, js *jetstream.Client) fiber.Handler {
 						"client_ip": c.IP(),
 					},
 				}
-				go func() { _ = js.Publish(context.Background(), "AUDIT.upload", ev) }()
+				go func() {
+					pubCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+					_ = js.Publish(pubCtx, "AUDIT.upload", ev)
+				}()
 			}
 		}
 		return err

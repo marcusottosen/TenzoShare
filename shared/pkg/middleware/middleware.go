@@ -106,7 +106,7 @@ func JWTAuth(publicKey *rsa.PublicKey) fiber.Handler {
 				return nil, apperrors.Unauthorized("unexpected token signing method")
 			}
 			return publicKey, nil
-		})
+		}, jwt.WithIssuer("tenzoshare-auth"), jwt.WithAudience("tenzoshare-api"))
 		if err != nil || !token.Valid {
 			return apperrors.Unauthorized("invalid or expired token")
 		}
@@ -120,7 +120,9 @@ func JWTAuth(publicKey *rsa.PublicKey) fiber.Handler {
 
 // SecurityHeaders adds security-related HTTP response headers to every response.
 // These headers defend against XSS, clickjacking, MIME-sniffing, and information leakage.
-func SecurityHeaders() fiber.Handler {
+// When devMode is false, Strict-Transport-Security is also added to enforce HTTPS
+// and prevent SSL-stripping attacks.
+func SecurityHeaders(devMode bool) fiber.Handler {
 	return func(c fiber.Ctx) error {
 		c.Set("X-Frame-Options", "DENY")
 		c.Set("X-Content-Type-Options", "nosniff")
@@ -129,6 +131,9 @@ func SecurityHeaders() fiber.Handler {
 		c.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		c.Set("Content-Security-Policy",
 			"default-src 'none'; frame-ancestors 'none'")
+		if !devMode {
+			c.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
 		return c.Next()
 	}
 }
@@ -148,9 +153,9 @@ func OptionalJWTAuth(publicKey *rsa.PublicKey) fiber.Handler {
 				return nil, apperrors.Unauthorized("unexpected token signing method")
 			}
 			return publicKey, nil
-		})
+		}, jwt.WithIssuer("tenzoshare-auth"), jwt.WithAudience("tenzoshare-api"))
 		if err != nil || !token.Valid {
-			return c.Next() // invalid token → proceed as unauthenticated
+			return c.Next() // invalid token / wrong iss or aud → proceed as unauthenticated
 		}
 		c.Locals("claims", claims)
 		c.Locals("userID", claims.UserID)

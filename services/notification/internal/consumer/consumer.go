@@ -316,8 +316,19 @@ func (c *Consumer) shouldSend(emailType, recipientEmail string) bool {
 		return true // not configured — fail open
 	}
 
-	url := fmt.Sprintf("%s/api/v1/auth/internal/notification-prefs?email=%s", c.authBaseURL, recipientEmail)
-	resp, err := http.Get(url) //nolint:noctx,gosec
+	params := url.Values{}
+	params.Set("email", recipientEmail)
+	reqURL := fmt.Sprintf("%s/api/v1/auth/internal/notification-prefs?%s", c.authBaseURL, params.Encode())
+
+	reqCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		c.log.Warn("failed to build notification-prefs request; sending email",
+			zap.String("type", emailType), zap.String("to", recipientEmail), zap.Error(err))
+		return true
+	}
+	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		c.log.Warn("failed to fetch notification prefs; sending email",
 			zap.String("type", emailType), zap.String("to", recipientEmail), zap.Error(err))

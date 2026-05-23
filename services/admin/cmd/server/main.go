@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
+	"github.com/tenzoshare/tenzoshare/shared/pkg/cache"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/config"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/crypto"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/database"
@@ -182,14 +183,27 @@ func main() {
 		log.Fatal("failed to parse JWT public key", zap.Error(err))
 	}
 
+	var cacheClient *cache.Client
+	if cacheClient, err = cache.New(cfg.Redis); err != nil {
+		log.Warn("Redis unavailable — token revocation checks disabled", zap.Error(err))
+		cacheClient = nil
+	}
+
 	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
-	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.SecurityHeaders(cfg.App.DevMode))
 	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
 	app.Use(middleware.RequestLogger(log))
 
 	telemetry.Register(app, "admin")
 
-	v1 := app.Group("/api/v1/admin", middleware.JWTAuth(pubKey), middleware.RequireRole("admin"))
+	revocationCheck := middleware.TokenRevocation(func(ctx context.Context, jti string) bool {
+		if cacheClient == nil {
+			return false
+		}
+		return cacheClient.IsTokenRevoked(ctx, jti)
+	})
+
+	v1 := app.Group("/api/v1/admin", middleware.JWTAuth(pubKey), revocationCheck, middleware.RequireRole("admin"))
 	v1.Get("/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "service": "admin"})
 	})
