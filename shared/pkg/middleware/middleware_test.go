@@ -76,6 +76,8 @@ func TestJWTAuth_ValidToken(t *testing.T) {
 			Subject:   "user-1",
 			ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
 			IssuedAt:  jwt.NewNumericDate(now),
+			Issuer:    "tenzoshare-auth",
+			Audience:  jwt.ClaimStrings{"tenzoshare-api"},
 		},
 	}
 	tok := signRS256(t, key, claims)
@@ -171,6 +173,8 @@ func validToken(t *testing.T, key *rsa.PrivateKey, role string) string {
 			Subject:   "user-1",
 			ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
 			IssuedAt:  jwt.NewNumericDate(now),
+			Issuer:    "tenzoshare-auth",
+			Audience:  jwt.ClaimStrings{"tenzoshare-api"},
 		},
 	}
 	return signRS256(t, key, claims)
@@ -218,6 +222,8 @@ func TestTokenRevocation_NotRevoked(t *testing.T) {
 			Subject:   "user-1",
 			ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
 			IssuedAt:  jwt.NewNumericDate(now),
+			Issuer:    "tenzoshare-auth",
+			Audience:  jwt.ClaimStrings{"tenzoshare-api"},
 		},
 	}
 	tok := signRS256(t, key, claims)
@@ -248,6 +254,8 @@ func TestTokenRevocation_Revoked(t *testing.T) {
 			Subject:   "user-1",
 			ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
 			IssuedAt:  jwt.NewNumericDate(now),
+			Issuer:    "tenzoshare-auth",
+			Audience:  jwt.ClaimStrings{"tenzoshare-api"},
 		},
 	}
 	tok := signRS256(t, key, claims)
@@ -727,6 +735,8 @@ func TestJWTAuth_ValidToken_SetsLocals(t *testing.T) {
 			Subject:   userID,
 			ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
 			IssuedAt:  jwt.NewNumericDate(now),
+			Issuer:    "tenzoshare-auth",
+			Audience:  jwt.ClaimStrings{"tenzoshare-api"},
 		},
 	}
 	tok := signRS256(t, key, claims)

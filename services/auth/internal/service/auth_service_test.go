@@ -227,6 +227,35 @@ func (r *stubUserRepo) GetNotificationStatus(_ context.Context, email string) (b
 	return u.NotificationsOptOut, u.NotificationPrefs, nil
 }
 
+func (r *stubUserRepo) UpsertContact(_ context.Context, userID, email, name string) (*domain.Contact, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return &domain.Contact{ID: "contact-1", UserID: userID, Email: email, Name: name}, nil
+}
+
+func (r *stubUserRepo) ListContacts(_ context.Context, _ string) ([]*domain.Contact, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return nil, nil
+}
+
+func (r *stubUserRepo) UpdateContact(_ context.Context, id, userID, name string) (*domain.Contact, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return &domain.Contact{ID: id, UserID: userID, Name: name}, nil
+}
+
+func (r *stubUserRepo) DeleteContact(_ context.Context, _, _ string) error {
+	return r.err
+}
+
+func (r *stubUserRepo) UpdateAutoSaveContacts(_ context.Context, _ string, _ bool) error {
+	return r.err
+}
+
 // ── test helpers ──────────────────────────────────────────────────────────────
 
 func generateRSATestKey(t *testing.T) *rsa.PrivateKey {

@@ -266,14 +266,13 @@ func (s *AuthService) Login(ctx context.Context, email, password, clientIP strin
 	}
 
 	// Rate limit by target email to prevent distributed brute-force regardless of source IP.
+	// Fail-open on cache error: the IP check above is the fail-closed guard when Redis is unavailable.
 	limited, err := s.checkRateLimitGeneric(ctx, "ratelimit:login:email:"+email, loginRateLimit, loginRateLimitWindow)
 	if err != nil {
 		s.log.Warn("login email rate limit check failed", zap.Error(err))
-	}
-	if limited {
+	} else if limited {
 		return nil, nil, false, apperrors.RateLimit("too many login attempts for this account")
 	}
-
 	user, err := s.repo.GetByEmail(ctx, email)
 	if err != nil {
 		s.recordIPAttempt(ctx, clientIP)
@@ -700,8 +699,8 @@ func (s *AuthService) checkRateLimit(ctx context.Context, clientIP string) (bool
 
 func (s *AuthService) checkRateLimitGeneric(ctx context.Context, key string, limit int64, window time.Duration) (bool, error) {
 	if s.cache == nil {
-		s.log.Warn("rate limiter unavailable (cache is nil); denying request as fail-safe", zap.String("key", key))
-		return true, fmt.Errorf("rate limiter unavailable")
+		s.log.Warn("rate limiter unavailable (cache is nil); skipping secondary rate limit", zap.String("key", key))
+		return false, fmt.Errorf("rate limiter unavailable")
 	}
 	count, err := s.cache.Incr(ctx, key)
 	if err != nil {
