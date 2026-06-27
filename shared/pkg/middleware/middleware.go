@@ -76,6 +76,10 @@ type Claims struct {
 	Email  string `json:"email"`
 	Role   string `json:"role"`
 	JTI    string `json:"jti,omitempty"`
+	// FileID is set only on short-lived internal service tokens issued by the
+	// transfer service when proxying presign requests to the storage service.
+	// When non-empty the storage service restricts the token to that exact file.
+	FileID string `json:"file_id,omitempty"`
 	// MFASetupRequired is true for short-lived setup-only tokens issued when an
 	// admin mandates MFA but the user has not yet configured it. Tokens with this
 	// flag must NOT be accepted on general-purpose authenticated routes — only

@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -31,6 +32,7 @@ import (
 	"github.com/tenzoshare/tenzoshare/services/storage/internal/repository"
 	apperrors "github.com/tenzoshare/tenzoshare/shared/pkg/errors"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 	sharedStorage "github.com/tenzoshare/tenzoshare/shared/pkg/storage"
 )
 
@@ -63,8 +65,19 @@ type Handler struct {
 	backend          sharedStorage.Backend
 	js               *jetstream.Client
 	log              *zap.Logger
-	encryptionKey    []byte // 32-byte AES-256 master key; nil = encryption disabled
-	downloadTokenKey []byte // 32-byte HMAC key derived from encryptionKey via HKDF; nil when encryption disabled
+	encryptionKey    []byte   // 32-byte AES-256 master key; nil = encryption disabled
+	downloadTokenKey []byte   // 32-byte HMAC key derived from encryptionKey via HKDF; nil when encryption disabled
+	quotaMu          sync.Map // map[ownerID string]*sync.Mutex — serialises quota checks per user
+}
+
+// userQuotaMu returns a per-user mutex for serialising quota checks and file creation.
+// Prevents concurrent uploads from each passing the quota pre-check before the other
+// completes, which could allow aggregate usage to exceed the configured limit.
+// Note: This serialises concurrent uploads within a single service instance. For
+// multi-instance deployments a distributed lock (e.g. Redis SETNX) would be needed.
+func (h *Handler) userQuotaMu(ownerID string) *sync.Mutex {
+	v, _ := h.quotaMu.LoadOrStore(ownerID, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }
 
 // deriveDownloadTokenKey derives a separate 32-byte HMAC-SHA256 key for signing
@@ -279,7 +292,12 @@ func (h *Handler) Upload(c fiber.Ctx) error {
 	// Quota is enforced after upload because we don't know the plaintext size
 	// before the stream is fully consumed. If the quota is violated we delete
 	// the just-uploaded object and return an error.
+	// A per-user mutex serialises concurrent uploads so two simultaneous uploads
+	// cannot both pass this check and together exceed the quota.
 	if cfgErr == nil && cfg.QuotaEnabled && cfg.QuotaBytesPerUser > 0 {
+		mu := h.userQuotaMu(ownerID)
+		mu.Lock()
+		defer mu.Unlock()
 		effectiveQuota := cfg.QuotaBytesPerUser
 		if userQuota, ok, _ := h.repo.GetUserQuotaOverride(c.Context(), ownerID); ok {
 			effectiveQuota = userQuota
@@ -478,6 +496,14 @@ func (h *Handler) PresignURL(c fiber.Ctx) error {
 	role, _ := c.Locals("userRole").(string)
 	if file.OwnerID != ownerID && role != "admin" {
 		return apperrors.Forbidden("access denied")
+	}
+
+	// If the token carries a file_id claim (service-to-service token from transfer
+	// service), verify it matches this file. Prevents token replay to a different file.
+	if claims, ok := c.Locals("claims").(*middleware.Claims); ok && claims != nil && claims.FileID != "" {
+		if claims.FileID != id {
+			return apperrors.Forbidden("service token is not scoped to this file")
+		}
 	}
 
 	// Encrypted files: embed a short-lived download token in the URL so the

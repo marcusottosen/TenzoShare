@@ -217,7 +217,8 @@ func (h *Handler) UploadToRequest(c fiber.Ctx) error {
 
 	// Issue a short-lived service JWT using the request owner's UUID as the subject,
 	// so the storage service can store the file record with a valid owner_id.
-	token, err := h.issueServiceToken(req.OwnerID)
+	// No file_id scope here because the file does not exist yet at token-issue time.
+	token, err := h.issueServiceToken(req.OwnerID, "")
 	if err != nil {
 		return apperrors.Internal("issue service token", err)
 	}

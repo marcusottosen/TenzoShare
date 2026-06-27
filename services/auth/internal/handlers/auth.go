@@ -27,7 +27,7 @@ func New(svc *service.AuthService) *Handler {
 
 type registerRequest struct {
 	Email    string `json:"email"    validate:"required,email,max=254"`
-	Password string `json:"password" validate:"required,min=8,max=128"`
+	Password string `json:"password" validate:"required,min=12,max=128"`
 }
 
 func (h *Handler) Register(c fiber.Ctx) error {
@@ -294,7 +294,7 @@ func (h *Handler) ResendVerification(c fiber.Ctx) error {
 
 type passwordResetConfirmBody struct {
 	Token       string `json:"token"        validate:"required"`
-	NewPassword string `json:"new_password" validate:"required,min=8,max=128"`
+	NewPassword string `json:"new_password" validate:"required,min=12,max=128"`
 }
 
 func (h *Handler) PasswordResetConfirm(c fiber.Ctx) error {

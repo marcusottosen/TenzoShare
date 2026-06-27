@@ -466,7 +466,8 @@ func (h *Handler) DownloadURL(c fiber.Ctx) error {
 	}
 
 	// Issue a short-lived (30 s) service JWT so the Storage service accepts the request.
-	svcToken, err := h.issueServiceToken(result.Transfer.OwnerID)
+	// The file_id claim scopes the token to exactly this file, preventing token replay.
+	svcToken, err := h.issueServiceToken(result.Transfer.OwnerID, fileID)
 	if err != nil {
 		return apperrors.Internal("issue service token", err)
 	}
@@ -581,8 +582,10 @@ func (h *Handler) ListRecipients(c fiber.Ctx) error {
 // issueServiceToken mints a short-lived (30 s) RS256 JWT with role=admin for
 // internal service-to-service calls. The Storage service's JWT middleware accepts it.
 // subject must be a valid UUID (used as owner_id by the Storage service).
-// iss and aud match the values validated by JWTAuth in the storage service.
-func (h *Handler) issueServiceToken(subject string) (string, error) {
+// fileID, when non-empty, is embedded as file_id so the storage service can enforce
+// that the token is used only to presign that specific file (prevents replay attacks).
+// Pass an empty string for upload calls where the file does not yet exist.
+func (h *Handler) issueServiceToken(subject, fileID string) (string, error) {
 	now := time.Now()
 	claims := jwt.MapClaims{
 		"sub":  subject,
@@ -592,6 +595,9 @@ func (h *Handler) issueServiceToken(subject string) (string, error) {
 		"exp":  now.Add(30 * time.Second).Unix(),
 		"iss":  "tenzoshare-auth",
 		"aud":  []string{"tenzoshare-api"},
+	}
+	if fileID != "" {
+		claims["file_id"] = fileID
 	}
 	t := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	return t.SignedString(h.jwtPrivateKey)
