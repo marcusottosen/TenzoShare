@@ -156,9 +156,11 @@ func main() {
 
 	// API key management — /api/v1/users/apikeys
 	// Setup-only tokens must not be able to create/list API keys.
-	userRoutes := app.Group("/api/v1/users", middleware.JWTAuth(pubKey), revocationCheck, middleware.BlockIfMFASetupPending())
+	// TokenAuth allows both JWT sessions and API keys (for CLI use).
+	userRoutes := app.Group("/api/v1/users", middleware.TokenAuth(pubKey, middleware.NewAPIKeyValidator(pool)), revocationCheck, middleware.BlockIfMFASetupPending())
 	userRoutes.Get("/apikeys", h.ListAPIKeys)
 	userRoutes.Post("/apikeys", h.CreateAPIKey)
+	userRoutes.Patch("/apikeys/:id", h.UpdateAPIKey)
 	userRoutes.Delete("/apikeys/:id", h.DeleteAPIKey)
 
 	// Contacts — /api/v1/users/contacts

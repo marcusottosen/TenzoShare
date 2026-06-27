@@ -179,6 +179,14 @@ func (h *Handler) GetPublicFileRequest(c fiber.Ctx) error {
 func (h *Handler) UploadToRequest(c fiber.Ctx) error {
 	slug := c.Params("slug")
 
+	// Rate limit uploads per IP using Redis — prevents brute-force and spam.
+	// Fails open when Redis is unavailable (consistent with secondary rate limiters).
+	if err := h.checkPublicRateLimit(c.Context(),
+		"ratelimit:request:upload:"+realClientIP(c),
+		10, time.Hour); err != nil {
+		return err
+	}
+
 	fh, err := c.FormFile("file")
 	if err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "file is required")
@@ -189,6 +197,16 @@ func (h *Handler) UploadToRequest(c fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, "failed to open file")
 	}
 	defer file.Close() //nolint:errcheck
+
+	// Validate optional text fields before touching storage.
+	submitterName := strings.TrimSpace(c.FormValue("submitter_name"))
+	message := strings.TrimSpace(c.FormValue("message"))
+	if len(submitterName) > 200 {
+		return apperrors.BadRequest("submitter name too long (max 200 characters)")
+	}
+	if len(message) > 2000 {
+		return apperrors.BadRequest("message too long (max 2000 characters)")
+	}
 
 	// Fetch the request to obtain the owner's UUID for the service token.
 	// The storage service requires a valid UUID as owner_id when creating file records.
@@ -208,8 +226,8 @@ func (h *Handler) UploadToRequest(c fiber.Ctx) error {
 		Slug:          slug,
 		File:          file,
 		Header:        fh,
-		SubmitterName: c.FormValue("submitter_name"),
-		Message:       c.FormValue("message"),
+		SubmitterName: submitterName,
+		Message:       message,
 		IP:            realClientIP(c),
 		ServiceToken:  token,
 	})

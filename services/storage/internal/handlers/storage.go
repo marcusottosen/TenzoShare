@@ -34,6 +34,30 @@ import (
 	sharedStorage "github.com/tenzoshare/tenzoshare/shared/pkg/storage"
 )
 
+// safeInlineContentTypes lists MIME type prefixes that are safe to render
+// inline in the browser. All other types are forced to attachment to prevent
+// client-side script execution (XSS via HTML/SVG/JS served inline).
+var safeInlineContentTypePrefixes = []string{
+	"image/",
+	"video/",
+	"audio/",
+	"text/plain",
+	"application/pdf",
+}
+
+// isSafeForInline reports whether the content type may be safely rendered
+// inline by the browser without risk of script execution.
+func isSafeForInline(contentType string) bool {
+	ct := strings.ToLower(strings.SplitN(contentType, ";", 2)[0])
+	ct = strings.TrimSpace(ct)
+	for _, prefix := range safeInlineContentTypePrefixes {
+		if strings.HasPrefix(ct, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 type Handler struct {
 	repo             *repository.FileRepository
 	backend          sharedStorage.Backend
@@ -543,7 +567,10 @@ func (h *Handler) Download(c fiber.Ctx) error {
 	// so that rc is closed once fasthttp finishes streaming the plaintext.
 
 	disposition := "attachment"
-	if c.Query("inline") == "1" {
+	if c.Query("inline") == "1" && isSafeForInline(file.ContentType) {
+		// Only allow inline rendering for safe MIME types (images, PDF, video, text/plain).
+		// HTML, SVG (with scripts), JS, and other active content are kept as attachment
+		// to prevent XSS via browser inline rendering.
 		disposition = "inline"
 	}
 	c.Set("Content-Disposition", fmt.Sprintf(`%s; filename=%q`, disposition, file.Filename))

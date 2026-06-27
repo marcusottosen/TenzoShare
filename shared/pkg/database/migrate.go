@@ -10,6 +10,19 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// allowedSchemaNames is the explicit allowlist of schema names that may be
+// used with RunMigrations. This prevents SQL injection if the schemaName
+// ever originates from less-trusted input in the future.
+var allowedSchemaNames = map[string]bool{
+	"auth":         true,
+	"transfer":     true,
+	"storage":      true,
+	"audit":        true,
+	"admin_svc":    true,
+	"upload":       true,
+	"notification": true,
+}
+
 // RunMigrations applies every *.sql file found in the given fs.FS in
 // lexicographic (filename) order. It tracks applied migrations in a
 // schema_migrations table scoped to the given schema name so each service
@@ -27,6 +40,9 @@ import (
 //	    log.Fatal("migrations failed", zap.Error(err))
 //	}
 func RunMigrations(ctx context.Context, pool *pgxpool.Pool, files fs.FS, schemaName string) error {
+	if !allowedSchemaNames[schemaName] {
+		return fmt.Errorf("migrations: invalid schema name %q — must be one of the allowed service schemas", schemaName)
+	}
 	// Ensure the tracking table exists in the service's schema.
 	createTracker := fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s.schema_migrations (

@@ -72,10 +72,6 @@ func main() {
 	storageURL := getEnvOr("STORAGE_SERVICE_URL", "http://tenzoshare-storage:8083")
 	requestSvc := service.NewRequestService(requestRepo, cfg, jsClient, log, storageURL)
 	adminURL := getEnvOr("ADMIN_SERVICE_URL", "http://tenzoshare-admin:8087")
-	h, err := handlers.New(svc, requestSvc, cfg.JWT.PrivateKeyPEM, storageURL, adminURL)
-	if err != nil {
-		log.Fatal("failed to initialize transfer handler", zap.Error(err))
-	}
 
 	pubKey, err := jwtkeys.ParsePublicKey(cfg.JWT.PublicKeyPEM)
 	if err != nil {
@@ -86,6 +82,11 @@ func main() {
 	if cacheClient, err = cache.New(cfg.Redis); err != nil {
 		log.Warn("Redis unavailable — token revocation checks disabled", zap.Error(err))
 		cacheClient = nil
+	}
+
+	h, err := handlers.New(svc, requestSvc, cfg.JWT.PrivateKeyPEM, storageURL, adminURL, cacheClient)
+	if err != nil {
+		log.Fatal("failed to initialize transfer handler", zap.Error(err))
 	}
 
 	app := fiber.New(fiber.Config{
@@ -117,7 +118,7 @@ func main() {
 		return c.JSON(fiber.Map{"status": "ok", "service": "transfer"})
 	})
 
-	auth := middleware.JWTAuth(pubKey)
+	auth := middleware.TokenAuth(pubKey, middleware.NewAPIKeyValidator(pool))
 	revocationCheck := middleware.TokenRevocation(func(ctx context.Context, jti string) bool {
 		if cacheClient == nil {
 			return false

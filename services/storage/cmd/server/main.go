@@ -130,7 +130,7 @@ func main() {
 		return c.JSON(fiber.Map{"status": "ok", "service": "storage"})
 	})
 
-	auth := middleware.JWTAuth(pubKey)
+	auth := middleware.TokenAuth(pubKey, middleware.NewAPIKeyValidator(pool))
 	revocationCheck := middleware.TokenRevocation(func(ctx context.Context, jti string) bool {
 		if cacheClient == nil {
 			return false

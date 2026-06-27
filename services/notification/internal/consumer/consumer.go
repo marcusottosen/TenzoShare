@@ -4,6 +4,7 @@ package consumer
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -327,6 +328,11 @@ func (c *Consumer) shouldSend(emailType, recipientEmail string) bool {
 		c.log.Warn("failed to build notification-prefs request; sending email",
 			zap.String("type", emailType), zap.String("to", recipientEmail), zap.Error(err))
 		return true
+	}
+	// Authenticate with the shared internal secret so the auth service rejects external callers.
+	if c.pepper != "" {
+		h := sha256.Sum256([]byte("tenzoshare_internal_v1:" + c.pepper))
+		httpReq.Header.Set("X-Internal-Secret", fmt.Sprintf("%x", h[:]))
 	}
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil || resp.StatusCode != http.StatusOK {

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -93,6 +94,7 @@ type userRepository interface {
 	CreateAPIKey(ctx context.Context, userID, name, keyHash, keyPrefix string, expiresAt *time.Time) (*domain.APIKey, error)
 	ListAPIKeys(ctx context.Context, userID string) ([]*domain.APIKey, error)
 	DeleteAPIKey(ctx context.Context, id, userID string) error
+	UpdateAPIKey(ctx context.Context, id, userID, name string, expiresAt *time.Time) (*domain.APIKey, error)
 	UpdatePreferences(ctx context.Context, userID string, dateFormat, timeFormat, timezone *string) error
 	DisableMFA(ctx context.Context, userID string) error
 	StoreEmailVerificationToken(ctx context.Context, userID, rawToken string, expiresAt time.Time) error
@@ -844,10 +846,37 @@ func (s *AuthService) DeleteAPIKey(ctx context.Context, id, userID string) error
 	return err
 }
 
+// UpdateAPIKey renames a key and/or updates its expiry. Pass expiresAt=nil to clear expiry.
+func (s *AuthService) UpdateAPIKey(ctx context.Context, id, userID, name string, expiresAt *time.Time) (*domain.APIKey, error) {
+	if strings.TrimSpace(name) == "" {
+		return nil, apperrors.Validation("name is required")
+	}
+	k, err := s.repo.UpdateAPIKey(ctx, id, userID, name, expiresAt)
+	if err != nil {
+		return nil, err
+	}
+	s.publishAudit(ctx, AuditEvent{
+		Action: "apikey.updated", UserID: userID, Success: true, Timestamp: time.Now(),
+	})
+	return k, nil
+}
+
 // hashAPIKey returns SHA-256 hex of the raw key string (no token re-use).
 func hashAPIKey(rawKey string) string {
 	h := sha256.Sum256([]byte(rawKey))
 	return fmt.Sprintf("%x", h)
+}
+
+// InternalSecret returns the HMAC-derived secret used to authenticate
+// service-to-service calls to internal endpoints (e.g. /internal/notification-prefs).
+// It is derived from the pepper with a fixed label so it is stable and requires no
+// extra config. Returns an empty string if the pepper is not configured.
+func (s *AuthService) InternalSecret() string {
+	if s.cfg.App.Pepper == "" {
+		return ""
+	}
+	h := sha256.Sum256([]byte("tenzoshare_internal_v1:" + s.cfg.App.Pepper))
+	return fmt.Sprintf("%x", h[:])
 }
 
 // ChangePasswordParams holds inputs for a self-service password change.

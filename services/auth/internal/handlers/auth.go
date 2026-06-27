@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"crypto/subtle"
 	"time"
 
 	"github.com/go-playground/validator/v10"
@@ -491,6 +492,56 @@ func (h *Handler) DeleteAPIKey(c fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+type updateAPIKeyRequest struct {
+	Name      string  `json:"name"       validate:"required,min=1,max=100"`
+	ExpiresAt *string `json:"expires_at"` // optional RFC3339; omit to clear expiry
+}
+
+// UpdateAPIKey PATCH /api/v1/users/apikeys/:id — rename a key or change its expiry.
+func (h *Handler) UpdateAPIKey(c fiber.Ctx) error {
+	userID, _ := c.Locals("userID").(string)
+	if userID == "" {
+		return apperrors.Unauthorized("unauthenticated")
+	}
+	id := c.Params("id")
+	if id == "" {
+		return apperrors.BadRequest("missing api key id")
+	}
+
+	var req updateAPIKeyRequest
+	if err := c.Bind().JSON(&req); err != nil {
+		return apperrors.BadRequest("invalid request body")
+	}
+	if err := validate.Struct(req); err != nil {
+		return apperrors.Validation(err.Error())
+	}
+
+	var expiresAt *time.Time
+	if req.ExpiresAt != nil && *req.ExpiresAt != "" {
+		t, err := time.Parse(time.RFC3339, *req.ExpiresAt)
+		if err != nil {
+			return apperrors.BadRequest("expires_at must be RFC3339 (e.g. 2027-01-01T00:00:00Z)")
+		}
+		if t.Before(time.Now()) {
+			return apperrors.BadRequest("expires_at must be in the future")
+		}
+		expiresAt = &t
+	}
+
+	k, err := h.svc.UpdateAPIKey(c.Context(), id, userID, req.Name, expiresAt)
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{
+		"id":         k.ID,
+		"name":       k.Name,
+		"key_prefix": k.KeyPrefix,
+		"last_used":  k.LastUsed,
+		"expires_at": k.ExpiresAt,
+		"created_at": k.CreatedAt,
+	})
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func tokenResponse(p *service.TokenPair) fiber.Map {
@@ -603,8 +654,17 @@ func (h *Handler) UpdateNotificationPrefs(c fiber.Ctx) error {
 }
 
 // InternalNotificationPrefs GET /api/v1/auth/internal/notification-prefs?email=:email
-// Internal-only endpoint (no JWT) for the notification service to check prefs before sending.
+// Internal-only endpoint for the notification service to check prefs before sending.
+// Protected by a shared secret derived from the app pepper (X-Internal-Secret header).
 func (h *Handler) InternalNotificationPrefs(c fiber.Ctx) error {
+	// Validate the internal shared secret to block external callers.
+	// The secret is SHA-256("tenzoshare_internal_v1:" + pepper), computed once at startup.
+	expected := h.svc.InternalSecret()
+	got := c.Get("X-Internal-Secret")
+	if expected == "" || subtle.ConstantTimeCompare([]byte(got), []byte(expected)) != 1 {
+		return apperrors.Unauthorized("unauthorized")
+	}
+
 	email := c.Query("email")
 	if email == "" {
 		return apperrors.BadRequest("missing email")

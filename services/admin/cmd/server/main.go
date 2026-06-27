@@ -203,7 +203,7 @@ func main() {
 		return cacheClient.IsTokenRevoked(ctx, jti)
 	})
 
-	v1 := app.Group("/api/v1/admin", middleware.JWTAuth(pubKey), revocationCheck, middleware.RequireRole("admin"))
+	v1 := app.Group("/api/v1/admin", middleware.TokenAuth(pubKey, middleware.NewAPIKeyValidator(db)), revocationCheck, middleware.RequireRole("admin"))
 	v1.Get("/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "service": "admin"})
 	})

@@ -186,6 +186,9 @@ func (r *stubUserRepo) ListAPIKeys(_ context.Context, userID string) ([]*domain.
 }
 
 func (r *stubUserRepo) DeleteAPIKey(_ context.Context, _, _ string) error { return r.err }
+func (r *stubUserRepo) UpdateAPIKey(_ context.Context, _, _, _ string, _ *time.Time) (*domain.APIKey, error) {
+	return &domain.APIKey{}, r.err
+}
 
 func (r *stubUserRepo) UpdatePreferences(_ context.Context, _ string, _, _, _ *string) error {
 	return r.err

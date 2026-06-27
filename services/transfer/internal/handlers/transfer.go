@@ -20,6 +20,7 @@ import (
 
 	"github.com/tenzoshare/tenzoshare/services/transfer/internal/domain"
 	"github.com/tenzoshare/tenzoshare/services/transfer/internal/service"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/cache"
 	apperrors "github.com/tenzoshare/tenzoshare/shared/pkg/errors"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jwtkeys"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
@@ -59,7 +60,7 @@ func (pc *policyCache) get(ctx context.Context) string {
 	var cfg struct {
 		LinkProtectionPolicy string `json:"link_protection_policy"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&cfg); err != nil {
 		return "none"
 	}
 	if cfg.LinkProtectionPolicy == "" {
@@ -70,6 +71,14 @@ func (pc *policyCache) get(ctx context.Context) string {
 	return pc.value
 }
 
+// publicRateLimit is the max number of password attempts per IP per slug within the window.
+const (
+	publicAccessRateLimit   int64         = 20
+	publicAccessRateWindow  time.Duration = 15 * time.Minute
+	requestAccessRateLimit  int64         = 5
+	requestAccessRateWindow time.Duration = 1 * time.Hour
+)
+
 type Handler struct {
 	svc           *service.TransferService
 	requestSvc    *service.RequestService
@@ -77,9 +86,10 @@ type Handler struct {
 	jwtPrivateKey *rsa.PrivateKey
 	storageURL    string
 	policy        *policyCache
+	cache         *cache.Client // may be nil if Redis is unavailable
 }
 
-func New(svc *service.TransferService, requestSvc *service.RequestService, jwtPrivateKeyPEM, storageURL, adminURL string) (*Handler, error) {
+func New(svc *service.TransferService, requestSvc *service.RequestService, jwtPrivateKeyPEM, storageURL, adminURL string, cacheClient *cache.Client) (*Handler, error) {
 	privKey, err := jwtkeys.ParsePrivateKey(jwtPrivateKeyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("transfer handler: parse JWT private key: %w", err)
@@ -91,7 +101,27 @@ func New(svc *service.TransferService, requestSvc *service.RequestService, jwtPr
 		jwtPrivateKey: privKey,
 		storageURL:    storageURL,
 		policy:        &policyCache{adminURL: adminURL},
+		cache:         cacheClient,
 	}, nil
+}
+
+// checkPublicRateLimit enforces a Redis-based rate limit for public (unauthenticated) endpoints.
+// Returns true (and a 429 error) when the limit is exceeded. Fails open when cache is nil.
+func (h *Handler) checkPublicRateLimit(ctx context.Context, key string, limit int64, window time.Duration) error {
+	if h.cache == nil {
+		return nil // fail-open: Redis unavailable
+	}
+	count, err := h.cache.Incr(ctx, key)
+	if err != nil {
+		return nil // fail-open on Redis error
+	}
+	if count == 1 {
+		_, _ = h.cache.Expire(ctx, key, window)
+	}
+	if count > limit {
+		return apperrors.RateLimit("too many attempts — please try again later")
+	}
+	return nil
 }
 
 type createRequest struct {
@@ -241,7 +271,7 @@ func (h *Handler) Revoke(c fiber.Ctx) error {
 // Both fields are optional — a first call with an empty body probes
 // whether a password is needed (has_password in the response).
 type accessTransferRequest struct {
-	Password       string `json:"password"`
+	Password       string `json:"password"         validate:"max=1024"`
 	RecipientToken string `json:"rt"`
 }
 
@@ -252,6 +282,13 @@ type accessTransferRequest struct {
 // so the download UI can show per-file availability without requiring an attempt.
 func (h *Handler) Access(c fiber.Ctx) error {
 	slug := c.Params("slug")
+
+	// Rate limit password attempts per IP to prevent brute-force.
+	if err := h.checkPublicRateLimit(c.Context(),
+		"ratelimit:transfer:access:"+realClientIP(c),
+		publicAccessRateLimit, publicAccessRateWindow); err != nil {
+		return err
+	}
 
 	var req accessTransferRequest
 	// Both fields are optional; ignore bind errors (e.g. empty body on first probe).
@@ -314,9 +351,17 @@ func (h *Handler) RequestAccess(c fiber.Ctx) error {
 		return apperrors.BadRequest("invalid email address")
 	}
 
+	// Rate limit to prevent using this endpoint to spam email resends.
+	if err := h.checkPublicRateLimit(c.Context(),
+		"ratelimit:transfer:reqaccess:"+realClientIP(c),
+		requestAccessRateLimit, requestAccessRateWindow); err != nil {
+		return err
+	}
+
 	// Fire-and-forget: always return 200 regardless of outcome (no oracle).
 	go func() {
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 		if err := h.svc.RegenerateRecipientToken(ctx, slug, body.Email); err != nil {
 			// Log only — do not surface error to caller.
 			_ = err
@@ -383,6 +428,13 @@ func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 func (h *Handler) DownloadURL(c fiber.Ctx) error {
 	slug := c.Params("slug")
 	fileID := c.Params("fileId")
+
+	// Rate limit download attempts per IP to prevent brute-force password guessing.
+	if err := h.checkPublicRateLimit(c.Context(),
+		"ratelimit:transfer:download:"+realClientIP(c),
+		publicAccessRateLimit, publicAccessRateWindow); err != nil {
+		return err
+	}
 
 	// If a recipient token is provided, validate it first to bypass the password.
 	// We still call AttemptFileDownload for limit enforcement; pass empty password
@@ -529,6 +581,7 @@ func (h *Handler) ListRecipients(c fiber.Ctx) error {
 // issueServiceToken mints a short-lived (30 s) RS256 JWT with role=admin for
 // internal service-to-service calls. The Storage service's JWT middleware accepts it.
 // subject must be a valid UUID (used as owner_id by the Storage service).
+// iss and aud match the values validated by JWTAuth in the storage service.
 func (h *Handler) issueServiceToken(subject string) (string, error) {
 	now := time.Now()
 	claims := jwt.MapClaims{
@@ -537,6 +590,8 @@ func (h *Handler) issueServiceToken(subject string) (string, error) {
 		"jti":  uuid.New().String(),
 		"iat":  now.Unix(),
 		"exp":  now.Add(30 * time.Second).Unix(),
+		"iss":  "tenzoshare-auth",
+		"aud":  []string{"tenzoshare-api"},
 	}
 	t := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	return t.SignedString(h.jwtPrivateKey)

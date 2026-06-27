@@ -11,6 +11,14 @@
 #   docker compose up -d db redis minio nats gateway             # infra only
 #   docker compose logs -f auth                                   # tail one service
 #   docker compose down -v                                        # full teardown
+#
+# Network topology (defence-in-depth):
+#   tenzoshare-net  : Traefik gateway + 7 backend services + MinIO (for Traefik routing)
+#   tenzoshare-data : PostgreSQL + Redis + NATS + 7 backend services  [internal: true]
+#
+#   UI containers   : network_mode: none — serve static assets via host port only
+#   Guarantees      : UI containers cannot reach DB/Redis/NATS/backend services
+#                     DB/Redis/NATS cannot initiate outbound internet connections
 
 services:
 
@@ -21,13 +29,21 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"  # dashboard — localhost only, never expose to internet
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
       - ./traefik/dynamic:/etc/traefik/dynamic:ro
+    security_opt:
+      - no-new-privileges:true
     networks:
       - tenzoshare-net
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "1.0"
+          pids: 100
     logging:
       driver: json-file
       options:
@@ -41,6 +57,7 @@ services:
       start_period: 10s
 
   # ── PostgreSQL ───────────────────────────────────────────────────────────────
+  # Only on tenzoshare-data (internal) — not reachable from UI containers or gateway.
   db:
     image: postgres:17-alpine
     container_name: tenzoshare-db
@@ -58,8 +75,15 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    security_opt:
+      - no-new-privileges:true
     networks:
-      - tenzoshare-net
+      - tenzoshare-data
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "2.0"
     logging:
       driver: json-file
       options:
@@ -67,6 +91,7 @@ services:
         max-file: "3"
 
   # ── Redis ────────────────────────────────────────────────────────────────────
+  # Only on tenzoshare-data (internal) — not reachable from UI containers or gateway.
   redis:
     image: redis:7-alpine
     container_name: tenzoshare-redis
@@ -85,8 +110,16 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    security_opt:
+      - no-new-privileges:true
     networks:
-      - tenzoshare-net
+      - tenzoshare-data
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+          pids: 50
     logging:
       driver: json-file
       options:
@@ -94,6 +127,9 @@ services:
         max-file: "3"
 
   # ── MinIO ────────────────────────────────────────────────────────────────────
+  # Host port bindings removed — S3 API (9000) and console (9001) are accessible
+  # only via Traefik (/minio-console/) or SSH tunnel: ssh -L 9001:minio:9001 host
+  # Backend services reach the S3 API via http://minio:9000 on tenzoshare-net.
   minio:
     image: minio/minio:latest
     container_name: tenzoshare-minio
@@ -104,17 +140,21 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
     volumes:
       - /mnt/data/minio-data:/data
-    ports:
-      - "9000:9000"
-      - "9001:9001"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 15s
       timeout: 10s
       retries: 5
       start_period: 30s
+    security_opt:
+      - no-new-privileges:true
     networks:
       - tenzoshare-net
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "2.0"
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.minio-console.rule=PathPrefix(`/minio-console/`)"
@@ -128,6 +168,9 @@ services:
         max-file: "3"
 
   # ── NATS JetStream ────────────────────────────────────────────────────────────
+  # Host port bindings removed — client port (4222) and monitoring (8222) accessible
+  # only by backend services on tenzoshare-data. Prevents external message-bus
+  # access and information disclosure via the monitoring API.
   nats:
     image: nats:2.12.7-alpine
     container_name: tenzoshare-nats
@@ -136,17 +179,22 @@ services:
     volumes:
       - nats-data:/data
       - ./nats/nats.conf:/etc/nats/nats.conf:ro
-    ports:
-      - "4222:4222"
-      - "8222:8222"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:8222/healthz"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
+    security_opt:
+      - no-new-privileges:true
     networks:
-      - tenzoshare-net
+      - tenzoshare-data
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+          pids: 50
     logging:
       driver: json-file
       options:
@@ -182,7 +230,7 @@ services:
         echo 'Migrations complete.'
       "
     networks:
-      - tenzoshare-net
+      - tenzoshare-data
 
   # ── Auth (8081) ───────────────────────────────────────────────────────────────
   auth:
@@ -202,8 +250,19 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     networks:
       - tenzoshare-net
+      - tenzoshare-data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+          pids: 100
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.auth.rule=PathPrefix(`/api/v1/auth`) || PathPrefix(`/api/v1/users`)"
@@ -232,8 +291,19 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     networks:
       - tenzoshare-net
+      - tenzoshare-data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+          pids: 100
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.transfer.rule=PathPrefix(`/api/v1/transfers`) || PathPrefix(`/api/v1/t`) || PathPrefix(`/api/v1/requests`) || PathPrefix(`/api/v1/r`)"
@@ -267,8 +337,19 @@ services:
         condition: service_completed_successfully
       minio:
         condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     networks:
       - tenzoshare-net
+      - tenzoshare-data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+          pids: 100
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.storage.rule=PathPrefix(`/api/v1/files`)"
@@ -295,8 +376,19 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     networks:
       - tenzoshare-net
+      - tenzoshare-data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+          pids: 100
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.upload.rule=PathPrefix(`/api/v1/uploads`)"
@@ -325,8 +417,19 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     networks:
-      - tenzoshare-net
+      - tenzoshare-net    # needs outbound internet for SMTP delivery
+      - tenzoshare-data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+          pids: 100
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.notification.rule=PathPrefix(`/api/v1/notification`)"
@@ -355,8 +458,19 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     networks:
       - tenzoshare-net
+      - tenzoshare-data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+          pids: 100
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.audit.rule=PathPrefix(`/api/v1/audit`)"
@@ -367,7 +481,7 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # ── Admin (8087) — stub ───────────────────────────────────────────────────────
+  # ── Admin (8087) ─────────────────────────────────────────────────────────────
   admin:
     build:
       context: ../..
@@ -383,8 +497,19 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     networks:
       - tenzoshare-net
+      - tenzoshare-data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+          pids: 100
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.admin.rule=PathPrefix(`/api/v1/admin`) || PathPrefix(`/api/v1/branding`) || PathPrefix(`/api/v1/platform`)"
@@ -396,6 +521,10 @@ services:
         max-file: "3"
 
 # ── UI Applications ────────────────────────────────────────────────────────────
+# UI containers serve static assets only. network_mode: none means they have no
+# path to any internal service — a compromised nginx cannot reach the database,
+# Redis, NATS, or backend APIs. The browser's JavaScript calls the API via
+# Traefik on port 80; the container itself never makes internal network calls.
 
   tenzoshare-web:
     image: tenzoshare/user-portal:local
@@ -406,8 +535,15 @@ services:
     restart: unless-stopped
     ports:
       - "3000:80"
-    networks:
-      - tenzoshare-net
+    security_opt:
+      - no-new-privileges:true
+    network_mode: "none"
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.5"
+          pids: 50
     logging:
       driver: json-file
       options:
@@ -423,8 +559,15 @@ services:
     restart: unless-stopped
     ports:
       - "3001:80"
-    networks:
-      - tenzoshare-net
+    security_opt:
+      - no-new-privileges:true
+    network_mode: "none"
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.5"
+          pids: 50
     logging:
       driver: json-file
       options:
@@ -440,8 +583,15 @@ services:
     restart: unless-stopped
     ports:
       - "3003:80"
-    networks:
-      - tenzoshare-net
+    security_opt:
+      - no-new-privileges:true
+    network_mode: "none"
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.5"
+          pids: 50
     logging:
       driver: json-file
       options:
@@ -457,8 +607,15 @@ services:
     restart: unless-stopped
     ports:
       - "3002:80"
-    networks:
-      - tenzoshare-net
+    security_opt:
+      - no-new-privileges:true
+    network_mode: "none"
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.5"
+          pids: 50
     logging:
       driver: json-file
       options:
@@ -480,8 +637,16 @@ services:
     volumes:
       - loki-data:/loki
       - ./loki/loki.yml:/etc/loki/loki.yml:ro
+    security_opt:
+      - no-new-privileges:true
     networks:
       - tenzoshare-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+          pids: 100
     logging:
       driver: json-file
       options:
@@ -499,8 +664,16 @@ services:
       - ./promtail/promtail.yml:/etc/promtail/promtail.yml:ro
     depends_on:
       - loki
+    security_opt:
+      - no-new-privileges:true
     networks:
       - tenzoshare-net
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+          pids: 50
     logging:
       driver: json-file
       options:
@@ -521,8 +694,16 @@ services:
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
+    security_opt:
+      - no-new-privileges:true
     networks:
       - tenzoshare-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+          pids: 100
     logging:
       driver: json-file
       options:
@@ -535,7 +716,7 @@ services:
     restart: unless-stopped
     profiles: [observability]
     ports:
-      - "3010:3000"
+      - "127.0.0.1:3010:3000"  # localhost only — use SSH tunnel in production
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-changeme}
@@ -547,8 +728,16 @@ services:
     depends_on:
       - prometheus
       - loki
+    security_opt:
+      - no-new-privileges:true
     networks:
       - tenzoshare-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+          pids: 100
     logging:
       driver: json-file
       options:
@@ -570,3 +759,8 @@ networks:
   tenzoshare-net:
     driver: bridge
     name: tenzoshare-net
+
+  tenzoshare-data:
+    driver: bridge
+    name: tenzoshare-data
+    internal: true   # no outbound internet — DB/Redis/NATS cannot initiate external connections

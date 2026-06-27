@@ -122,7 +122,8 @@ func main() {
 		}
 		return cacheClient.IsTokenRevoked(ctx, jti)
 	})
-	protected := audit.Group("", middleware.JWTAuth(pubKey), revocationCheck)
+	// Audit logs contain actions for ALL users — restrict to admin role only.
+	protected := audit.Group("", middleware.TokenAuth(pubKey, middleware.NewAPIKeyValidator(pool)), revocationCheck, middleware.RequireRole("admin"))
 	protected.Get("/events", h.ListEvents)
 
 	go func() {
