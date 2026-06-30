@@ -48,7 +48,7 @@ export default function RegisterPage() {
             <label>Password <span style={{ fontSize: 12, color: 'var(--color-text-muted)', fontWeight: 400 }}>(min 8 characters)</span></label>
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" minLength={8} required />
           </div>
-          <button className="btn btn-primary btn-full btn-lg" type="submit" disabled={loading} style={{ marginTop: 8 }}>
+          <button className="btn btn-primary btn-full btn-lg" type="submit" disabled={loading} style={{ marginTop: 16 }}>
             {loading ? 'Creating account…' : 'Create account'}
           </button>
         </form>

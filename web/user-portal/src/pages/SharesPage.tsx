@@ -202,7 +202,12 @@ function MySharesTab() {
   const sorted = [...transfers].sort((a, b) => {
     let cmp = 0;
     if (sortKey === 'name') cmp = (a.name || '').localeCompare(b.name || '');
-    else if (sortKey === 'recipient') cmp = (a.recipient_email || '').localeCompare(b.recipient_email || '');
+    else if (sortKey === 'recipient') {
+      // Sort by first recipient email (or use recipient_email as fallback)
+      const aEmail = a.recipient_emails?.[0] || a.recipient_email || '';
+      const bEmail = b.recipient_emails?.[0] || b.recipient_email || '';
+      cmp = aEmail.localeCompare(bEmail);
+    }
     else if (sortKey === 'downloads') cmp = (a.download_count ?? 0) - (b.download_count ?? 0);
     else if (sortKey === 'size') cmp = (a.total_size_bytes ?? 0) - (b.total_size_bytes ?? 0);
     else cmp = new Date(a.expires_at ?? 0).getTime() - new Date(b.expires_at ?? 0).getTime();

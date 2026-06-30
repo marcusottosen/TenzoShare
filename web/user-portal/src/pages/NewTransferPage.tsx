@@ -7,6 +7,7 @@ import { getNotificationPrefs } from '../api/auth';
 import { getPlatformConfig } from '../api/platform';
 import { pendingUploadStore } from '../stores/pendingUpload';
 import { pendingFileStore } from '../stores/pendingFileStore';
+import { ContactPickerModal } from '../components/ContactPickerModal';
 
 function fmtBytes(n: number) {
   if (n < 1024) return `${n} B`;
@@ -53,6 +54,7 @@ export default function NewTransferPage() {
   const [suggestions, setSuggestions] = useState<Contact[]>([]);
   const [suggestionIdx, setSuggestionIdx] = useState(-1);
   const suggestionsRef = useRef<HTMLDivElement>(null);
+  const [showContactPicker, setShowContactPicker] = useState(false);
 
   // Admin link protection policy
   const [linkPolicy, setLinkPolicyState] = useState<'none' | 'password' | 'email' | 'either'>('none');
@@ -493,10 +495,35 @@ export default function NewTransferPage() {
           <div className="row">
             <div className="col">
               <div className="form-group">
-                <label>
-                  Recipient email{recipientEmails.length !== 1 ? 's' : ''}{' '}
-                  <span className="text-sm" style={{ color: 'var(--color-text-muted)' }}>(optional)</span>
-                </label>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <label style={{ margin: 0 }}>
+                    Recipient email{recipientEmails.length !== 1 ? 's' : ''}{' '}
+                    <span className="text-sm" style={{ color: 'var(--color-text-muted)' }}>(optional)</span>
+                  </label>
+                  {contacts.length > 0 && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => setShowContactPicker(true)}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        padding: '4px 10px',
+                        fontSize: 12,
+                      }}
+                      title="Choose from saved contacts"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                        <circle cx="9" cy="7" r="4"/>
+                        <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                        <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                      </svg>
+                      Contacts ({contacts.length})
+                    </button>
+                  )}
+                </div>
                 <div style={{ position: 'relative' }}>
                 <div
                   className="email-chips-field"
@@ -681,6 +708,20 @@ export default function NewTransferPage() {
         </button>
 
       </form>
+
+      {/* Contact Picker Modal */}
+      {showContactPicker && (
+        <ContactPickerModal
+          contacts={contacts}
+          onSelect={(email) => {
+            if (!recipientEmails.includes(email)) {
+              setRecipientEmails(prev => [...prev, email]);
+            }
+          }}
+          onClose={() => setShowContactPicker(false)}
+          excludeEmails={recipientEmails}
+        />
+      )}
     </div>
   );
 }

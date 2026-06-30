@@ -100,7 +100,7 @@ export default function LoginPage() {
             </div>
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" required />
           </div>
-          <button className="btn btn-primary btn-full btn-lg" type="submit" disabled={loading} style={{ marginTop: 8 }}>
+          <button className="btn btn-primary btn-full btn-lg" type="submit" disabled={loading} style={{ marginTop: 16 }}>
             {loading ? 'Signing in…' : 'Sign in'}
           </button>
         </form>

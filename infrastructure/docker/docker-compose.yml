@@ -537,7 +537,8 @@ services:
       - "3000:80"
     security_opt:
       - no-new-privileges:true
-    network_mode: "none"
+    networks:
+      - tenzoshare-net
     deploy:
       resources:
         limits:
@@ -561,7 +562,8 @@ services:
       - "3001:80"
     security_opt:
       - no-new-privileges:true
-    network_mode: "none"
+    networks:
+      - tenzoshare-net
     deploy:
       resources:
         limits:
@@ -585,7 +587,8 @@ services:
       - "3003:80"
     security_opt:
       - no-new-privileges:true
-    network_mode: "none"
+    networks:
+      - tenzoshare-net
     deploy:
       resources:
         limits:

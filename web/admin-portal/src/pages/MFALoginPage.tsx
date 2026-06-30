@@ -84,7 +84,7 @@ export default function MFALoginPage() {
             className="btn btn-primary btn-full"
             type="submit"
             disabled={loading || code.length !== 6}
-            style={{ marginTop: 8 }}
+            style={{ marginTop: 16 }}
           >
             {loading ? 'Verifying…' : 'Verify'}
           </button>

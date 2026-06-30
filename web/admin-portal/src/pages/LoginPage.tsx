@@ -75,7 +75,7 @@ export default function LoginPage() {
               required
             />
           </div>
-          <button className="btn btn-primary btn-full" type="submit" disabled={loading}>
+          <button className="btn btn-primary btn-full" type="submit" disabled={loading} style={{ marginTop: 16 }}>
             {loading ? 'Signing in…' : 'Sign in'}
           </button>
         </form>

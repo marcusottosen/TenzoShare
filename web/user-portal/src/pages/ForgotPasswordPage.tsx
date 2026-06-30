@@ -62,7 +62,7 @@ export default function ForgotPasswordPage() {
                   <label>New password <span style={{ fontSize: 12, color: 'var(--color-text-muted)', fontWeight: 400 }}>(min 8 chars)</span></label>
                   <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="••••••••" minLength={8} required autoFocus />
                 </div>
-                <button className="btn btn-primary btn-full btn-lg" type="submit" disabled={loading} style={{ marginTop: 8 }}>
+                <button className="btn btn-primary btn-full btn-lg" type="submit" disabled={loading} style={{ marginTop: 16 }}>
                   {loading ? 'Saving…' : 'Set password'}
                 </button>
               </form>
@@ -81,7 +81,7 @@ export default function ForgotPasswordPage() {
                   <label>Email address</label>
                   <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" required autoFocus />
                 </div>
-                <button className="btn btn-primary btn-full btn-lg" type="submit" disabled={loading} style={{ marginTop: 8 }}>
+                <button className="btn btn-primary btn-full btn-lg" type="submit" disabled={loading} style={{ marginTop: 16 }}>
                   {loading ? 'Sending…' : 'Send reset link'}
                 </button>
               </form>

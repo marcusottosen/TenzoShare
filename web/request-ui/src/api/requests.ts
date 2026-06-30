@@ -1,6 +1,9 @@
 import type { FileRequestPublic, Submission } from '../types';
 import { RequestApiError } from '../types';
 
+// API_BASE uses a relative URL so nginx can proxy to the gateway
+// In development: Vite proxy (vite.config.ts) forwards /api to localhost:80
+// In production: nginx (nginx-spa.conf) proxies /api to tenzoshare-gateway
 const API_BASE = '/api/v1';
 
 async function apiGet<T>(path: string): Promise<T> {

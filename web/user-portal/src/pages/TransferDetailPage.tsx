@@ -5,6 +5,8 @@ import { getTransfer, revokeTransfer, updateTransferRecipients, resendTransferEm
 import { getFile, presignFile, type FileRecord } from '../api/files';
 import { getToken } from '../api/client';
 import { isPreviewable, IconEye, FilePreviewModal } from '../components/FilePreviewModal';
+import { listContacts, type Contact } from '../api/contacts';
+import { ContactPickerModal } from '../components/ContactPickerModal';
 
 /**
  * Build the public recipient link for a transfer slug.
@@ -239,6 +241,15 @@ export default function TransferDetailPage() {
   const [resendSuccess, setResendSuccess] = useState(false);
   const resendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Contacts for picker
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [showContactPicker, setShowContactPicker] = useState(false);
+
+  // Load contacts
+  useEffect(() => {
+    listContacts().then(setContacts).catch(() => {});
+  }, []);
+
   function handleCopy() {
     if (!transfer) return;
     copyToClipboard(buildDownloadUrl(transfer.slug), () => {
@@ -252,13 +263,14 @@ export default function TransferDetailPage() {
     getTransfer(id)
       .then((t) => {
         setTransfer(t);
-        setRecipients(
-          t.recipient_emails && t.recipient_emails.length > 0
-            ? t.recipient_emails
-            : t.recipient_email
-              ? t.recipient_email.split(',').map((e) => e.trim()).filter(Boolean)
-              : []
-        );
+        // Parse recipients from the API response
+        let recipientList: string[] = [];
+        if (t.recipient_emails && Array.isArray(t.recipient_emails) && t.recipient_emails.length > 0) {
+          recipientList = t.recipient_emails;
+        } else if (t.recipient_email && typeof t.recipient_email === 'string' && t.recipient_email.trim()) {
+          recipientList = t.recipient_email.split(',').map((e) => e.trim()).filter(Boolean);
+        }
+        setRecipients(recipientList);
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
@@ -391,6 +403,63 @@ export default function TransferDetailPage() {
         )}
       </div>
 
+      {/* ── Share link — prominent card ── */}
+      <div className="card" style={{ 
+        background: 'linear-gradient(135deg, var(--color-primary-bg) 0%, var(--color-bg) 100%)',
+        border: '2px solid var(--color-primary)',
+        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+          <span style={{ fontSize: 20 }}>🔗</span>
+          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+            Share this transfer
+          </h3>
+        </div>
+        <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--color-text-muted)' }}>
+          Copy this link and share it with your recipients to give them access to the files.
+        </p>
+        <div style={{ 
+          display: 'flex', 
+          gap: 10, 
+          alignItems: 'stretch',
+          background: 'var(--color-bg)', 
+          border: '1px solid var(--color-border)', 
+          borderRadius: 10, 
+          padding: 12,
+          flexWrap: 'wrap',
+        }}>
+          <a 
+            href={publicUrl} 
+            target="_blank" 
+            rel="noreferrer" 
+            className="text-link"
+            style={{ 
+              fontSize: 14, 
+              flex: '1 1 300px',
+              minWidth: 0,
+              overflow: 'hidden', 
+              textOverflow: 'ellipsis', 
+              whiteSpace: 'nowrap',
+              alignSelf: 'center',
+            }}
+          >
+            {publicUrl}
+          </a>
+          <button 
+            type="button" 
+            className="btn btn-primary" 
+            onClick={handleCopy} 
+            style={{ 
+              flexShrink: 0,
+              fontWeight: 600,
+              padding: '10px 24px',
+            }}
+          >
+            {copied ? '✓ Copied!' : '📋 Copy link'}
+          </button>
+        </div>
+      </div>
+
       {/* ── Stat strip ── */}
       <div className="stat-cards" style={{ marginBottom: 16 }}>
         {[
@@ -425,20 +494,6 @@ export default function TransferDetailPage() {
             </div>
           ))}
         </div>
-
-        {/* Share link */}
-        <div style={{ marginTop: 20 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.07em', color: 'var(--color-text-muted)', marginBottom: 8 }}>Share link</div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: 8, padding: '10px 14px' }}>
-            <a href={publicUrl} target="_blank" rel="noreferrer" className="text-link"
-              style={{ fontSize: 13, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {publicUrl}
-            </a>
-            <button type="button" className="btn btn-secondary btn-sm" onClick={handleCopy} style={{ flexShrink: 0 }}>
-              {copied ? '✓ Copied' : 'Copy link'}
-            </button>
-          </div>
-        </div>
       </div>
 
       {/* ── Recipients ── */}
@@ -452,6 +507,24 @@ export default function TransferDetailPage() {
               </span>
             )}
           </span>
+        </div>
+
+        {/* Info callout */}
+        <div style={{
+          marginBottom: 20,
+          padding: '14px 16px',
+          background: 'var(--color-info-bg)',
+          border: '1px solid var(--color-info-border)',
+          borderRadius: 8,
+          display: 'flex',
+          gap: 12,
+          alignItems: 'flex-start',
+        }}>
+          <span style={{ fontSize: 18, flexShrink: 0 }}>💡</span>
+          <div style={{ fontSize: 13, lineHeight: 1.5, color: 'var(--color-text-secondary)' }}>
+            <strong style={{ color: 'var(--color-text-primary)' }}>About recipients:</strong>
+            {' '}When you add an email address and save changes, that person will automatically receive an email notification with the download link. You can add up to 20 recipients. If you don't add any recipients, anyone with the link can access the transfer.
+          </div>
         </div>
 
         {/* Recipient chips */}
@@ -492,6 +565,28 @@ export default function TransferDetailPage() {
               placeholder="Enter an email address…"
               style={{ flex: 1 }}
             />
+            {contacts.length > 0 && (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setShowContactPicker(true)}
+                title="Choose from saved contacts"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  flexShrink: 0,
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                  <circle cx="9" cy="7" r="4"/>
+                  <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                  <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                </svg>
+                Contacts
+              </button>
+            )}
             <button type="button" className="btn btn-secondary" onClick={addEmailToList}>
               Add
             </button>
@@ -564,6 +659,21 @@ export default function TransferDetailPage() {
             ))}
           </div>
         </div>
+      )}
+
+      {/* Contact Picker Modal */}
+      {showContactPicker && (
+        <ContactPickerModal
+          contacts={contacts}
+          onSelect={(email) => {
+            if (!recipients.includes(email)) {
+              setRecipients(prev => [...prev, email]);
+            }
+            setRecipientError('');
+          }}
+          onClose={() => setShowContactPicker(false)}
+          excludeEmails={recipients}
+        />
       )}
     </div>
   );

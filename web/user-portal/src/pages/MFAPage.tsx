@@ -66,7 +66,7 @@ export default function MFAPage() {
               style={{ letterSpacing: '0.3em', fontSize: 22, textAlign: 'center' }}
             />
           </div>
-          <button className="btn btn-primary btn-full btn-lg" type="submit" disabled={loading || code.length !== 6} style={{ marginTop: 8 }}>
+          <button className="btn btn-primary btn-full btn-lg" type="submit" disabled={loading || code.length !== 6} style={{ marginTop: 16 }}>
             {loading ? 'Verifying…' : 'Verify'}
           </button>
         </form>
