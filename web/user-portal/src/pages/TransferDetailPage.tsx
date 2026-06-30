@@ -370,7 +370,7 @@ export default function TransferDetailPage() {
   }
 
   return (
-    <div className="page">
+    <div className="page-container-medium">
 
       {/* ── Page header ── */}
       <div className="page-header">

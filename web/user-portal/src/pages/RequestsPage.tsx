@@ -130,7 +130,7 @@ export default function RequestsPage() {
   }
 
   return (
-    <div className="page" style={{ maxWidth: 700 }}>
+    <div className="page-container-narrow">
       <div className="page-header" style={{ marginBottom: 28 }}>
         <div>
           <h1 className="page-title">New File Request</h1>

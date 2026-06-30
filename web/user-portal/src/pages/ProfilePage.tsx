@@ -151,7 +151,7 @@ export default function ProfilePage() {
 
 
   return (
-    <div className="page">
+    <div className="page-container-narrow">
       <div className="page-header">
         <div>
           <h1 className="page-title">Profile</h1>

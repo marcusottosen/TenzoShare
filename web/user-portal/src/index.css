@@ -307,6 +307,43 @@ body {
 .page-wide { width: 100%; }
 .page-center { display: flex; align-items: center; justify-content: center; height: 100vh; color: var(--color-text-muted); }
 
+/* ─── Responsive content containers ──────────────────────────── */
+/* Use these to create consistent, centered layouts that adapt to screen size */
+.page-container-narrow {
+  width: 100%;
+  max-width: 700px;
+  margin: 0 auto;
+}
+
+.page-container-medium {
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+.page-container-wide {
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.page-container-full {
+  width: 100%;
+}
+
+/* Responsive adjustments - smoothly expand containers on smaller screens */
+@media (max-width: 1280px) {
+  .page-container-wide { max-width: 100%; }
+}
+
+@media (max-width: 900px) {
+  .page-container-medium { max-width: 100%; }
+}
+
+@media (max-width: 768px) {
+  .page-container-narrow { max-width: 100%; }
+}
+
 .page-header {
   display: flex;
   align-items: center;
