@@ -20,6 +20,7 @@ import (
 
 	"github.com/tenzoshare/tenzoshare/services/transfer/internal/domain"
 	"github.com/tenzoshare/tenzoshare/services/transfer/internal/service"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/cache"
 	apperrors "github.com/tenzoshare/tenzoshare/shared/pkg/errors"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jwtkeys"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
@@ -59,7 +60,7 @@ func (pc *policyCache) get(ctx context.Context) string {
 	var cfg struct {
 		LinkProtectionPolicy string `json:"link_protection_policy"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&cfg); err != nil {
 		return "none"
 	}
 	if cfg.LinkProtectionPolicy == "" {
@@ -70,6 +71,14 @@ func (pc *policyCache) get(ctx context.Context) string {
 	return pc.value
 }
 
+// publicRateLimit is the max number of password attempts per IP per slug within the window.
+const (
+	publicAccessRateLimit   int64         = 20
+	publicAccessRateWindow  time.Duration = 15 * time.Minute
+	requestAccessRateLimit  int64         = 5
+	requestAccessRateWindow time.Duration = 1 * time.Hour
+)
+
 type Handler struct {
 	svc           *service.TransferService
 	requestSvc    *service.RequestService
@@ -77,13 +86,13 @@ type Handler struct {
 	jwtPrivateKey *rsa.PrivateKey
 	storageURL    string
 	policy        *policyCache
+	cache         *cache.Client // may be nil if Redis is unavailable
 }
 
-func New(svc *service.TransferService, requestSvc *service.RequestService, jwtPrivateKeyPEM, storageURL, adminURL string) *Handler {
+func New(svc *service.TransferService, requestSvc *service.RequestService, jwtPrivateKeyPEM, storageURL, adminURL string, cacheClient *cache.Client) (*Handler, error) {
 	privKey, err := jwtkeys.ParsePrivateKey(jwtPrivateKeyPEM)
 	if err != nil {
-		// panic at startup — private key is required for service-to-service tokens
-		panic("transfer handler: " + err.Error())
+		return nil, fmt.Errorf("transfer handler: parse JWT private key: %w", err)
 	}
 	return &Handler{
 		svc:           svc,
@@ -92,7 +101,27 @@ func New(svc *service.TransferService, requestSvc *service.RequestService, jwtPr
 		jwtPrivateKey: privKey,
 		storageURL:    storageURL,
 		policy:        &policyCache{adminURL: adminURL},
+		cache:         cacheClient,
+	}, nil
+}
+
+// checkPublicRateLimit enforces a Redis-based rate limit for public (unauthenticated) endpoints.
+// Returns true (and a 429 error) when the limit is exceeded. Fails open when cache is nil.
+func (h *Handler) checkPublicRateLimit(ctx context.Context, key string, limit int64, window time.Duration) error {
+	if h.cache == nil {
+		return nil // fail-open: Redis unavailable
 	}
+	count, err := h.cache.Incr(ctx, key)
+	if err != nil {
+		return nil // fail-open on Redis error
+	}
+	if count == 1 {
+		_, _ = h.cache.Expire(ctx, key, window)
+	}
+	if count > limit {
+		return apperrors.RateLimit("too many attempts — please try again later")
+	}
+	return nil
 }
 
 type createRequest struct {
@@ -237,24 +266,44 @@ func (h *Handler) Revoke(c fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
+// accessTransferRequest is the body for POST /api/v1/t/:slug and
+// POST /api/v1/t/:slug/files/:fileId/download.
+// Both fields are optional — a first call with an empty body probes
+// whether a password is needed (has_password in the response).
+type accessTransferRequest struct {
+	Password       string `json:"password"         validate:"max=1024"`
+	RecipientToken string `json:"rt"`
+}
+
 // Access is the public (unauthenticated) download-info endpoint.
-// GET /api/v1/t/:slug  — optionally with ?password= or ?rt= (recipient token)
+// POST /api/v1/t/:slug  — optionally with password or rt in JSON body.
 // Does NOT increment any counter — viewing the download page is not a download.
 // Returns per-file download counts (file_download_counts map) when max_downloads > 0
 // so the download UI can show per-file availability without requiring an attempt.
 func (h *Handler) Access(c fiber.Ctx) error {
 	slug := c.Params("slug")
 
+	// Rate limit password attempts per IP to prevent brute-force.
+	if err := h.checkPublicRateLimit(c.Context(),
+		"ratelimit:transfer:access:"+realClientIP(c),
+		publicAccessRateLimit, publicAccessRateWindow); err != nil {
+		return err
+	}
+
+	var req accessTransferRequest
+	// Both fields are optional; ignore bind errors (e.g. empty body on first probe).
+	_ = c.Bind().JSON(&req)
+
 	var result *service.AccessResult
 	var err error
 
-	if rt := c.Query("rt"); rt != "" {
+	if req.RecipientToken != "" {
 		// Recipient magic-link token path — bypasses password requirement.
-		result, err = h.svc.ValidateRecipientToken(c.Context(), slug, rt)
+		result, err = h.svc.ValidateRecipientToken(c.Context(), slug, req.RecipientToken)
 	} else {
 		result, err = h.svc.Validate(c.Context(), service.AccessParams{
 			Slug:     slug,
-			Password: c.Query("password"),
+			Password: req.Password,
 		})
 	}
 	if err != nil {
@@ -302,9 +351,17 @@ func (h *Handler) RequestAccess(c fiber.Ctx) error {
 		return apperrors.BadRequest("invalid email address")
 	}
 
+	// Rate limit to prevent using this endpoint to spam email resends.
+	if err := h.checkPublicRateLimit(c.Context(),
+		"ratelimit:transfer:reqaccess:"+realClientIP(c),
+		requestAccessRateLimit, requestAccessRateWindow); err != nil {
+		return err
+	}
+
 	// Fire-and-forget: always return 200 regardless of outcome (no oracle).
 	go func() {
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 		if err := h.svc.RegenerateRecipientToken(ctx, slug, body.Email); err != nil {
 			// Log only — do not surface error to caller.
 			_ = err
@@ -356,7 +413,7 @@ func transferResponse(t *domain.Transfer, fileIDs []string) fiber.Map {
 
 // DownloadURL returns a presigned download URL for a single file in a public transfer.
 //
-// GET /api/v1/t/:slug/files/:fileId/download[?password=...][?rt=...]
+// POST /api/v1/t/:slug/files/:fileId/download  { password?, rt? }
 //
 // This endpoint:
 //  1. Validates the transfer (slug, optional password or recipient token, expiry, revocation).
@@ -372,17 +429,28 @@ func (h *Handler) DownloadURL(c fiber.Ctx) error {
 	slug := c.Params("slug")
 	fileID := c.Params("fileId")
 
+	// Rate limit download attempts per IP to prevent brute-force password guessing.
+	if err := h.checkPublicRateLimit(c.Context(),
+		"ratelimit:transfer:download:"+realClientIP(c),
+		publicAccessRateLimit, publicAccessRateWindow); err != nil {
+		return err
+	}
+
 	// If a recipient token is provided, validate it first to bypass the password.
 	// We still call AttemptFileDownload for limit enforcement; pass empty password
 	// when the token was valid (transfer has already been verified above).
+	var req accessTransferRequest
+	// Both fields are optional; ignore bind errors.
+	_ = c.Bind().JSON(&req)
+
 	var password string
-	if rt := c.Query("rt"); rt != "" {
-		if _, err := h.svc.ValidateRecipientToken(c.Context(), slug, rt); err != nil {
+	if req.RecipientToken != "" {
+		if _, err := h.svc.ValidateRecipientToken(c.Context(), slug, req.RecipientToken); err != nil {
 			return err
 		}
 		// Token valid — password not needed.
 	} else {
-		password = c.Query("password")
+		password = req.Password
 	}
 
 	// AttemptFileDownload validates the transfer, confirms file ownership, and
@@ -398,7 +466,8 @@ func (h *Handler) DownloadURL(c fiber.Ctx) error {
 	}
 
 	// Issue a short-lived (30 s) service JWT so the Storage service accepts the request.
-	svcToken, err := h.issueServiceToken(result.Transfer.OwnerID)
+	// The file_id claim scopes the token to exactly this file, preventing token replay.
+	svcToken, err := h.issueServiceToken(result.Transfer.OwnerID, fileID)
 	if err != nil {
 		return apperrors.Internal("issue service token", err)
 	}
@@ -513,7 +582,10 @@ func (h *Handler) ListRecipients(c fiber.Ctx) error {
 // issueServiceToken mints a short-lived (30 s) RS256 JWT with role=admin for
 // internal service-to-service calls. The Storage service's JWT middleware accepts it.
 // subject must be a valid UUID (used as owner_id by the Storage service).
-func (h *Handler) issueServiceToken(subject string) (string, error) {
+// fileID, when non-empty, is embedded as file_id so the storage service can enforce
+// that the token is used only to presign that specific file (prevents replay attacks).
+// Pass an empty string for upload calls where the file does not yet exist.
+func (h *Handler) issueServiceToken(subject, fileID string) (string, error) {
 	now := time.Now()
 	claims := jwt.MapClaims{
 		"sub":  subject,
@@ -521,6 +593,11 @@ func (h *Handler) issueServiceToken(subject string) (string, error) {
 		"jti":  uuid.New().String(),
 		"iat":  now.Unix(),
 		"exp":  now.Add(30 * time.Second).Unix(),
+		"iss":  "tenzoshare-auth",
+		"aud":  []string{"tenzoshare-api"},
+	}
+	if fileID != "" {
+		claims["file_id"] = fileID
 	}
 	t := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	return t.SignedString(h.jwtPrivateKey)

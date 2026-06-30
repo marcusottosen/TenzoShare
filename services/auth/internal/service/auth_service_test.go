@@ -186,6 +186,9 @@ func (r *stubUserRepo) ListAPIKeys(_ context.Context, userID string) ([]*domain.
 }
 
 func (r *stubUserRepo) DeleteAPIKey(_ context.Context, _, _ string) error { return r.err }
+func (r *stubUserRepo) UpdateAPIKey(_ context.Context, _, _, _ string, _ *time.Time) (*domain.APIKey, error) {
+	return &domain.APIKey{}, r.err
+}
 
 func (r *stubUserRepo) UpdatePreferences(_ context.Context, _ string, _, _, _ *string) error {
 	return r.err
@@ -225,6 +228,35 @@ func (r *stubUserRepo) GetNotificationStatus(_ context.Context, email string) (b
 		return false, domain.DefaultNotificationPrefs(), nil
 	}
 	return u.NotificationsOptOut, u.NotificationPrefs, nil
+}
+
+func (r *stubUserRepo) UpsertContact(_ context.Context, userID, email, name string) (*domain.Contact, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return &domain.Contact{ID: "contact-1", UserID: userID, Email: email, Name: name}, nil
+}
+
+func (r *stubUserRepo) ListContacts(_ context.Context, _ string) ([]*domain.Contact, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return nil, nil
+}
+
+func (r *stubUserRepo) UpdateContact(_ context.Context, id, userID, name string) (*domain.Contact, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return &domain.Contact{ID: id, UserID: userID, Name: name}, nil
+}
+
+func (r *stubUserRepo) DeleteContact(_ context.Context, _, _ string) error {
+	return r.err
+}
+
+func (r *stubUserRepo) UpdateAutoSaveContacts(_ context.Context, _ string, _ bool) error {
+	return r.err
 }
 
 // ── test helpers ──────────────────────────────────────────────────────────────
@@ -534,7 +566,7 @@ func TestDeriveMFAKey_EmptyPepper_ReturnsError(t *testing.T) {
 	}
 }
 
-func TestDeriveMFAKey_ShortPepper_Pads(t *testing.T) {
+func TestDeriveMFAKey_ShortPepper_Returns32Bytes(t *testing.T) {
 	key, err := deriveMFAKey("shortpepper")
 	if err != nil {
 		t.Fatalf("deriveMFAKey: %v", err)
@@ -542,17 +574,34 @@ func TestDeriveMFAKey_ShortPepper_Pads(t *testing.T) {
 	if len(key) != 32 {
 		t.Errorf("key length = %d, want 32", len(key))
 	}
+	// HKDF output must not be zero-padded — all bytes should be pseudorandom.
+	var zeros [32]byte
+	if [32]byte(key) == zeros {
+		t.Error("key is all zeros — HKDF did not run")
+	}
 }
 
-func TestDeriveMFAKey_64HexPepper_DecodesAsBytes(t *testing.T) {
-	// 64 hex chars = 32 bytes exactly
-	hexPepper := "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
-	key, err := deriveMFAKey(hexPepper)
+func TestDeriveMFAKey_Deterministic(t *testing.T) {
+	// Same pepper must always produce the same key (HKDF is deterministic).
+	pep := "my-pepper-string"
+	k1, err := deriveMFAKey(pep)
 	if err != nil {
-		t.Fatalf("deriveMFAKey: %v", err)
+		t.Fatalf("first deriveMFAKey: %v", err)
 	}
-	if len(key) != 32 {
-		t.Errorf("key length = %d, want 32", len(key))
+	k2, err := deriveMFAKey(pep)
+	if err != nil {
+		t.Fatalf("second deriveMFAKey: %v", err)
+	}
+	if [32]byte(k1) != [32]byte(k2) {
+		t.Error("deriveMFAKey is not deterministic")
+	}
+}
+
+func TestDeriveMFAKey_DifferentPeppers_ProduceDifferentKeys(t *testing.T) {
+	k1, _ := deriveMFAKey("pepper-one")
+	k2, _ := deriveMFAKey("pepper-two")
+	if [32]byte(k1) == [32]byte(k2) {
+		t.Error("different peppers must produce different keys")
 	}
 }
 

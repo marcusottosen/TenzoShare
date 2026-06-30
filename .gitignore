@@ -39,6 +39,7 @@ yarn-error.log*
 .env
 .env.*
 !.env.example
+infrastructure/docker/.env
 *.pem
 *.key
 acme.json

@@ -140,7 +140,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="page">
+    <div className="page-container-narrow">
       <div className="page-header">
         <div>
           <h1 className="page-title">Settings</h1>

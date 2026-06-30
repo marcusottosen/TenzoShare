@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	stdlog "log"
-	"math"
 	"os"
 	"os/signal"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"github.com/tenzoshare/tenzoshare/services/storage/internal/cleanup"
 	"github.com/tenzoshare/tenzoshare/services/storage/internal/handlers"
 	"github.com/tenzoshare/tenzoshare/services/storage/internal/repository"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/cache"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/config"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/database"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
@@ -26,7 +26,6 @@ import (
 
 	svcmigrations "github.com/tenzoshare/tenzoshare/services/storage/migrations"
 )
-
 
 func main() {
 	cfg, err := config.Load()
@@ -86,14 +85,21 @@ func main() {
 		log.Fatal("failed to parse JWT public key", zap.Error(err))
 	}
 
+	var cacheClient *cache.Client
+	if cacheClient, err = cache.New(cfg.Redis); err != nil {
+		log.Warn("Redis unavailable — token revocation checks disabled", zap.Error(err))
+		cacheClient = nil
+	}
+
 	app := fiber.New(fiber.Config{
 		AppName:      "tenzoshare-storage",
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		ErrorHandler: middleware.ErrorHandler,
-		// BodyLimit: no HTTP-level body size cap — quota is enforced in the Upload handler.
-		// Set to math.MaxInt so fasthttp never rejects on size alone.
-		BodyLimit: math.MaxInt,
+		// BodyLimit: cap individual HTTP requests at 1 GB to prevent unbounded
+		// memory/disk usage from a single malicious request. Per-user storage
+		// quota is enforced separately in the Upload handler.
+		BodyLimit: 1024 * 1024 * 1024, // 1 GB
 		// StreamRequestBody: true tells fasthttp to call the handler as soon as the
 		// request headers are read, exposing the body as a lazy network stream via
 		// c.Request().BodyStream(). Without this the entire body is buffered in RAM.
@@ -107,10 +113,15 @@ func main() {
 		// raw network stream. Our Upload handler already reads it correctly via
 		// multipart.NewReader(c.Request().BodyStream(), boundary).
 		DisablePreParseMultipartForm: true,
+		// Trust Traefik's sanitized X-Real-IP header so c.IP() returns the
+		// actual client IP. Private + loopback covers all Docker bridge ranges.
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Private: true, Loopback: true},
+		ProxyHeader:      "X-Real-IP",
 	})
 
 	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
-	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.SecurityHeaders(cfg.App.DevMode))
 	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
 	app.Use(middleware.RequestLogger(log))
 
@@ -119,14 +130,20 @@ func main() {
 		return c.JSON(fiber.Map{"status": "ok", "service": "storage"})
 	})
 
-	auth := middleware.JWTAuth(pubKey)
+	auth := middleware.TokenAuth(pubKey, middleware.NewAPIKeyValidator(pool))
+	revocationCheck := middleware.TokenRevocation(func(ctx context.Context, jti string) bool {
+		if cacheClient == nil {
+			return false
+		}
+		return cacheClient.IsTokenRevoked(ctx, jti)
+	})
 	v1 := app.Group("/api/v1/files") // no group-level middleware — Fiber's Group.Use applies prefix-wide
-	v1.Post("/", auth, h.Upload)
-	v1.Get("/usage", auth, h.GetMyUsage)
-	v1.Get("/", auth, h.ListFiles)
-	v1.Get("/:id", auth, h.GetFile)
-	v1.Delete("/:id", auth, h.DeleteFile)
-	v1.Get("/:id/presign", auth, h.PresignURL)
+	v1.Post("/", auth, revocationCheck, h.Upload)
+	v1.Get("/usage", auth, revocationCheck, h.GetMyUsage)
+	v1.Get("/", auth, revocationCheck, h.ListFiles)
+	v1.Get("/:id", auth, revocationCheck, h.GetFile)
+	v1.Delete("/:id", auth, revocationCheck, h.DeleteFile)
+	v1.Get("/:id/presign", auth, revocationCheck, h.PresignURL)
 	// Download accepts either a Bearer RS256 JWT (authenticated users/services)
 	// or a ?token= HS256 download token issued by PresignURL (browser-navigable).
 	v1.Get("/:id/download", middleware.OptionalJWTAuth(pubKey), h.Download)

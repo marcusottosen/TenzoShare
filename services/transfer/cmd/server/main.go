@@ -15,6 +15,7 @@ import (
 	"github.com/tenzoshare/tenzoshare/services/transfer/internal/handlers"
 	"github.com/tenzoshare/tenzoshare/services/transfer/internal/repository"
 	"github.com/tenzoshare/tenzoshare/services/transfer/internal/service"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/cache"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/config"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/database"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
@@ -71,11 +72,21 @@ func main() {
 	storageURL := getEnvOr("STORAGE_SERVICE_URL", "http://tenzoshare-storage:8083")
 	requestSvc := service.NewRequestService(requestRepo, cfg, jsClient, log, storageURL)
 	adminURL := getEnvOr("ADMIN_SERVICE_URL", "http://tenzoshare-admin:8087")
-	h := handlers.New(svc, requestSvc, cfg.JWT.PrivateKeyPEM, storageURL, adminURL)
 
 	pubKey, err := jwtkeys.ParsePublicKey(cfg.JWT.PublicKeyPEM)
 	if err != nil {
 		log.Fatal("failed to parse JWT public key", zap.Error(err))
+	}
+
+	var cacheClient *cache.Client
+	if cacheClient, err = cache.New(cfg.Redis); err != nil {
+		log.Warn("Redis unavailable — token revocation checks disabled", zap.Error(err))
+		cacheClient = nil
+	}
+
+	h, err := handlers.New(svc, requestSvc, cfg.JWT.PrivateKeyPEM, storageURL, adminURL, cacheClient)
+	if err != nil {
+		log.Fatal("failed to initialize transfer handler", zap.Error(err))
 	}
 
 	app := fiber.New(fiber.Config{
@@ -83,25 +94,38 @@ func main() {
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		ErrorHandler: middleware.ErrorHandler,
+		// Trust Traefik's sanitized X-Real-IP header so c.IP() returns the
+		// actual client IP. Private + loopback covers all Docker bridge ranges.
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Private: true, Loopback: true},
+		ProxyHeader:      "X-Real-IP",
 	})
 
 	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
-	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.SecurityHeaders(cfg.App.DevMode))
 	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
 	app.Use(middleware.RequestLogger(log))
 
 	telemetry.Register(app, "transfer")
 
-	// Public: access a transfer by slug (downloaders, no auth required)
-	app.Get("/api/v1/t/:slug", h.Access)
+	// Public: access a transfer by slug (downloaders, no auth required).
+	// POST is used so password and recipient token stay in the request body,
+	// not in the URL where they would appear in server logs and browser history.
+	app.Post("/api/v1/t/:slug", h.Access)
 	app.Post("/api/v1/t/:slug/request-access", h.RequestAccess)
-	app.Get("/api/v1/t/:slug/files/:fileId/download", h.DownloadURL)
+	app.Post("/api/v1/t/:slug/files/:fileId/download", h.DownloadURL)
 	app.Get("/api/v1/transfers/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "service": "transfer"})
 	})
 
-	auth := middleware.JWTAuth(pubKey)
-	v1 := app.Group("/api/v1/transfers", auth)
+	auth := middleware.TokenAuth(pubKey, middleware.NewAPIKeyValidator(pool))
+	revocationCheck := middleware.TokenRevocation(func(ctx context.Context, jti string) bool {
+		if cacheClient == nil {
+			return false
+		}
+		return cacheClient.IsTokenRevoked(ctx, jti)
+	})
+	v1 := app.Group("/api/v1/transfers", auth, revocationCheck)
 	v1.Post("/", h.Create)
 	v1.Get("/", h.List)
 	v1.Get("/:id", h.Get)
@@ -111,7 +135,7 @@ func main() {
 	v1.Delete("/:id", h.Revoke)
 
 	// File request endpoints (auth required — owner manages requests)
-	requests := app.Group("/api/v1/requests", auth)
+	requests := app.Group("/api/v1/requests", auth, revocationCheck)
 	requests.Post("/", h.CreateFileRequest)
 	requests.Get("/", h.ListFileRequests)
 	requests.Get("/:id", h.GetFileRequest)

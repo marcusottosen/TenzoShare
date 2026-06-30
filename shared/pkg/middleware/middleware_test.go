@@ -76,6 +76,8 @@ func TestJWTAuth_ValidToken(t *testing.T) {
 			Subject:   "user-1",
 			ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
 			IssuedAt:  jwt.NewNumericDate(now),
+			Issuer:    "tenzoshare-auth",
+			Audience:  jwt.ClaimStrings{"tenzoshare-api"},
 		},
 	}
 	tok := signRS256(t, key, claims)
@@ -171,6 +173,8 @@ func validToken(t *testing.T, key *rsa.PrivateKey, role string) string {
 			Subject:   "user-1",
 			ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
 			IssuedAt:  jwt.NewNumericDate(now),
+			Issuer:    "tenzoshare-auth",
+			Audience:  jwt.ClaimStrings{"tenzoshare-api"},
 		},
 	}
 	return signRS256(t, key, claims)
@@ -218,6 +222,8 @@ func TestTokenRevocation_NotRevoked(t *testing.T) {
 			Subject:   "user-1",
 			ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
 			IssuedAt:  jwt.NewNumericDate(now),
+			Issuer:    "tenzoshare-auth",
+			Audience:  jwt.ClaimStrings{"tenzoshare-api"},
 		},
 	}
 	tok := signRS256(t, key, claims)
@@ -248,6 +254,8 @@ func TestTokenRevocation_Revoked(t *testing.T) {
 			Subject:   "user-1",
 			ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
 			IssuedAt:  jwt.NewNumericDate(now),
+			Issuer:    "tenzoshare-auth",
+			Audience:  jwt.ClaimStrings{"tenzoshare-api"},
 		},
 	}
 	tok := signRS256(t, key, claims)
@@ -354,7 +362,7 @@ func TestOptionalJWTAuth_WrongKey_StillPasses(t *testing.T) {
 
 func TestSecurityHeaders_Present(t *testing.T) {
 	app := fiber.New()
-	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.SecurityHeaders(false)) // production mode
 	app.Get("/test", func(c fiber.Ctx) error {
 		return c.SendStatus(200)
 	})
@@ -368,15 +376,36 @@ func TestSecurityHeaders_Present(t *testing.T) {
 	io.ReadAll(resp.Body) //nolint:errcheck
 
 	headers := map[string]string{
-		"X-Frame-Options":        "DENY",
-		"X-Content-Type-Options": "nosniff",
-		"X-Xss-Protection":       "1; mode=block",
+		"X-Frame-Options":           "DENY",
+		"X-Content-Type-Options":    "nosniff",
+		"X-Xss-Protection":          "1; mode=block",
+		"Strict-Transport-Security": "max-age=31536000; includeSubDomains",
 	}
 	for h, want := range headers {
 		got := resp.Header.Get(h)
 		if got != want {
 			t.Errorf("header %s = %q, want %q", h, got, want)
 		}
+	}
+}
+
+func TestSecurityHeaders_DevMode_NoHSTS(t *testing.T) {
+	app := fiber.New()
+	app.Use(middleware.SecurityHeaders(true)) // dev mode — no HSTS
+	app.Get("/test", func(c fiber.Ctx) error {
+		return c.SendStatus(200)
+	})
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	io.ReadAll(resp.Body) //nolint:errcheck
+
+	if got := resp.Header.Get("Strict-Transport-Security"); got != "" {
+		t.Errorf("HSTS should not be set in dev mode, got %q", got)
 	}
 }
 
@@ -706,6 +735,8 @@ func TestJWTAuth_ValidToken_SetsLocals(t *testing.T) {
 			Subject:   userID,
 			ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
 			IssuedAt:  jwt.NewNumericDate(now),
+			Issuer:    "tenzoshare-auth",
+			Audience:  jwt.ClaimStrings{"tenzoshare-api"},
 		},
 	}
 	tok := signRS256(t, key, claims)

@@ -274,7 +274,7 @@ export default function FileRequestDetailPage() {
   const submissions = request.submissions ?? [];
 
   return (
-    <div className="page">
+    <div className="page-container-medium">
 
       {/* ── Page header ── */}
       <div className="page-header">

@@ -4,6 +4,7 @@ package consumer
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -316,8 +317,24 @@ func (c *Consumer) shouldSend(emailType, recipientEmail string) bool {
 		return true // not configured — fail open
 	}
 
-	url := fmt.Sprintf("%s/api/v1/auth/internal/notification-prefs?email=%s", c.authBaseURL, recipientEmail)
-	resp, err := http.Get(url) //nolint:noctx,gosec
+	params := url.Values{}
+	params.Set("email", recipientEmail)
+	reqURL := fmt.Sprintf("%s/api/v1/auth/internal/notification-prefs?%s", c.authBaseURL, params.Encode())
+
+	reqCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		c.log.Warn("failed to build notification-prefs request; sending email",
+			zap.String("type", emailType), zap.String("to", recipientEmail), zap.Error(err))
+		return true
+	}
+	// Authenticate with the shared internal secret so the auth service rejects external callers.
+	if c.pepper != "" {
+		h := sha256.Sum256([]byte("tenzoshare_internal_v1:" + c.pepper))
+		httpReq.Header.Set("X-Internal-Secret", fmt.Sprintf("%x", h[:]))
+	}
+	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		c.log.Warn("failed to fetch notification prefs; sending email",
 			zap.String("type", emailType), zap.String("to", recipientEmail), zap.Error(err))

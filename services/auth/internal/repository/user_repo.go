@@ -336,6 +336,25 @@ func (r *UserRepository) DeleteAPIKey(ctx context.Context, id, userID string) er
 	return nil
 }
 
+// UpdateAPIKey renames a key and/or changes its expiry. Both fields are always written.
+// Pass expiresAt=nil to clear the expiry (key never expires).
+func (r *UserRepository) UpdateAPIKey(ctx context.Context, id, userID, name string, expiresAt *time.Time) (*domain.APIKey, error) {
+	var k domain.APIKey
+	err := r.db.QueryRow(ctx, `
+		UPDATE auth.api_keys
+		SET name = $3, expires_at = $4
+		WHERE id = $1 AND user_id = $2
+		RETURNING id, user_id, name, key_prefix, key_hash, last_used, expires_at, created_at
+	`, id, userID, name, expiresAt).Scan(
+		&k.ID, &k.UserID, &k.Name, &k.KeyPrefix, &k.KeyHash,
+		&k.LastUsed, &k.ExpiresAt, &k.CreatedAt,
+	)
+	if err != nil {
+		return nil, apperrors.NotFound("api key not found")
+	}
+	return &k, nil
+}
+
 // UpdatePreferences stores per-user date/time formatting preferences.
 // Pass nil for any field to leave it unchanged (NULL = use system default).
 func (r *UserRepository) UpdatePreferences(ctx context.Context, userID string, dateFormat, timeFormat, timezone *string) error {

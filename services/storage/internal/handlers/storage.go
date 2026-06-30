@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -18,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -29,29 +32,78 @@ import (
 	"github.com/tenzoshare/tenzoshare/services/storage/internal/repository"
 	apperrors "github.com/tenzoshare/tenzoshare/shared/pkg/errors"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 	sharedStorage "github.com/tenzoshare/tenzoshare/shared/pkg/storage"
 )
 
+// safeInlineContentTypes lists MIME type prefixes that are safe to render
+// inline in the browser. All other types are forced to attachment to prevent
+// client-side script execution (XSS via HTML/SVG/JS served inline).
+var safeInlineContentTypePrefixes = []string{
+	"image/",
+	"video/",
+	"audio/",
+	"text/plain",
+	"application/pdf",
+}
+
+// isSafeForInline reports whether the content type may be safely rendered
+// inline by the browser without risk of script execution.
+func isSafeForInline(contentType string) bool {
+	ct := strings.ToLower(strings.SplitN(contentType, ";", 2)[0])
+	ct = strings.TrimSpace(ct)
+	for _, prefix := range safeInlineContentTypePrefixes {
+		if strings.HasPrefix(ct, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 type Handler struct {
-	repo          *repository.FileRepository
-	backend       sharedStorage.Backend
-	js            *jetstream.Client
-	log           *zap.Logger
-	encryptionKey []byte // 32-byte AES-256 master key; nil = encryption disabled
+	repo             *repository.FileRepository
+	backend          sharedStorage.Backend
+	js               *jetstream.Client
+	log              *zap.Logger
+	encryptionKey    []byte   // 32-byte AES-256 master key; nil = encryption disabled
+	downloadTokenKey []byte   // 32-byte HMAC key derived from encryptionKey via HKDF; nil when encryption disabled
+	quotaMu          sync.Map // map[ownerID string]*sync.Mutex — serialises quota checks per user
+}
+
+// userQuotaMu returns a per-user mutex for serialising quota checks and file creation.
+// Prevents concurrent uploads from each passing the quota pre-check before the other
+// completes, which could allow aggregate usage to exceed the configured limit.
+// Note: This serialises concurrent uploads within a single service instance. For
+// multi-instance deployments a distributed lock (e.g. Redis SETNX) would be needed.
+func (h *Handler) userQuotaMu(ownerID string) *sync.Mutex {
+	v, _ := h.quotaMu.LoadOrStore(ownerID, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
+
+// deriveDownloadTokenKey derives a separate 32-byte HMAC-SHA256 key for signing
+// download tokens from the storage encryption key. Keeps key usage separate:
+// encryptionKey is used only for AES-GCM, downloadTokenKey only for HS256 HMAC.
+func deriveDownloadTokenKey(encryptionKey []byte) ([]byte, error) {
+	return hkdf.Key(sha256.New, encryptionKey, nil, "tenzoshare_download_token_v1", 32)
 }
 
 func New(repo *repository.FileRepository, backend sharedStorage.Backend, js *jetstream.Client, log *zap.Logger, encryptionKeyHex string) *Handler {
 	var encKey []byte
+	var dlTokenKey []byte
 	if encryptionKeyHex != "" {
 		k, err := hex.DecodeString(encryptionKeyHex)
 		if err != nil || len(k) != 32 {
 			log.Fatal("STORAGE_ENCRYPTION_KEY must be a 64-char hex string (32 bytes)")
 		}
 		encKey = k
+		dlTokenKey, err = deriveDownloadTokenKey(k)
+		if err != nil {
+			log.Fatal("failed to derive download token key", zap.Error(err))
+		}
 	} else {
 		log.Warn("STORAGE_ENCRYPTION_KEY not set — files will be stored unencrypted")
 	}
-	return &Handler{repo: repo, backend: backend, js: js, log: log, encryptionKey: encKey}
+	return &Handler{repo: repo, backend: backend, js: js, log: log, encryptionKey: encKey, downloadTokenKey: dlTokenKey}
 }
 
 func (h *Handler) Upload(c fiber.Ctx) error {
@@ -240,7 +292,12 @@ func (h *Handler) Upload(c fiber.Ctx) error {
 	// Quota is enforced after upload because we don't know the plaintext size
 	// before the stream is fully consumed. If the quota is violated we delete
 	// the just-uploaded object and return an error.
+	// A per-user mutex serialises concurrent uploads so two simultaneous uploads
+	// cannot both pass this check and together exceed the quota.
 	if cfgErr == nil && cfg.QuotaEnabled && cfg.QuotaBytesPerUser > 0 {
+		mu := h.userQuotaMu(ownerID)
+		mu.Lock()
+		defer mu.Unlock()
 		effectiveQuota := cfg.QuotaBytesPerUser
 		if userQuota, ok, _ := h.repo.GetUserQuotaOverride(c.Context(), ownerID); ok {
 			effectiveQuota = userQuota
@@ -391,7 +448,11 @@ func (h *Handler) DeleteFile(c fiber.Ctx) error {
 	if err := h.repo.SoftDelete(c.Context(), id, file.OwnerID); err != nil {
 		return err
 	}
-	go func() { _ = h.backend.Delete(context.Background(), file.ObjectKey) }() //nolint:errcheck
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		_ = h.backend.Delete(ctx, file.ObjectKey) //nolint:errcheck
+	}()
 
 	h.publishAudit(c.Context(), "storage.delete", ownerID, id, nil)
 	return c.SendStatus(fiber.StatusNoContent)
@@ -404,7 +465,8 @@ type downloadClaims struct {
 }
 
 // issueDownloadToken mints a 15-minute HS256 JWT authorising download of fileID.
-// The encryptionKey (32 bytes) is reused as the HMAC secret.
+// Uses a dedicated HMAC key derived from the encryption key (not the encryption
+// key itself) to ensure cryptographic key separation.
 func (h *Handler) issueDownloadToken(fileID string) (string, error) {
 	claims := downloadClaims{
 		FileID: fileID,
@@ -415,7 +477,7 @@ func (h *Handler) issueDownloadToken(fileID string) (string, error) {
 		},
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return tok.SignedString(h.encryptionKey)
+	return tok.SignedString(h.downloadTokenKey)
 }
 
 // PresignURL returns a short-lived download URL.
@@ -434,6 +496,14 @@ func (h *Handler) PresignURL(c fiber.Ctx) error {
 	role, _ := c.Locals("userRole").(string)
 	if file.OwnerID != ownerID && role != "admin" {
 		return apperrors.Forbidden("access denied")
+	}
+
+	// If the token carries a file_id claim (service-to-service token from transfer
+	// service), verify it matches this file. Prevents token replay to a different file.
+	if claims, ok := c.Locals("claims").(*middleware.Claims); ok && claims != nil && claims.FileID != "" {
+		if claims.FileID != id {
+			return apperrors.Forbidden("service token is not scoped to this file")
+		}
 	}
 
 	// Encrypted files: embed a short-lived download token in the URL so the
@@ -483,7 +553,7 @@ func (h *Handler) Download(c fiber.Ctx) error {
 		if dlToken == "" {
 			return apperrors.Unauthorized("authentication required")
 		}
-		if h.encryptionKey == nil {
+		if h.downloadTokenKey == nil {
 			return apperrors.Unauthorized("download tokens not configured")
 		}
 		claims := &downloadClaims{}
@@ -491,7 +561,7 @@ func (h *Handler) Download(c fiber.Ctx) error {
 			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("unexpected signing method")
 			}
-			return h.encryptionKey, nil
+			return h.downloadTokenKey, nil
 		})
 		if err != nil || !tok.Valid || claims.FileID != id {
 			return apperrors.Unauthorized("invalid or expired download token")
@@ -523,7 +593,10 @@ func (h *Handler) Download(c fiber.Ctx) error {
 	// so that rc is closed once fasthttp finishes streaming the plaintext.
 
 	disposition := "attachment"
-	if c.Query("inline") == "1" {
+	if c.Query("inline") == "1" && isSafeForInline(file.ContentType) {
+		// Only allow inline rendering for safe MIME types (images, PDF, video, text/plain).
+		// HTML, SVG (with scripts), JS, and other active content are kept as attachment
+		// to prevent XSS via browser inline rendering.
 		disposition = "inline"
 	}
 	c.Set("Content-Disposition", fmt.Sprintf(`%s; filename=%q`, disposition, file.Filename))

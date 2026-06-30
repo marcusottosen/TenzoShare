@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
+	"github.com/tenzoshare/tenzoshare/shared/pkg/cache"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/config"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/crypto"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/database"
@@ -170,6 +171,11 @@ func main() {
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		ErrorHandler: middleware.ErrorHandler,
+		// Trust Traefik's sanitized X-Real-IP header so c.IP() returns the
+		// actual client IP. Private + loopback covers all Docker bridge ranges.
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Private: true, Loopback: true},
+		ProxyHeader:      "X-Real-IP",
 	})
 
 	pubKey, err := jwtkeys.ParsePublicKey(cfg.JWT.PublicKeyPEM)
@@ -177,14 +183,27 @@ func main() {
 		log.Fatal("failed to parse JWT public key", zap.Error(err))
 	}
 
+	var cacheClient *cache.Client
+	if cacheClient, err = cache.New(cfg.Redis); err != nil {
+		log.Warn("Redis unavailable — token revocation checks disabled", zap.Error(err))
+		cacheClient = nil
+	}
+
 	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
-	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.SecurityHeaders(cfg.App.DevMode))
 	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
 	app.Use(middleware.RequestLogger(log))
 
 	telemetry.Register(app, "admin")
 
-	v1 := app.Group("/api/v1/admin", middleware.JWTAuth(pubKey), middleware.RequireRole("admin"))
+	revocationCheck := middleware.TokenRevocation(func(ctx context.Context, jti string) bool {
+		if cacheClient == nil {
+			return false
+		}
+		return cacheClient.IsTokenRevoked(ctx, jti)
+	})
+
+	v1 := app.Group("/api/v1/admin", middleware.TokenAuth(pubKey, middleware.NewAPIKeyValidator(db)), revocationCheck, middleware.RequireRole("admin"))
 	v1.Get("/health", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok", "service": "admin"})
 	})
@@ -1675,17 +1694,10 @@ func handleListPurgeLog(c fiber.Ctx) error {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// adminClientIP extracts the real client IP from proxy headers, falling back to the raw connection IP.
+// adminClientIP returns the client IP resolved by Fiber from the ProxyHeader.
+// The Fiber app is configured with ProxyHeader: "X-Real-IP" and TrustProxy: true,
+// so c.IP() reads the X-Real-IP header set by Traefik, which sanitizes it.
 func adminClientIP(c fiber.Ctx) string {
-	if ip := c.Get("X-Real-IP"); ip != "" {
-		return strings.TrimSpace(ip)
-	}
-	if xff := c.Get("X-Forwarded-For"); xff != "" {
-		if idx := strings.IndexByte(xff, ','); idx != -1 {
-			return strings.TrimSpace(xff[:idx])
-		}
-		return strings.TrimSpace(xff)
-	}
 	return c.IP()
 }
 

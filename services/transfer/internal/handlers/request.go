@@ -12,19 +12,12 @@ import (
 	"github.com/tenzoshare/tenzoshare/shared/pkg/middleware"
 )
 
-// realClientIP returns the real client IP from X-Real-IP or X-Forwarded-For,
-// falling back to the raw connection address. This is needed because requests
-// arrive via Traefik or an nginx proxy which masks the original IP.
+// realClientIP returns the client IP resolved by Fiber from the ProxyHeader.
+// The Fiber app is configured with ProxyHeader: "X-Real-IP" and TrustProxy: true,
+// so c.IP() reads the X-Real-IP header set by Traefik. Traefik is configured
+// with forwardedHeaders.insecure: false, ensuring only its own sanitized value
+// is used — clients cannot spoof this header.
 func realClientIP(c fiber.Ctx) string {
-	if ip := c.Get("X-Real-IP"); ip != "" {
-		return strings.TrimSpace(ip)
-	}
-	if xff := c.Get("X-Forwarded-For"); xff != "" {
-		if idx := strings.IndexByte(xff, ','); idx != -1 {
-			return strings.TrimSpace(xff[:idx])
-		}
-		return strings.TrimSpace(xff)
-	}
 	return c.IP()
 }
 
@@ -186,6 +179,14 @@ func (h *Handler) GetPublicFileRequest(c fiber.Ctx) error {
 func (h *Handler) UploadToRequest(c fiber.Ctx) error {
 	slug := c.Params("slug")
 
+	// Rate limit uploads per IP using Redis — prevents brute-force and spam.
+	// Fails open when Redis is unavailable (consistent with secondary rate limiters).
+	if err := h.checkPublicRateLimit(c.Context(),
+		"ratelimit:request:upload:"+realClientIP(c),
+		10, time.Hour); err != nil {
+		return err
+	}
+
 	fh, err := c.FormFile("file")
 	if err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "file is required")
@@ -197,6 +198,16 @@ func (h *Handler) UploadToRequest(c fiber.Ctx) error {
 	}
 	defer file.Close() //nolint:errcheck
 
+	// Validate optional text fields before touching storage.
+	submitterName := strings.TrimSpace(c.FormValue("submitter_name"))
+	message := strings.TrimSpace(c.FormValue("message"))
+	if len(submitterName) > 200 {
+		return apperrors.BadRequest("submitter name too long (max 200 characters)")
+	}
+	if len(message) > 2000 {
+		return apperrors.BadRequest("message too long (max 2000 characters)")
+	}
+
 	// Fetch the request to obtain the owner's UUID for the service token.
 	// The storage service requires a valid UUID as owner_id when creating file records.
 	req, err := h.requestSvc.GetPublic(c.Context(), slug)
@@ -206,7 +217,8 @@ func (h *Handler) UploadToRequest(c fiber.Ctx) error {
 
 	// Issue a short-lived service JWT using the request owner's UUID as the subject,
 	// so the storage service can store the file record with a valid owner_id.
-	token, err := h.issueServiceToken(req.OwnerID)
+	// No file_id scope here because the file does not exist yet at token-issue time.
+	token, err := h.issueServiceToken(req.OwnerID, "")
 	if err != nil {
 		return apperrors.Internal("issue service token", err)
 	}
@@ -215,8 +227,8 @@ func (h *Handler) UploadToRequest(c fiber.Ctx) error {
 		Slug:          slug,
 		File:          file,
 		Header:        fh,
-		SubmitterName: c.FormValue("submitter_name"),
-		Message:       c.FormValue("message"),
+		SubmitterName: submitterName,
+		Message:       message,
 		IP:            realClientIP(c),
 		ServiceToken:  token,
 	})

@@ -251,7 +251,7 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="page page-wide">
+    <div className="page-container-wide">
       <input type="file" multiple ref={fileInputRef} style={{ display: 'none' }} onChange={handleFilesPicked} />
 
       {/* ── Greeting ─────────────────────────────────────────── */}

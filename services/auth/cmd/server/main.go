@@ -99,10 +99,15 @@ func main() {
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		ErrorHandler: middleware.ErrorHandler,
+		// Trust Traefik's sanitized X-Real-IP header so c.IP() returns the
+		// actual client IP. Private + loopback covers all Docker bridge ranges.
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Private: true, Loopback: true},
+		ProxyHeader:      "X-Real-IP",
 	})
 
 	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
-	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.SecurityHeaders(cfg.App.DevMode))
 	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
 	app.Use(middleware.RequestLogger(log))
 
@@ -151,9 +156,11 @@ func main() {
 
 	// API key management — /api/v1/users/apikeys
 	// Setup-only tokens must not be able to create/list API keys.
-	userRoutes := app.Group("/api/v1/users", middleware.JWTAuth(pubKey), revocationCheck, middleware.BlockIfMFASetupPending())
+	// TokenAuth allows both JWT sessions and API keys (for CLI use).
+	userRoutes := app.Group("/api/v1/users", middleware.TokenAuth(pubKey, middleware.NewAPIKeyValidator(pool)), revocationCheck, middleware.BlockIfMFASetupPending())
 	userRoutes.Get("/apikeys", h.ListAPIKeys)
 	userRoutes.Post("/apikeys", h.CreateAPIKey)
+	userRoutes.Patch("/apikeys/:id", h.UpdateAPIKey)
 	userRoutes.Delete("/apikeys/:id", h.DeleteAPIKey)
 
 	// Contacts — /api/v1/users/contacts

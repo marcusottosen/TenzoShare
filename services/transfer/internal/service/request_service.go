@@ -9,7 +9,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -32,11 +31,6 @@ type RequestService struct {
 	log        *zap.Logger
 	storageURL string
 	httpClient *http.Client
-
-	// Simple in-memory rate limiter for public upload endpoint.
-	// Replace with Redis-backed solution if deploying multiple transfer instances.
-	rateMu     sync.Mutex
-	rateWindow map[string][]time.Time
 }
 
 // NewRequestService constructs a RequestService.
@@ -54,7 +48,6 @@ func NewRequestService(
 		log:        log,
 		storageURL: storageURL,
 		httpClient: &http.Client{Timeout: 60 * time.Second},
-		rateWindow: make(map[string][]time.Time),
 	}
 }
 
@@ -98,19 +91,23 @@ func (s *RequestService) Create(ctx context.Context, p CreateRequestParams) (*do
 	}
 
 	// Send upload-link invitations (best-effort — never fail the creation on NATS error).
+	// Use a fresh background context so the goroutine survives the HTTP request context.
 	if s.js != nil && p.NotifyEmails != "" {
-		go s.publishRequestInvite(ctx, result)
+		go s.publishRequestInvite(result)
 	}
 
 	return result, nil
 }
 
 // publishRequestInvite sends a request_invite notification for each recipient.
-func (s *RequestService) publishRequestInvite(ctx context.Context, req *domain.FileRequest) {
+// Creates its own background context so it can be called from a goroutine safely.
+func (s *RequestService) publishRequestInvite(req *domain.FileRequest) {
 	recipients := splitEmails(req.NotifyEmails)
 	if len(recipients) == 0 {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	uploadURL := s.cfg.App.BaseURL + "/r/" + req.Slug
 	data, _ := json.Marshal(map[string]any{
 		"RequestName": req.Name,
@@ -215,7 +212,7 @@ func (s *RequestService) ResendInvite(ctx context.Context, id, ownerID string) e
 	if req.NotifyEmails == "" {
 		return apperrors.BadRequest("no recipients to notify")
 	}
-	go s.publishRequestInvite(ctx, req)
+	go s.publishRequestInvite(req)
 	return nil
 }
 
@@ -233,13 +230,8 @@ type SubmitParams struct {
 }
 
 // Submit validates the request, uploads the file to the Storage service, and
-// records the submission. Rate-limited to 10 uploads / hour / IP.
+// records the submission. Rate limiting is enforced at the handler layer.
 func (s *RequestService) Submit(ctx context.Context, p SubmitParams) (*domain.RequestSubmission, error) {
-	// Rate limiting: 10 uploads per hour per IP address.
-	if !s.allowIP(p.IP, 10, time.Hour) {
-		return nil, apperrors.RateLimit("upload rate limit exceeded — please try again later")
-	}
-
 	req, err := s.repo.GetBySlug(ctx, p.Slug)
 	if err != nil {
 		return nil, err
@@ -249,6 +241,16 @@ func (s *RequestService) Submit(ctx context.Context, p SubmitParams) (*domain.Re
 	}
 	if req.MaxSizeMB > 0 && p.Header.Size > int64(req.MaxSizeMB)*1024*1024 {
 		return nil, apperrors.BadRequest(fmt.Sprintf("file exceeds the maximum size of %d MB", req.MaxSizeMB))
+	}
+	// Enforce the max-files limit atomically before uploading.
+	if req.MaxFiles > 0 {
+		count, err := s.repo.CountSubmissions(ctx, req.ID)
+		if err != nil {
+			return nil, err
+		}
+		if count >= req.MaxFiles {
+			return nil, apperrors.Forbidden("this file request has reached its maximum number of submissions")
+		}
 	}
 
 	// Forward the file to the Storage service.
@@ -285,7 +287,9 @@ func (s *RequestService) Submit(ctx context.Context, p SubmitParams) (*domain.Re
 			"data": json.RawMessage(data),
 		}
 		go func() {
-			if err := s.js.Publish(ctx, "NOTIFICATIONS.email", ev); err != nil {
+			gCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := s.js.Publish(gCtx, "NOTIFICATIONS.email", ev); err != nil {
 				s.log.Warn("failed to publish request_submission notification", zap.Error(err))
 			}
 		}()
@@ -323,7 +327,7 @@ func (s *RequestService) uploadToStorage(ctx context.Context, file multipart.Fil
 	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		s.log.Warn("storage upload failed", zap.Int("status", resp.StatusCode), zap.String("body", string(raw)))
 		return "", apperrors.Internal("storage upload failed", nil)
 	}
@@ -331,33 +335,8 @@ func (s *RequestService) uploadToStorage(ctx context.Context, file multipart.Fil
 	var res struct {
 		ID string `json:"id"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&res); err != nil {
 		return "", apperrors.Internal("decode storage response", err)
 	}
 	return res.ID, nil
-}
-
-// allowIP checks whether ip has not exceeded limit uploads within window.
-// Uses a simple sliding-window counter backed by a goroutine-safe in-memory map.
-func (s *RequestService) allowIP(ip string, limit int, window time.Duration) bool {
-	s.rateMu.Lock()
-	defer s.rateMu.Unlock()
-
-	now := time.Now()
-	cutoff := now.Add(-window)
-
-	times := s.rateWindow[ip]
-	fresh := times[:0]
-	for _, t := range times {
-		if t.After(cutoff) {
-			fresh = append(fresh, t)
-		}
-	}
-
-	if len(fresh) >= limit {
-		s.rateWindow[ip] = fresh
-		return false
-	}
-	s.rateWindow[ip] = append(fresh, now)
-	return true
 }

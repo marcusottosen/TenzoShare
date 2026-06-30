@@ -2,13 +2,14 @@ package service
 
 import (
 	"context"
+	"crypto/hkdf"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -93,6 +94,7 @@ type userRepository interface {
 	CreateAPIKey(ctx context.Context, userID, name, keyHash, keyPrefix string, expiresAt *time.Time) (*domain.APIKey, error)
 	ListAPIKeys(ctx context.Context, userID string) ([]*domain.APIKey, error)
 	DeleteAPIKey(ctx context.Context, id, userID string) error
+	UpdateAPIKey(ctx context.Context, id, userID, name string, expiresAt *time.Time) (*domain.APIKey, error)
 	UpdatePreferences(ctx context.Context, userID string, dateFormat, timeFormat, timezone *string) error
 	DisableMFA(ctx context.Context, userID string) error
 	StoreEmailVerificationToken(ctx context.Context, userID, rawToken string, expiresAt time.Time) error
@@ -178,21 +180,14 @@ func parseRSAPrivateKey(pemStr string) (*rsa.PrivateKey, error) {
 	return x509.ParsePKCS1PrivateKey(block.Bytes)
 }
 
-// deriveMFAKey derives a 32-byte AES key from the password pepper.
-// If pepper is a 64-hex string (32 bytes), decode it; otherwise pad/truncate to 32 bytes.
+// deriveMFAKey derives a 32-byte AES key from the password pepper using HKDF-SHA256.
+// Using HKDF ensures the full 32-byte key space is used regardless of pepper length —
+// the old copy/pad approach left zero bytes when the pepper was shorter than 32 bytes.
 func deriveMFAKey(pepper string) ([]byte, error) {
 	if pepper == "" {
 		return nil, fmt.Errorf("PASSWORD_PEPPER is not set")
 	}
-	if len(pepper) == 64 {
-		b, err := hex.DecodeString(pepper)
-		if err == nil && len(b) == 32 {
-			return b, nil
-		}
-	}
-	key := make([]byte, 32)
-	copy(key, []byte(pepper))
-	return key, nil
+	return hkdf.Key(sha256.New, []byte(pepper), nil, "tenzoshare_mfa_key_v1", 32)
 }
 
 // lockoutConfig returns the current lockout policy, reading from DB if the
@@ -239,7 +234,8 @@ func (s *AuthService) Register(ctx context.Context, email, password, clientIP st
 		limited, err := s.checkRateLimitGeneric(ctx, "ratelimit:register:"+clientIP, registerRateLimit, registerRateLimitWindow)
 		if err != nil {
 			s.log.Warn("register rate-limit check failed", zap.Error(err))
-		} else if limited {
+		}
+		if limited {
 			return nil, apperrors.RateLimit("too many registrations from this IP; try again later")
 		}
 	}
@@ -265,11 +261,20 @@ func (s *AuthService) Login(ctx context.Context, email, password, clientIP strin
 		limited, err := s.checkRateLimit(ctx, clientIP)
 		if err != nil {
 			s.log.Warn("rate limit check failed", zap.Error(err))
-		} else if limited {
+		}
+		if limited {
 			return nil, nil, false, apperrors.RateLimit("too many login attempts; try again in 15 minutes")
 		}
 	}
 
+	// Rate limit by target email to prevent distributed brute-force regardless of source IP.
+	// Fail-open on cache error: the IP check above is the fail-closed guard when Redis is unavailable.
+	limited, err := s.checkRateLimitGeneric(ctx, "ratelimit:login:email:"+email, loginRateLimit, loginRateLimitWindow)
+	if err != nil {
+		s.log.Warn("login email rate limit check failed", zap.Error(err))
+	} else if limited {
+		return nil, nil, false, apperrors.RateLimit("too many login attempts for this account")
+	}
 	user, err := s.repo.GetByEmail(ctx, email)
 	if err != nil {
 		s.recordIPAttempt(ctx, clientIP)
@@ -534,7 +539,8 @@ func (s *AuthService) RequestPasswordReset(ctx context.Context, email, clientIP 
 		if err != nil {
 			s.log.Warn("password-reset rate-limit check failed", zap.Error(err))
 			err = nil // non-fatal
-		} else if limited {
+		}
+		if limited {
 			return "", "", apperrors.RateLimit("too many password-reset requests from this IP; try again later")
 		}
 	}
@@ -632,6 +638,8 @@ func (s *AuthService) signAccessToken(user *domain.User) (string, error) {
 			Subject:   user.ID,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(s.cfg.JWT.AccessTTL)),
+			Issuer:    "tenzoshare-auth",
+			Audience:  jwt.ClaimStrings{"tenzoshare-api"},
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
@@ -663,6 +671,8 @@ func (s *AuthService) signSetupOnlyToken(user *domain.User) (string, error) {
 			Subject:   user.ID,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(setupTTL)),
+			Issuer:    "tenzoshare-auth",
+			Audience:  jwt.ClaimStrings{"tenzoshare-api"},
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
@@ -675,7 +685,8 @@ func (s *AuthService) signSetupOnlyToken(user *domain.User) (string, error) {
 
 func (s *AuthService) checkRateLimit(ctx context.Context, clientIP string) (bool, error) {
 	if s.cache == nil {
-		return false, nil
+		s.log.Warn("rate limiter unavailable (cache is nil); denying request as fail-safe", zap.String("key", "ratelimit:login:"+clientIP))
+		return true, fmt.Errorf("rate limiter unavailable")
 	}
 	key := fmt.Sprintf("ratelimit:login:%s", clientIP)
 	count, err := s.cache.Incr(ctx, key)
@@ -690,7 +701,8 @@ func (s *AuthService) checkRateLimit(ctx context.Context, clientIP string) (bool
 
 func (s *AuthService) checkRateLimitGeneric(ctx context.Context, key string, limit int64, window time.Duration) (bool, error) {
 	if s.cache == nil {
-		return false, nil
+		s.log.Warn("rate limiter unavailable (cache is nil); skipping secondary rate limit", zap.String("key", key))
+		return false, fmt.Errorf("rate limiter unavailable")
 	}
 	count, err := s.cache.Incr(ctx, key)
 	if err != nil {
@@ -730,6 +742,8 @@ func (s *AuthService) publishPasswordResetEmail(ctx context.Context, toEmail, to
 		"data": json.RawMessage(data),
 	}
 	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 		if err := s.js.Publish(ctx, "NOTIFICATIONS.email", ev); err != nil {
 			s.log.Warn("failed to publish password_reset email", zap.Error(err))
 		}
@@ -741,6 +755,8 @@ func (s *AuthService) publishAudit(ctx context.Context, ev AuditEvent) {
 		return
 	}
 	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 		if err := s.js.Publish(ctx, "AUDIT.auth", ev); err != nil {
 			s.log.Warn("failed to publish audit event", zap.Error(err), zap.String("action", ev.Action))
 		}
@@ -830,10 +846,37 @@ func (s *AuthService) DeleteAPIKey(ctx context.Context, id, userID string) error
 	return err
 }
 
+// UpdateAPIKey renames a key and/or updates its expiry. Pass expiresAt=nil to clear expiry.
+func (s *AuthService) UpdateAPIKey(ctx context.Context, id, userID, name string, expiresAt *time.Time) (*domain.APIKey, error) {
+	if strings.TrimSpace(name) == "" {
+		return nil, apperrors.Validation("name is required")
+	}
+	k, err := s.repo.UpdateAPIKey(ctx, id, userID, name, expiresAt)
+	if err != nil {
+		return nil, err
+	}
+	s.publishAudit(ctx, AuditEvent{
+		Action: "apikey.updated", UserID: userID, Success: true, Timestamp: time.Now(),
+	})
+	return k, nil
+}
+
 // hashAPIKey returns SHA-256 hex of the raw key string (no token re-use).
 func hashAPIKey(rawKey string) string {
 	h := sha256.Sum256([]byte(rawKey))
 	return fmt.Sprintf("%x", h)
+}
+
+// InternalSecret returns the HMAC-derived secret used to authenticate
+// service-to-service calls to internal endpoints (e.g. /internal/notification-prefs).
+// It is derived from the pepper with a fixed label so it is stable and requires no
+// extra config. Returns an empty string if the pepper is not configured.
+func (s *AuthService) InternalSecret() string {
+	if s.cfg.App.Pepper == "" {
+		return ""
+	}
+	h := sha256.Sum256([]byte("tenzoshare_internal_v1:" + s.cfg.App.Pepper))
+	return fmt.Sprintf("%x", h[:])
 }
 
 // ChangePasswordParams holds inputs for a self-service password change.

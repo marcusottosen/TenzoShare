@@ -287,7 +287,7 @@ export default function NewTransferPage() {
   const stagedIds = new Set(staged.map((f) => f.id));
 
   return (
-    <div className="page page-wide" style={{ maxWidth: 860 }}>
+    <div className="page-container-medium">
       <div className="page-header">
         <div>
           <h1 className="page-title">New Transfer</h1>

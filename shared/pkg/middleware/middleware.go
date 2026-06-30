@@ -76,6 +76,10 @@ type Claims struct {
 	Email  string `json:"email"`
 	Role   string `json:"role"`
 	JTI    string `json:"jti,omitempty"`
+	// FileID is set only on short-lived internal service tokens issued by the
+	// transfer service when proxying presign requests to the storage service.
+	// When non-empty the storage service restricts the token to that exact file.
+	FileID string `json:"file_id,omitempty"`
 	// MFASetupRequired is true for short-lived setup-only tokens issued when an
 	// admin mandates MFA but the user has not yet configured it. Tokens with this
 	// flag must NOT be accepted on general-purpose authenticated routes — only
@@ -106,7 +110,7 @@ func JWTAuth(publicKey *rsa.PublicKey) fiber.Handler {
 				return nil, apperrors.Unauthorized("unexpected token signing method")
 			}
 			return publicKey, nil
-		})
+		}, jwt.WithIssuer("tenzoshare-auth"), jwt.WithAudience("tenzoshare-api"))
 		if err != nil || !token.Valid {
 			return apperrors.Unauthorized("invalid or expired token")
 		}
@@ -120,7 +124,9 @@ func JWTAuth(publicKey *rsa.PublicKey) fiber.Handler {
 
 // SecurityHeaders adds security-related HTTP response headers to every response.
 // These headers defend against XSS, clickjacking, MIME-sniffing, and information leakage.
-func SecurityHeaders() fiber.Handler {
+// When devMode is false, Strict-Transport-Security is also added to enforce HTTPS
+// and prevent SSL-stripping attacks.
+func SecurityHeaders(devMode bool) fiber.Handler {
 	return func(c fiber.Ctx) error {
 		c.Set("X-Frame-Options", "DENY")
 		c.Set("X-Content-Type-Options", "nosniff")
@@ -129,6 +135,9 @@ func SecurityHeaders() fiber.Handler {
 		c.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 		c.Set("Content-Security-Policy",
 			"default-src 'none'; frame-ancestors 'none'")
+		if !devMode {
+			c.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
 		return c.Next()
 	}
 }
@@ -148,9 +157,9 @@ func OptionalJWTAuth(publicKey *rsa.PublicKey) fiber.Handler {
 				return nil, apperrors.Unauthorized("unexpected token signing method")
 			}
 			return publicKey, nil
-		})
+		}, jwt.WithIssuer("tenzoshare-auth"), jwt.WithAudience("tenzoshare-api"))
 		if err != nil || !token.Valid {
-			return c.Next() // invalid token → proceed as unauthenticated
+			return c.Next() // invalid token / wrong iss or aud → proceed as unauthenticated
 		}
 		c.Locals("claims", claims)
 		c.Locals("userID", claims.UserID)
@@ -279,6 +288,63 @@ func TokenRevocation(isRevoked func(ctx context.Context, jti string) bool) fiber
 		if isRevoked(c.Context(), claims.JTI) {
 			return apperrors.Unauthorized("token has been revoked")
 		}
+		return c.Next()
+	}
+}
+
+// APIKeyValidatorFunc validates a raw TenzoShare API key (prefix "ts_").
+// Returns the userID and role on success, or an error (typically Unauthorized) on failure.
+// Implementations must enforce expiry and user-active checks.
+type APIKeyValidatorFunc func(ctx context.Context, rawKey string) (userID, role string, err error)
+
+// TokenAuth is a drop-in replacement for JWTAuth that also accepts TenzoShare API keys
+// (tokens prefixed with "ts_"). When the bearer token starts with "ts_", apiKeyValidator
+// is called. If apiKeyValidator is nil, API key tokens are rejected with 401.
+// Use this on routes where programmatic CLI/service access via API key is allowed.
+func TokenAuth(publicKey *rsa.PublicKey, apiKeyValidator APIKeyValidatorFunc) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		auth := c.Get(fiber.HeaderAuthorization)
+		if auth == "" {
+			return apperrors.Unauthorized("missing authorization header")
+		}
+		parts := strings.SplitN(auth, " ", 2)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+			return apperrors.Unauthorized("authorization header must be 'Bearer <token>'")
+		}
+		token := parts[1]
+
+		// API key path — TenzoShare API keys are always prefixed "ts_".
+		if strings.HasPrefix(token, "ts_") {
+			if apiKeyValidator == nil {
+				return apperrors.Unauthorized("api key authentication is not supported on this endpoint")
+			}
+			userID, role, err := apiKeyValidator(c.Context(), token)
+			if err != nil {
+				return err
+			}
+			// Set the same locals as JWTAuth so downstream middleware and handlers
+			// (RequireRole, RequestLogger, BlockIfMFASetupPending, etc.) work correctly.
+			// JTI is intentionally empty — TokenRevocation skips keys with no JTI.
+			c.Locals("claims", &Claims{UserID: userID, Role: role})
+			c.Locals("userID", userID)
+			c.Locals("userRole", role)
+			return c.Next()
+		}
+
+		// JWT path — identical to JWTAuth.
+		claims := &Claims{}
+		tok, err := jwt.ParseWithClaims(token, claims, func(t *jwt.Token) (any, error) {
+			if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
+				return nil, apperrors.Unauthorized("unexpected token signing method")
+			}
+			return publicKey, nil
+		}, jwt.WithIssuer("tenzoshare-auth"), jwt.WithAudience("tenzoshare-api"))
+		if err != nil || !tok.Valid {
+			return apperrors.Unauthorized("invalid or expired token")
+		}
+		c.Locals("claims", claims)
+		c.Locals("userID", claims.UserID)
+		c.Locals("userRole", claims.Role)
 		return c.Next()
 	}
 }

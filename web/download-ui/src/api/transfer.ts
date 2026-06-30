@@ -11,12 +11,12 @@
  *
  * ─── Endpoints ────────────────────────────────────────────────────────────────
  *
- *  GET /api/v1/t/:slug[?password=<value>]
+ *  POST /api/v1/t/:slug  { password?, rt? }
  *    Returns transfer metadata.  Pass `password` only when `has_password` is
  *    true; the first call (without a password) tells you whether one is needed.
  *    ← { transfer: TransferPublic }
  *
- *  GET /api/v1/t/:slug/files/:fileId/download[?password=<value>]
+ *  POST /api/v1/t/:slug/files/:fileId/download  { password?, rt? }
  *    Returns a short-lived presigned URL for the requested file.
  *    The transfer validation (slug, password, expiry) is repeated server-side.
  *    ← { url: string, expires_in: number }
@@ -101,13 +101,17 @@ export async function fetchTransfer(
   password?: string,
   recipientToken?: string,
 ): Promise<TransferPublic> {
-  const params: Record<string, string> = {};
-  if (recipientToken) params['rt'] = recipientToken;
-  else if (password) params['password'] = password;
-  const url = buildURL(`${API_BASE}/t/${encodeURIComponent(slug)}`, Object.keys(params).length ? params : undefined);
-  const res = await fetch(url);
-  const body = await handleResponse<{ transfer: TransferPublic }>(res);
-  return body.transfer;
+  const body: Record<string, string> = {};
+  if (recipientToken) body['rt'] = recipientToken;
+  else if (password) body['password'] = password;
+  const url = buildURL(`${API_BASE}/t/${encodeURIComponent(slug)}`);
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const response = await handleResponse<{ transfer: TransferPublic }>(res);
+  return response.transfer;
 }
 
 /**
@@ -129,14 +133,17 @@ export async function fetchDownloadUrl(
   password?: string,
   recipientToken?: string,
 ): Promise<FileDownloadUrl> {
-  const params: Record<string, string> = {};
-  if (recipientToken) params['rt'] = recipientToken;
-  else if (password) params['password'] = password;
+  const body: Record<string, string> = {};
+  if (recipientToken) body['rt'] = recipientToken;
+  else if (password) body['password'] = password;
   const url = buildURL(
     `${API_BASE}/t/${encodeURIComponent(slug)}/files/${encodeURIComponent(fileId)}/download`,
-    Object.keys(params).length ? params : undefined,
   );
-  const res = await fetch(url);
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
   return handleResponse<FileDownloadUrl>(res);
 }
 

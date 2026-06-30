@@ -74,7 +74,7 @@ export default function ContactsPage() {
   }
 
   return (
-    <div className="page" style={{ maxWidth: 680 }}>
+    <div className="page-container-narrow">
       <div className="page-header" style={{ marginBottom: 24 }}>
         <div>
           <h1 className="page-title">Contacts</h1>

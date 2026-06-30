@@ -186,3 +186,16 @@ func (r *RequestRepository) ListSubmissions(ctx context.Context, requestID strin
 	}
 	return list, nil
 }
+
+// CountSubmissions returns the number of submissions for a given file request.
+// Used to enforce the max_files limit before accepting a new upload.
+func (r *RequestRepository) CountSubmissions(ctx context.Context, requestID string) (int, error) {
+	var count int
+	err := r.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM transfer.request_submissions WHERE request_id = $1
+	`, requestID).Scan(&count)
+	if err != nil {
+		return 0, apperrors.Internal("count submissions", err)
+	}
+	return count, nil
+}

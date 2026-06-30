@@ -448,7 +448,7 @@ export default function SharesPage() {
   );
 
   return (
-    <div className="page">
+    <div className="page-container-wide">
       <div className="page-header">
         <div>
           <h1 className="page-title">Shares &amp; Requests</h1>

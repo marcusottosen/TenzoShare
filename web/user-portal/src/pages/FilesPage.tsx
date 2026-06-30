@@ -280,7 +280,7 @@ export default function FilesPage() {
   const totalDownloads = transfers.reduce((sum, t) => sum + (t.download_count ?? 0), 0);
 
   return (
-    <div className="page page-wide">
+    <div className="page-container-wide">
       {/* ── Header ───────────────────────────────────────── */}
       <div className="page-header">
         <div>

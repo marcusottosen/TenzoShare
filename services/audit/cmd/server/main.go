@@ -14,6 +14,7 @@ import (
 	"github.com/tenzoshare/tenzoshare/services/audit/internal/consumer"
 	"github.com/tenzoshare/tenzoshare/services/audit/internal/handlers"
 	"github.com/tenzoshare/tenzoshare/services/audit/internal/repository"
+	"github.com/tenzoshare/tenzoshare/shared/pkg/cache"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/config"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/database"
 	"github.com/tenzoshare/tenzoshare/shared/pkg/jetstream"
@@ -24,7 +25,6 @@ import (
 
 	svcmigrations "github.com/tenzoshare/tenzoshare/services/audit/migrations"
 )
-
 
 func main() {
 	cfg, err := config.Load()
@@ -64,6 +64,13 @@ func main() {
 		log.Warn("failed to ensure NATS streams", zap.Error(err))
 	}
 
+	// Redis — used for JWT revocation checks; non-fatal if unavailable at startup
+	cacheClient, err := cache.New(cfg.Redis)
+	if err != nil {
+		log.Warn("redis unavailable — token revocation checking disabled", zap.Error(err))
+		cacheClient = nil
+	}
+
 	// Repository + consumer + handler
 	repo := repository.New(pool)
 	cons := consumer.New(jsClient, repo, log)
@@ -82,6 +89,11 @@ func main() {
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 		ErrorHandler: middleware.ErrorHandler,
+		// Trust Traefik's sanitized X-Real-IP header so c.IP() returns the
+		// actual client IP. Private + loopback covers all Docker bridge ranges.
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Private: true, Loopback: true},
+		ProxyHeader:      "X-Real-IP",
 	})
 
 	pubKey, err := jwtkeys.ParsePublicKey(cfg.JWT.PublicKeyPEM)
@@ -90,7 +102,7 @@ func main() {
 	}
 
 	allowedOrigins := strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",")
-	app.Use(middleware.SecurityHeaders())
+	app.Use(middleware.SecurityHeaders(cfg.App.DevMode))
 	app.Use(middleware.CORS(cfg.App.DevMode, allowedOrigins))
 	app.Use(middleware.RequestLogger(log))
 
@@ -102,8 +114,16 @@ func main() {
 		return c.JSON(fiber.Map{"status": "ok", "service": "audit"})
 	})
 
-	// Authenticated routes
-	protected := audit.Group("", middleware.JWTAuth(pubKey))
+	// Authenticated routes — token revocation check ensures logged-out tokens are rejected.
+	// If cacheClient is nil, TokenRevocation middleware is a no-op (fail-open).
+	revocationCheck := middleware.TokenRevocation(func(ctx context.Context, jti string) bool {
+		if cacheClient == nil {
+			return false
+		}
+		return cacheClient.IsTokenRevoked(ctx, jti)
+	})
+	// Audit logs contain actions for ALL users — restrict to admin role only.
+	protected := audit.Group("", middleware.TokenAuth(pubKey, middleware.NewAPIKeyValidator(pool)), revocationCheck, middleware.RequireRole("admin"))
 	protected.Get("/events", h.ListEvents)
 
 	go func() {
