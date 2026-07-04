@@ -90,7 +90,7 @@ type userRepository interface {
 	UpdatePassword(ctx context.Context, userID, newHash string) error
 	RecordFailedLogin(ctx context.Context, userID string, maxAttempts int, lockDuration time.Duration) error
 	RecordSuccessfulLogin(ctx context.Context, userID string) error
-	GetLockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration, requireMFA bool, requireEmailVerification bool, err error)
+	GetLockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration, requireMFA bool, requireEmailVerification bool, registrationEnabled bool, err error)
 	CreateAPIKey(ctx context.Context, userID, name, keyHash, keyPrefix string, expiresAt *time.Time) (*domain.APIKey, error)
 	ListAPIKeys(ctx context.Context, userID string) ([]*domain.APIKey, error)
 	DeleteAPIKey(ctx context.Context, id, userID string) error
@@ -127,6 +127,7 @@ type AuthService struct {
 	cachedLockDuration             time.Duration
 	cachedRequireMFA               bool
 	cachedRequireEmailVerification bool
+	cachedRegistrationEnabled      bool
 	lockoutCachedAt                time.Time
 }
 
@@ -192,23 +193,24 @@ func deriveMFAKey(pepper string) ([]byte, error) {
 
 // lockoutConfig returns the current lockout policy, reading from DB if the
 // cached values are older than lockoutConfigTTL (60 s).
-func (s *AuthService) lockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration, requireMFA bool, requireEmailVerification bool) {
+func (s *AuthService) lockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration, requireMFA bool, requireEmailVerification bool, registrationEnabled bool) {
 	s.lockoutMu.Lock()
 	defer s.lockoutMu.Unlock()
 	if time.Since(s.lockoutCachedAt) < lockoutConfigTTL && s.cachedMaxAttempts > 0 {
-		return s.cachedMaxAttempts, s.cachedLockDuration, s.cachedRequireMFA, s.cachedRequireEmailVerification
+		return s.cachedMaxAttempts, s.cachedLockDuration, s.cachedRequireMFA, s.cachedRequireEmailVerification, s.cachedRegistrationEnabled
 	}
-	ma, ld, rmfa, rcev, err := s.repo.GetLockoutConfig(ctx)
+	ma, ld, rmfa, rcev, regen, err := s.repo.GetLockoutConfig(ctx)
 	if err != nil {
 		s.log.Warn("lockoutConfig: could not read auth_settings, using fallback", zap.Error(err))
-		return 10, 15 * time.Minute, false, false
+		return 10, 15 * time.Minute, false, false, true
 	}
 	s.cachedMaxAttempts = ma
 	s.cachedLockDuration = ld
 	s.cachedRequireMFA = rmfa
 	s.cachedRequireEmailVerification = rcev
+	s.cachedRegistrationEnabled = regen
 	s.lockoutCachedAt = time.Now()
-	return ma, ld, rmfa, rcev
+	return ma, ld, rmfa, rcev, regen
 }
 
 func (s *AuthService) EnsureBootstrapAdmin(ctx context.Context, email, password string) error {
@@ -230,6 +232,12 @@ func (s *AuthService) EnsureBootstrapAdmin(ctx context.Context, email, password 
 }
 
 func (s *AuthService) Register(ctx context.Context, email, password, clientIP string) (*domain.User, error) {
+	// Check if registration is enabled
+	_, _, _, _, registrationEnabled := s.lockoutConfig(ctx)
+	if !registrationEnabled {
+		return nil, apperrors.Forbidden("new user registration is currently disabled")
+	}
+
 	if clientIP != "" {
 		limited, err := s.checkRateLimitGeneric(ctx, "ratelimit:register:"+clientIP, registerRateLimit, registerRateLimitWindow)
 		if err != nil {
@@ -291,7 +299,7 @@ func (s *AuthService) Login(ctx context.Context, email, password, clientIP strin
 
 	ok, err := crypto.VerifyPassword(password, user.PasswordHash, s.cfg.App.Pepper)
 	if err != nil || !ok {
-		maxAttempts, lockDur, _, _ := s.lockoutConfig(ctx)
+		maxAttempts, lockDur, _, _, _ := s.lockoutConfig(ctx)
 		_ = s.repo.RecordFailedLogin(ctx, user.ID, maxAttempts, lockDur)
 		s.recordIPAttempt(ctx, clientIP)
 		s.publishAudit(ctx, AuditEvent{
@@ -309,7 +317,7 @@ func (s *AuthService) Login(ctx context.Context, email, password, clientIP strin
 	// (short-lived, MFASetupRequired=true in claims) rather than full access tokens.
 	// The BlockIfMFASetupPending middleware enforces that this token can only reach
 	// /mfa/setup and /mfa/verify.
-	_, _, requireMFA, requireEmailVerification := s.lockoutConfig(ctx)
+	_, _, requireMFA, requireEmailVerification, _ := s.lockoutConfig(ctx)
 
 	if requireEmailVerification && !user.EmailVerified {
 		s.publishAudit(ctx, AuditEvent{

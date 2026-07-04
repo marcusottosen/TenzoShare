@@ -177,6 +177,14 @@ export default function RequestPage() {
 
   const addFiles = useCallback((incoming: FileList | File[]) => {
     const arr = Array.from(incoming);
+    
+    // Check for folders (files with empty type and size 0 are likely folders)
+    const folders = arr.filter(f => f.type === '' && f.size === 0);
+    if (folders.length > 0) {
+      alert(`Folder upload not supported. Please zip "${folders[0].name}" and upload the archive instead.`);
+      return;
+    }
+    
     const entries: FileEntry[] = arr.map((f) => ({
       id: `${f.name}-${f.size}-${Date.now()}-${Math.random()}`,
       file: f,
@@ -190,6 +198,21 @@ export default function RequestPage() {
     (e: React.DragEvent) => {
       e.preventDefault();
       setDragOver(false);
+      
+      // Check for folders using dataTransfer.items API (more reliable for drag-and-drop)
+      if (e.dataTransfer.items) {
+        const items = Array.from(e.dataTransfer.items);
+        for (const item of items) {
+          if (item.kind === 'file') {
+            const entry = item.webkitGetAsEntry?.();
+            if (entry?.isDirectory) {
+              alert(`Folder upload not supported. Please zip "${entry.name}" and upload the archive instead.`);
+              return;
+            }
+          }
+        }
+      }
+      
       if (e.dataTransfer.files.length > 0) addFiles(e.dataTransfer.files);
     },
     [addFiles],

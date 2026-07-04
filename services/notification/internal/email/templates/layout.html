@@ -25,14 +25,14 @@
           <tr>
             <td style="background-color:{{ .PrimaryColor }};border-radius:10px 10px 0 0;padding:28px 32px;text-align:center;">
               {{ if .EmailHeaderLink }}
-              <a href="{{ .EmailHeaderLink }}" style="text-decoration:none;">
+              <a href="{{ .EmailHeaderLink }}" style="text-decoration:none;display:inline-block;">
               {{ end }}
               {{ if .LogoURL }}
               <img src="{{ .LogoURL }}" alt="{{ .AppName }}"
-                   style="height:44px;max-width:200px;display:block;margin:0 auto;border:0;" />
+                   style="height:44px;max-width:200px;display:block;margin:0 auto;border:0;{{ if .EmailHeaderLink }}cursor:pointer;{{ end }}" />
               {{ else }}
               <span style="color:#ffffff;font-size:24px;font-weight:700;letter-spacing:0.4px;
-                           font-family:Arial,Helvetica,sans-serif;">{{ .AppName }}</span>
+                           font-family:Arial,Helvetica,sans-serif;{{ if .EmailHeaderLink }}cursor:pointer;{{ end }}">{{ .AppName }}</span>
               {{ end }}
               {{ if .EmailHeaderLink }}
               </a>
@@ -51,34 +51,34 @@
           <!-- ── Footer ────────────────────────────────────────── -->
           <tr>
             <td style="background-color:{{ .CardBgColor }};border:1px solid {{ .CardBorderColor }};border-top:none;
-                       border-radius:0 0 10px 10px;padding:20px 32px;text-align:center;">
+                       border-radius:0 0 10px 10px;padding:24px 32px;text-align:center;">
               {{ if .EmailFooterText }}
-              <p style="margin:0;font-size:12px;color:#94a3b8;line-height:1.6;
+              <p style="margin:0 0 12px;font-size:13px;color:#64748b;line-height:1.6;
                         font-family:Arial,Helvetica,sans-serif;">
                 {{ .EmailFooterText }}
               </p>
               {{ else }}
-              <p style="margin:0;font-size:12px;color:#94a3b8;line-height:1.6;
+              <p style="margin:0 0 12px;font-size:13px;color:#64748b;line-height:1.6;
                         font-family:Arial,Helvetica,sans-serif;">
-                This email was sent by <strong style="color:#64748b;">{{ .AppName }}</strong>.<br>
+                This email was sent by <strong style="color:#475569;">{{ .AppName }}</strong>.<br>
                 If you did not expect this email, you can safely ignore it.
               </p>
               {{ end }}
               {{ if .EmailSupportEmail }}
-              <p style="margin:6px 0 0;font-size:12px;color:#94a3b8;font-family:Arial,Helvetica,sans-serif;">
+              <p style="margin:0 0 12px;font-size:12px;color:#94a3b8;font-family:Arial,Helvetica,sans-serif;">
                 Questions? Contact us at
-                <a href="mailto:{{ .EmailSupportEmail }}" style="color:#64748b;text-decoration:underline;">{{ .EmailSupportEmail }}</a>
+                <a href="mailto:{{ .EmailSupportEmail }}" style="color:#64748b;text-decoration:none;font-weight:500;">{{ .EmailSupportEmail }}</a>
               </p>
               {{ end }}
               {{ if .UnsubscribeURL }}
-              <p style="margin:8px 0 0;font-size:11px;color:#cbd5e1;font-family:Arial,Helvetica,sans-serif;">
-                <a href="{{ .UnsubscribeURL }}" style="color:#94a3b8;text-decoration:underline;">Unsubscribe</a>
-                from these notifications.
+              <p style="margin:12px 0 0;padding-top:12px;border-top:1px solid #e2e8f0;font-size:11px;color:#94a3b8;font-family:Arial,Helvetica,sans-serif;">
+                <a href="{{ .UnsubscribeURL }}" style="color:#64748b;text-decoration:none;">Unsubscribe</a>
+                from these notifications
               </p>
               {{ end }}
               {{ if .ShowPoweredBy }}
               <p style="margin:8px 0 0;font-size:11px;color:#cbd5e1;font-family:Arial,Helvetica,sans-serif;">
-                Powered by <a href="https://github.com/tenzoshare" style="color:#94a3b8;text-decoration:none;">TenzoShare</a>
+                Powered by <a href="https://github.com/tenzoshare" style="color:#94a3b8;text-decoration:none;font-weight:500;">TenzoShare</a>
               </p>
               {{ end }}
             </td>

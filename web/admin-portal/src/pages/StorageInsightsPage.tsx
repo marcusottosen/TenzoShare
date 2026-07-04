@@ -4,8 +4,8 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import {
-  getStorageInsights, listStorageUsage,
-  type StorageInsights, type StorageUserUsage,
+  getStorageInsights, listStorageUsage, getSystemMetrics,
+  type StorageInsights, type StorageUserUsage, type SystemMetrics,
 } from '../api/admin';
 
 // ── Shared chart theme ────────────────────────────────────────────────────────
@@ -314,6 +314,7 @@ function FileStatusChart({ active, deleted }: { active: number; deleted: number 
 export default function StorageInsightsPage() {
   const [insights, setInsights] = useState<StorageInsights | null>(null);
   const [users, setUsers] = useState<StorageUserUsage[]>([]);
+  const [systemMetrics, setSystemMetrics] = useState<SystemMetrics | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -323,10 +324,12 @@ export default function StorageInsightsPage() {
     Promise.all([
       getStorageInsights(),
       listStorageUsage({ limit: 10, sort_by: 'total_bytes', sort_dir: 'desc' }),
+      getSystemMetrics(),
     ])
-      .then(([ins, usr]) => {
+      .then(([ins, usr, sys]) => {
         setInsights(ins);
         setUsers((usr.usage ?? []).filter((u) => u.total_bytes > 0));
+        setSystemMetrics(sys);
       })
       .catch((e: unknown) => setError((e as Error).message))
       .finally(() => setLoading(false));
@@ -362,8 +365,9 @@ export default function StorageInsightsPage() {
             }
           />
           <StatCard
-            label="Storage Used"
+            label="User Data Storage"
             value={fmtBytes(insights.total_storage_bytes)}
+            sub="Data uploaded by users"
             color="purple"
             icon={
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -373,6 +377,20 @@ export default function StorageInsightsPage() {
               </svg>
             }
           />
+          {systemMetrics && (
+            <StatCard
+              label="Filesystem Storage"
+              value={fmtBytes(systemMetrics.storage.used_bytes)}
+              sub={`${fmtBytes(systemMetrics.storage.available_bytes)} available of ${fmtBytes(systemMetrics.storage.total_bytes)}`}
+              color={systemMetrics.storage.used_percent > 90 ? 'red' : systemMetrics.storage.used_percent > 75 ? 'amber' : 'blue'}
+              icon={
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M20 6L9 17l-5-5"/>
+                  <rect x="2" y="4" width="20" height="16" rx="2"/>
+                </svg>
+              }
+            />
+          )}
           <StatCard
             label="Deleted Files"
             value={fmtNumber(insights.deleted_files)}

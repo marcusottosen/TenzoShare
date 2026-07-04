@@ -71,11 +71,10 @@ function IconLogOut() {
 
 const PAGE_TITLES: Record<string, string> = {
   '/': 'Dashboard',
-  '/files': 'My Files',
   '/transfers/new': 'Upload',
-  '/requests': 'File Requests',
+  '/shares': 'My Shares',
+  '/requests': 'My Requests',
   '/contacts': 'Contacts',
-  '/shares': 'Shares & Requests',
   '/settings': 'Settings',
   '/profile': 'Profile',
 };
@@ -150,19 +149,14 @@ export default function Layout() {
           <NavLink to="/transfers/new" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             <IconUpload /> Upload
           </NavLink>
+          <NavLink to="/shares" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            <IconShare /> My Shares
+          </NavLink>
           <NavLink to="/requests" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
-            <IconInbox /> File Requests
+            <IconInbox /> My Requests
           </NavLink>
           <NavLink to="/contacts" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             <IconContacts /> Contacts
-          </NavLink>
-
-          <div className="sidebar-section-label">Library</div>
-          <NavLink to="/files" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
-            <IconFolder /> My Files
-          </NavLink>
-          <NavLink to="/shares" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
-            <IconShare /> Shares &amp; Requests
           </NavLink>
 
           <div className="sidebar-section-label">Account</div>

@@ -494,6 +494,9 @@ services:
       PORT: "8087"
       POSTGRES_HOST: db
       NATS_URL: nats://nats:4222
+      STORAGE_METRICS_PATH: /mnt/data
+    volumes:
+      - /mnt/data:/mnt/data:ro
     depends_on:
       db:
         condition: service_healthy

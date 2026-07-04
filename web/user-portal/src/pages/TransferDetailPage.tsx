@@ -587,7 +587,13 @@ export default function TransferDetailPage() {
                 Contacts
               </button>
             )}
-            <button type="button" className="btn btn-secondary" onClick={addEmailToList}>
+            <button 
+              type="button" 
+              className="btn btn-secondary" 
+              onClick={addEmailToList}
+              disabled={!addingEmail.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(addingEmail.trim())}
+              title={!addingEmail.trim() ? "Enter an email address" : !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(addingEmail.trim()) ? "Invalid email format" : "Add recipient"}
+            >
               Add
             </button>
           </div>

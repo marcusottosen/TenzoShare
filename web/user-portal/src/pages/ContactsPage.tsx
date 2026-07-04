@@ -53,12 +53,21 @@ export default function ContactsPage() {
 
   async function handleSaveName(id: string) {
     setSaving(true);
+    setError(''); // Clear any previous errors
     try {
-      const ct = await updateContact(id, editName);
+      const ct = await updateContact(id, editName.trim());
+      // Ensure the returned contact has all required fields
+      if (!ct || !ct.id || !ct.email) {
+        throw new Error('Invalid response from server');
+      }
       setContacts((prev) => prev.map((c) => (c.id === id ? ct : c)));
       setEditingId(null);
+      setEditName('');
     } catch (e: unknown) {
-      setError((e as Error).message ?? 'Failed to update contact.');
+      const errorMsg = (e as Error).message ?? 'Failed to update contact.';
+      console.error('Failed to update contact:', errorMsg, e);
+      setError(errorMsg);
+      // Don't exit edit mode on error - user can retry or cancel
     } finally {
       setSaving(false);
     }
@@ -150,7 +159,7 @@ export default function ContactsPage() {
                           style={{ fontSize: 13, padding: '2px 6px' }}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter') { e.preventDefault(); handleSaveName(ct.id); }
-                            if (e.key === 'Escape') setEditingId(null);
+                            if (e.key === 'Escape') { setEditingId(null); setEditName(''); }
                           }}
                         />
                       ) : (
@@ -173,7 +182,7 @@ export default function ContactsPage() {
                           <button
                             type="button"
                             className="btn btn-secondary btn-sm"
-                            onClick={() => setEditingId(null)}
+                            onClick={() => { setEditingId(null); setEditName(''); }}
                           >
                             Cancel
                           </button>
@@ -183,7 +192,7 @@ export default function ContactsPage() {
                           <button
                             type="button"
                             className="btn btn-secondary btn-sm"
-                            onClick={() => { setEditingId(ct.id); setEditName(ct.name); }}
+                            onClick={() => { setEditingId(ct.id); setEditName(ct.name || ''); }}
                           >
                             Edit
                           </button>

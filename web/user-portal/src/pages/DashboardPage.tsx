@@ -173,6 +173,7 @@ export default function DashboardPage() {
   const [requests, setRequests] = useState<FileRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [storageUsage, setStorageUsage] = useState<StorageUsage | null>(null);
+  const [dragOver, setDragOver] = useState(false);
 
   useEffect(() => {
     listTransfers()
@@ -246,7 +247,39 @@ export default function DashboardPage() {
   function handleFilesPicked(e: React.ChangeEvent<HTMLInputElement>) {
     const picked = Array.from(e.target.files ?? []);
     if (picked.length === 0) return;
+    
+    // Check for folders (files with empty type and size 0 are likely folders)
+    const folders = picked.filter(f => f.type === '' && f.size === 0);
+    if (folders.length > 0) {
+      alert(`Folder upload not supported. Please zip "${folders[0].name}" and upload the archive instead.`);
+      return;
+    }
+    
     pendingUploadStore.set(picked);
+    navigate('/transfers/new');
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDragOver(false);
+    
+    // Check for folders using dataTransfer.items API (more reliable for drag-and-drop)
+    if (e.dataTransfer.items) {
+      const items = Array.from(e.dataTransfer.items);
+      for (const item of items) {
+        if (item.kind === 'file') {
+          const entry = item.webkitGetAsEntry?.();
+          if (entry?.isDirectory) {
+            alert(`Folder upload not supported. Please zip "${entry.name}" and upload the archive instead.`);
+            return;
+          }
+        }
+      }
+    }
+    
+    const dropped = Array.from(e.dataTransfer.files);
+    if (dropped.length === 0) return;
+    pendingUploadStore.set(dropped);
     navigate('/transfers/new');
   }
 
@@ -268,7 +301,17 @@ export default function DashboardPage() {
       <div className="dash-row" style={{ marginBottom: 20 }}>
 
         {/* Upload zone */}
-        <div className="upload-zone-card">
+        <div 
+          className="upload-zone-card"
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragEnter={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={handleDrop}
+          style={{
+            border: dragOver ? '2px dashed var(--color-primary)' : undefined,
+            background: dragOver ? 'var(--color-primary-light, rgba(99,102,241,0.05))' : undefined,
+          }}
+        >
           <div className="upload-zone-icon">
             <IconCloudUpload />
           </div>
@@ -276,14 +319,11 @@ export default function DashboardPage() {
             Secure Upload
           </h2>
           <p style={{ fontSize: 13, color: 'var(--color-text-muted)', maxWidth: 340, textAlign: 'center', lineHeight: 1.5 }}>
-            Drag and drop your files here or click to browse. Files are automatically encrypted before storage.
+            {dragOver ? 'Drop files here to start upload' : 'Drag and drop your files here or click to browse. Files are automatically encrypted before storage.'}
           </p>
           <div style={{ display: 'flex', gap: 10, marginTop: 20, flexWrap: 'wrap', justifyContent: 'center' }}>
             <button className="btn btn-dark btn-lg" onClick={() => fileInputRef.current?.click()}>
               + Select Files
-            </button>
-            <button className="btn btn-secondary-outline btn-lg" onClick={() => navigate('/files')}>
-              Browse Files
             </button>
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>

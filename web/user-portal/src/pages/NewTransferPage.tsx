@@ -143,6 +143,14 @@ export default function NewTransferPage() {
 
   async function uploadFiles(files: File[]) {
     if (files.length === 0) return;
+    
+    // Check for folders (files with empty type and size 0 are likely folders)
+    const folders = files.filter(f => f.type === '' && f.size === 0);
+    if (folders.length > 0) {
+      setError(`Folder upload not supported. Please zip "${folders[0].name}" and upload the archive instead.`);
+      return;
+    }
+    
     for (const file of files) {
       setUploading(true);
       setUploadProgress(null);
@@ -171,12 +179,27 @@ export default function NewTransferPage() {
     await uploadFiles(picked);
   }
 
-  function handleDrop(e: React.DragEvent) {
+  async function handleDrop(e: React.DragEvent) {
     e.preventDefault();
     setDragOver(false);
     if (uploading) return;
+    
+    // Check for folders using dataTransfer.items API (more reliable for drag-and-drop)
+    if (e.dataTransfer.items) {
+      const items = Array.from(e.dataTransfer.items);
+      for (const item of items) {
+        if (item.kind === 'file') {
+          const entry = item.webkitGetAsEntry?.();
+          if (entry?.isDirectory) {
+            setError(`Folder upload not supported. Please zip "${entry.name}" and upload the archive instead.`);
+            return;
+          }
+        }
+      }
+    }
+    
     const dropped = Array.from(e.dataTransfer.files);
-    uploadFiles(dropped);
+    await uploadFiles(dropped);
   }
 
   function removeStaged(id: string) {
@@ -255,6 +278,21 @@ export default function NewTransferPage() {
     e.preventDefault();
     if (!name.trim()) { setError('Transfer name is required.'); return; }
     if (staged.length === 0) { setError('Add at least one file.'); return; }
+    
+    // Validate link protection policy
+    if (linkPolicy === 'password' && !password) {
+      setError('this platform requires all transfers to be protected by a password');
+      return;
+    }
+    if (linkPolicy === 'email' && recipientEmails.length === 0) {
+      setError('this platform requires all transfers to have at least one recipient email');
+      return;
+    }
+    if (linkPolicy === 'either' && !password && recipientEmails.length === 0) {
+      setError('this platform requires all transfers to have a password or at least one recipient email');
+      return;
+    }
+    
     setError('');
     setSubmitting(true);
     try {
@@ -498,7 +536,15 @@ export default function NewTransferPage() {
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
                   <label style={{ margin: 0 }}>
                     Recipient email{recipientEmails.length !== 1 ? 's' : ''}{' '}
-                    <span className="text-sm" style={{ color: 'var(--color-text-muted)' }}>(optional)</span>
+                    {linkPolicy === 'password' ? (
+                      <span className="text-sm" style={{ color: 'var(--color-text-muted)' }}>(optional)</span>
+                    ) : linkPolicy === 'email' ? (
+                      <span style={{ color: 'var(--color-danger)' }}>*</span>
+                    ) : linkPolicy === 'either' ? (
+                      <span className="text-sm" style={{ color: 'var(--color-warning, orange)' }}>(required if no password)</span>
+                    ) : (
+                      <span className="text-sm" style={{ color: 'var(--color-text-muted)' }}>(optional)</span>
+                    )}
                   </label>
                   {contacts.length > 0 && (
                     <button
@@ -598,7 +644,15 @@ export default function NewTransferPage() {
               <div className="form-group">
                 <label>
                   Password{' '}
-                  <span className="text-sm" style={{ color: 'var(--color-text-muted)' }}>(optional)</span>
+                  {linkPolicy === 'email' ? (
+                    <span className="text-sm" style={{ color: 'var(--color-text-muted)' }}>(optional)</span>
+                  ) : linkPolicy === 'password' ? (
+                    <span style={{ color: 'var(--color-danger)' }}>*</span>
+                  ) : linkPolicy === 'either' ? (
+                    <span className="text-sm" style={{ color: 'var(--color-warning, orange)' }}>(required if no email)</span>
+                  ) : (
+                    <span className="text-sm" style={{ color: 'var(--color-text-muted)' }}>(optional)</span>
+                  )}
                 </label>
                 <input
                   type="password"

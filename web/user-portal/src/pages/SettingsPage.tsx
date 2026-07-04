@@ -105,8 +105,9 @@ export default function SettingsPage() {
       });
       setPrefsSaved(true);
       setTimeout(() => setPrefsSaved(false), 3000);
-    } catch {
-      setPrefsError('Failed to save preferences.');
+    } catch (err: any) {
+      console.error('Failed to save preferences:', err);
+      setPrefsError(err.message ?? 'Failed to save preferences.');
     } finally {
       setSavingPrefs(false);
     }
@@ -128,8 +129,9 @@ export default function SettingsPage() {
       setNotifPrefs({ ...updated, auto_save_contacts: notifPrefs.auto_save_contacts });
       setNotifSaved(true);
       setTimeout(() => setNotifSaved(false), 3000);
-    } catch {
-      setNotifError('Failed to save notification preferences.');
+    } catch (err: any) {
+      console.error('Failed to save notification preferences:', err);
+      setNotifError(err.message ?? 'Failed to save notification preferences.');
     } finally {
       setSavingNotif(false);
     }
@@ -204,7 +206,13 @@ export default function SettingsPage() {
                   transition: 'border-color 0.15s, background 0.15s',
                 }}>
                   <input type="radio" name="date_format" value={opt.value} checked={dateFormat === opt.value} onChange={() => setDateFormat(opt.value)} style={{ display: 'none' }} />
-                  <code style={{ fontSize: 13, fontWeight: 600, letterSpacing: '0.01em', color: dateFormat === opt.value ? 'var(--color-primary)' : 'var(--color-text-primary)' }}>{opt.example}</code>
+                  <code style={{ 
+                    fontSize: 13, 
+                    fontWeight: 600, 
+                    letterSpacing: '0.01em', 
+                    color: dateFormat === opt.value ? 'var(--color-primary)' : 'var(--color-text-primary)',
+                    background: 'transparent',
+                  }}>{opt.example}</code>
                   <span style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2 }}>{opt.label.split(' ')[0]}</span>
                 </label>
               ))}

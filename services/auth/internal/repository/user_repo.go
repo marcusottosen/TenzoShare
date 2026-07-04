@@ -373,14 +373,14 @@ func (r *UserRepository) UpdatePreferences(ctx context.Context, userID string, d
 }
 
 // GetLockoutConfig returns the current max_failed_attempts, lockout_duration,
-// require_mfa, and require_email_verification from the auth.auth_settings singleton row.
-func (r *UserRepository) GetLockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration, requireMFA bool, requireEmailVerification bool, err error) {
+// require_mfa, require_email_verification, and registration_enabled from the auth.auth_settings singleton row.
+func (r *UserRepository) GetLockoutConfig(ctx context.Context) (maxAttempts int, lockDuration time.Duration, requireMFA bool, requireEmailVerification bool, registrationEnabled bool, err error) {
 	var mins int
-	row := r.db.QueryRow(ctx, `SELECT max_failed_attempts, lockout_duration_minutes, require_mfa, require_email_verification FROM auth.auth_settings WHERE id = 1`)
-	if err = row.Scan(&maxAttempts, &mins, &requireMFA, &requireEmailVerification); err != nil {
-		return 10, 15 * time.Minute, false, false, nil // safe fallback to previous defaults
+	row := r.db.QueryRow(ctx, `SELECT max_failed_attempts, lockout_duration_minutes, require_mfa, require_email_verification, registration_enabled FROM auth.auth_settings WHERE id = 1`)
+	if err = row.Scan(&maxAttempts, &mins, &requireMFA, &requireEmailVerification, &registrationEnabled); err != nil {
+		return 10, 15 * time.Minute, false, false, true, nil // safe fallback to previous defaults
 	}
-	return maxAttempts, time.Duration(mins) * time.Minute, requireMFA, requireEmailVerification, nil
+	return maxAttempts, time.Duration(mins) * time.Minute, requireMFA, requireEmailVerification, registrationEnabled, nil
 }
 
 // DisableMFA removes the MFA secret row for a user (disabling MFA).

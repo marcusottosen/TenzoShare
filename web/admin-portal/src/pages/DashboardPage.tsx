@@ -4,7 +4,7 @@ import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
-import { getStats, getSystemHealth, type SystemStats, type ServiceHealth } from '../api/admin';
+import { getStats, getSystemHealth, getSystemMetrics, type SystemStats, type ServiceHealth, type SystemMetrics } from '../api/admin';
 
 const AUTO_REFRESH_SECS = 30;
 
@@ -182,6 +182,7 @@ export default function DashboardPage() {
   const navigate = useNavigate();
   const [health, setHealth] = useState<ServiceHealth[]>([]);
   const [stats, setStats] = useState<SystemStats | null>(null);
+  const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
   const [lastChecked, setLastChecked] = useState<Date | null>(null);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState('');
@@ -193,9 +194,14 @@ export default function DashboardPage() {
     setError('');
     setCountdown(AUTO_REFRESH_SECS);
     try {
-      const [healthRes, statsRes] = await Promise.all([getSystemHealth(), getStats()]);
+      const [healthRes, statsRes, metricsRes] = await Promise.all([
+        getSystemHealth(),
+        getStats(),
+        getSystemMetrics(),
+      ]);
       setHealth(healthRes.services ?? []);
       setStats(statsRes);
+      setMetrics(metricsRes);
       setLastChecked(new Date());
     } catch (err: unknown) {
       setError((err as Error).message);
@@ -293,6 +299,120 @@ export default function DashboardPage() {
             <div className="stat-card-body">
               <div className="stat-label">Storage Used</div>
               <div className="stat-value">{formatBytes(stats.total_storage_bytes)}</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* System Resources */}
+      {metrics && (
+        <div style={{ marginBottom: 16 }}>
+          <h2 style={{ fontSize: 15, fontWeight: 600, marginBottom: 12, color: 'var(--color-text-primary)' }}>
+            System Resources
+          </h2>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
+            <div className="card" style={{ padding: 20 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                    <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+                    <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+                  </svg>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                    Disk Storage
+                  </span>
+                </div>
+                <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                  {metrics.storage.used_percent.toFixed(1)}%
+                </span>
+              </div>
+              <div style={{ height: 8, background: 'rgba(148,163,184,0.15)', borderRadius: 4, overflow: 'hidden', marginBottom: 8 }}>
+                <div
+                  style={{
+                    height: '100%',
+                    width: `${Math.min(metrics.storage.used_percent, 100)}%`,
+                    background: metrics.storage.used_percent > 90 ? '#F87171' : metrics.storage.used_percent > 75 ? '#F59E0B' : '#2DD4BF',
+                    transition: 'width 0.3s ease',
+                  }}
+                />
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--color-text-muted)' }}>
+                <span>{formatBytes(metrics.storage.used_bytes)} used</span>
+                <span>{formatBytes(metrics.storage.total_bytes)} total</span>
+              </div>
+            </div>
+
+            <div className="card" style={{ padding: 20 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="4" y="4" width="16" height="16" rx="2" ry="2"/>
+                    <rect x="9" y="9" width="6" height="6"/>
+                    <line x1="9" y1="1" x2="9" y2="4"/>
+                    <line x1="15" y1="1" x2="15" y2="4"/>
+                    <line x1="9" y1="20" x2="9" y2="23"/>
+                    <line x1="15" y1="20" x2="15" y2="23"/>
+                    <line x1="20" y1="9" x2="23" y2="9"/>
+                    <line x1="20" y1="14" x2="23" y2="14"/>
+                    <line x1="1" y1="9" x2="4" y2="9"/>
+                    <line x1="1" y1="14" x2="4" y2="14"/>
+                  </svg>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                    Memory (RAM)
+                  </span>
+                </div>
+                <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                  {metrics.memory.used_percent.toFixed(1)}%
+                </span>
+              </div>
+              <div style={{ height: 8, background: 'rgba(148,163,184,0.15)', borderRadius: 4, overflow: 'hidden', marginBottom: 8 }}>
+                <div
+                  style={{
+                    height: '100%',
+                    width: `${Math.min(metrics.memory.used_percent, 100)}%`,
+                    background: metrics.memory.used_percent > 90 ? '#F87171' : metrics.memory.used_percent > 75 ? '#F59E0B' : '#8B5CF6',
+                    transition: 'width 0.3s ease',
+                  }}
+                />
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--color-text-muted)' }}>
+                <span>{formatBytes(metrics.memory.used_bytes)} used</span>
+                <span>{formatBytes(metrics.memory.total_bytes)} total</span>
+              </div>
+            </div>
+
+            <div className="card" style={{ padding: 20 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="4" y="4" width="6" height="7"/>
+                    <rect x="14" y="4" width="6" height="7"/>
+                    <rect x="4" y="15" width="6" height="7"/>
+                    <rect x="14" y="15" width="6" height="7"/>
+                  </svg>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                    CPU Usage
+                  </span>
+                </div>
+                <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                  {metrics.cpu.used_percent.toFixed(1)}%
+                </span>
+              </div>
+              <div style={{ height: 8, background: 'rgba(148,163,184,0.15)', borderRadius: 4, overflow: 'hidden', marginBottom: 8 }}>
+                <div
+                  style={{
+                    height: '100%',
+                    width: `${Math.min(metrics.cpu.used_percent, 100)}%`,
+                    background: metrics.cpu.used_percent > 90 ? '#F87171' : metrics.cpu.used_percent > 75 ? '#F59E0B' : '#3B82F6',
+                    transition: 'width 0.3s ease',
+                  }}
+                />
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--color-text-muted)' }}>
+                <span>{metrics.cpu.cores} {metrics.cpu.cores === 1 ? 'core' : 'cores'}</span>
+                <span>Current load</span>
+              </div>
             </div>
           </div>
         </div>

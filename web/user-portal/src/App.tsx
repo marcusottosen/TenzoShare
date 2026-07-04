@@ -8,7 +8,6 @@ import RegisterPage from './pages/RegisterPage';
 import MFAPage from './pages/MFAPage';
 import ForgotPasswordPage from './pages/ForgotPasswordPage';
 import DashboardPage from './pages/DashboardPage';
-import FilesPage from './pages/FilesPage';
 import NewTransferPage from './pages/NewTransferPage';
 import TransferDetailPage from './pages/TransferDetailPage';
 import SettingsPage from './pages/SettingsPage';
@@ -33,7 +32,6 @@ export default function App() {
           <Route element={<ProtectedRoute />}>
             <Route element={<Layout />}>
               <Route path="/" element={<DashboardPage />} />
-              <Route path="/files" element={<FilesPage />} />
               <Route path="/transfers/new" element={<NewTransferPage />} />
               <Route path="/transfers/:id" element={<TransferDetailPage />} />
               <Route path="/requests" element={<RequestsPage />} />

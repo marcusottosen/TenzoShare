@@ -47,6 +47,31 @@ export interface SystemHealthResponse {
   services: ServiceHealth[];
 }
 
+export interface StorageMetrics {
+  total_bytes: number;
+  used_bytes: number;
+  available_bytes: number;
+  used_percent: number;
+}
+
+export interface MemoryMetrics {
+  total_bytes: number;
+  used_bytes: number;
+  available_bytes: number;
+  used_percent: number;
+}
+
+export interface CPUMetrics {
+  used_percent: number;
+  cores: number;
+}
+
+export interface SystemMetrics {
+  storage: StorageMetrics;
+  memory: MemoryMetrics;
+  cpu: CPUMetrics;
+}
+
 export async function listUsers(params: {
   limit?: number;
   offset?: number;
@@ -108,6 +133,10 @@ export async function getStats(): Promise<SystemStats> {
 
 export async function getSystemHealth(): Promise<SystemHealthResponse> {
   return request<SystemHealthResponse>('/admin/system/health');
+}
+
+export async function getSystemMetrics(): Promise<SystemMetrics> {
+  return request<SystemMetrics>('/admin/system/metrics');
 }
 
 export interface AdminTransfer {
@@ -419,6 +448,8 @@ export interface AuthLockoutConfig {
   max_failed_attempts: number;
   lockout_duration_minutes: number;
   require_mfa: boolean;
+  require_email_verification: boolean;
+  registration_enabled: boolean;
   updated_at: string;
 }
 
@@ -430,6 +461,8 @@ export async function updateAuthConfig(body: {
   max_failed_attempts?: number;
   lockout_duration_minutes?: number;
   require_mfa?: boolean;
+  require_email_verification?: boolean;
+  registration_enabled?: boolean;
 }): Promise<AuthLockoutConfig> {
   return request<AuthLockoutConfig>('/admin/auth/config', {
     method: 'PUT',

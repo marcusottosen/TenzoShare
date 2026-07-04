@@ -19,6 +19,8 @@ export default function SecuritySettingsPage() {
   const [maxAttempts, setMaxAttempts] = useState(10);
   const [lockoutMins, setLockoutMins] = useState(15);
   const [requireMFA, setRequireMFA] = useState(false);
+  const [requireEmailVerification, setRequireEmailVerification] = useState(false);
+  const [registrationEnabled, setRegistrationEnabled] = useState(true);
 
   useEffect(() => {
     setLoading(true);
@@ -28,6 +30,8 @@ export default function SecuritySettingsPage() {
         setMaxAttempts(c.max_failed_attempts);
         setLockoutMins(c.lockout_duration_minutes);
         setRequireMFA(c.require_mfa);
+        setRequireEmailVerification(c.require_email_verification);
+        setRegistrationEnabled(c.registration_enabled);
       })
       .catch(() => setError('Failed to load lockout config.'))
       .finally(() => setLoading(false));
@@ -43,11 +47,15 @@ export default function SecuritySettingsPage() {
         max_failed_attempts: maxAttempts,
         lockout_duration_minutes: lockoutMins,
         require_mfa: requireMFA,
+        require_email_verification: requireEmailVerification,
+        registration_enabled: registrationEnabled,
       });
       setConfig(updated);
       setMaxAttempts(updated.max_failed_attempts);
       setLockoutMins(updated.lockout_duration_minutes);
       setRequireMFA(updated.require_mfa);
+      setRequireEmailVerification(updated.require_email_verification);
+      setRegistrationEnabled(updated.registration_enabled);
       setSuccess('Security settings saved.');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to save.');
@@ -197,6 +205,50 @@ export default function SecuritySettingsPage() {
                 When enabled, users who have not set up MFA will receive a prompt to configure it
                 immediately after logging in. They will receive tokens but should be directed to set
                 up MFA before accessing any other features.
+              </p>
+            </div>
+
+            {/* Require Email Verification */}
+            <div className="form-group" style={{ marginBottom: 28 }}>
+              <label style={{ display: 'block', marginBottom: 6, fontWeight: 500 }}>
+                Require email verification
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={requireEmailVerification}
+                  onChange={(e) => setRequireEmailVerification(e.target.checked)}
+                  disabled={saving}
+                />
+                <span className="text-sm">
+                  {requireEmailVerification ? 'Enabled — users must verify their email before logging in' : 'Disabled — email verification is optional'}
+                </span>
+              </label>
+              <p className="text-sm" style={{ marginTop: 6, color: 'var(--color-text-muted)' }}>
+                When enabled, new users must click the verification link sent to their email before
+                they can log in. Admins can manually verify users via the User Management page.
+              </p>
+            </div>
+
+            {/* Registration Enabled */}
+            <div className="form-group" style={{ marginBottom: 28 }}>
+              <label style={{ display: 'block', marginBottom: 6, fontWeight: 500 }}>
+                Allow new user registration
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={registrationEnabled}
+                  onChange={(e) => setRegistrationEnabled(e.target.checked)}
+                  disabled={saving}
+                />
+                <span className="text-sm">
+                  {registrationEnabled ? 'Enabled — anyone can create a new account' : 'Disabled — registration is closed to new users'}
+                </span>
+              </label>
+              <p className="text-sm" style={{ marginTop: 6, color: 'var(--color-text-muted)' }}>
+                When disabled, the registration page will show a message that registration is closed.
+                Only admins can create new user accounts via the User Management page.
               </p>
             </div>
 

@@ -194,8 +194,8 @@ func (r *stubUserRepo) UpdatePreferences(_ context.Context, _ string, _, _, _ *s
 	return r.err
 }
 
-func (r *stubUserRepo) GetLockoutConfig(_ context.Context) (int, time.Duration, bool, bool, error) {
-	return 10, 15 * time.Minute, false, false, nil
+func (r *stubUserRepo) GetLockoutConfig(_ context.Context) (int, time.Duration, bool, bool, bool, error) {
+	return 10, 15 * time.Minute, false, false, true, nil
 }
 
 func (r *stubUserRepo) DisableMFA(_ context.Context, _ string) error { return r.err }
